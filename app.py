@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v2.02
+TELA CLUB Random Match Generator v2.0
 ======================================
 핵심 규칙:
   1. 1인 최소 3경기 보장 / 최대 4경기 제한 (중복 출전 최대 1회)
@@ -167,50 +167,78 @@ def commit_pairing(t1: Tuple, t2: Tuple, gs: MatchState, rs: MatchState):
 # 섹션 4: 그룹 구성 (우선순위 + 혼성 최소 선발)
 # ============================================================
 
+# 리그별 매치 우선순위 정의
+# 각 리그의 순서: 낮을수록 우선 (0=1순위)
+LEAGUE_PRIORITY: Dict[str, List[str]] = {
+    "A리그": ["동성", "혼복", "잡복"],  # 동성 > 혼복 > 잡복
+    "B리그": ["혼복", "동성", "잡복"],  # 혼복 > 동성 > 잡복
+}
+DEFAULT_PRIORITY = ["동성", "혼복", "잡복"]
+
+def get_priority(league: str) -> List[str]:
+    return LEAGUE_PRIORITY.get(league, DEFAULT_PRIORITY)
+
+
 def build_one_group(
     pool: List[str],
     mixed_counts: Dict[str, int],
+    league: str = "A리그",
 ) -> Tuple[Optional[List[str]], List[str]]:
     """
     pool[0] = anchor (game_count 최소 선수) 강제 포함.
-    anchor 성별 기준으로 우선순위에 따라 나머지 3명 선발.
-    우선순위: 동성복 > 혼복 > 잡복
+    anchor 성별 기준으로 리그별 우선순위에 따라 나머지 3명 선발.
     혼성 자리는 mixed_count 최소 선수 우선.
+
+    A리그: 동성복 > 혼복 > 잡복
+    B리그: 혼복 > 동성복 > 잡복
     """
     if len(pool) < 4:
         return None, pool[:]
 
-    anchor = pool[0]
-    rest   = pool[1:]
-    g_a    = get_gender(anchor)
-    same   = [p for p in rest if get_gender(p) == g_a]
-    opp    = [p for p in rest if get_gender(p) != g_a and get_gender(p) != "U"]
+    anchor  = pool[0]
+    rest    = pool[1:]
+    g_a     = get_gender(anchor)
+    same    = [p for p in rest if get_gender(p) == g_a]
+    opp     = [p for p in rest if get_gender(p) != g_a and get_gender(p) != "U"]
+    priority = get_priority(league)
 
     group = None
 
-    # 1순위: 동성복 (anchor + 같은 성별 3명)
-    if len(same) >= 3:
-        sh = list(same); random.shuffle(sh)
-        group = [anchor] + sh[:3]
+    def try_dongsong():
+        """동성복: anchor + 같은 성별 3명"""
+        if len(same) >= 3:
+            sh = list(same); random.shuffle(sh)
+            return [anchor] + sh[:3]
+        return None
 
-    # 2순위: 혼복 (anchor + 같은 성별 1명 + 반대 성별 2명)
-    elif len(same) >= 1 and len(opp) >= 2:
-        sh = list(same); random.shuffle(sh)
-        group = [anchor] + sh[:1] + sort_by_mixed_least(opp, mixed_counts)[:2]
+    def try_mixed():
+        """혼복: anchor + 같은 성별 1명 + 반대 성별 2명"""
+        if len(same) >= 1 and len(opp) >= 2:
+            sh = list(same); random.shuffle(sh)
+            return [anchor] + sh[:1] + sort_by_mixed_least(opp, mixed_counts)[:2]
+        return None
 
-    # 3순위: 잡복 (anchor + 같은 성별 2명 + 반대 성별 1명)
-    elif len(same) >= 2 and len(opp) >= 1:
-        sh = list(same); random.shuffle(sh)
-        group = [anchor] + sh[:2] + sort_by_mixed_least(opp, mixed_counts)[:1]
+    def try_jabbok():
+        """잡복: anchor + 같은 성별 2명 + 반대 성별 1명, 또는 anchor + 반대 성별 3명"""
+        if len(same) >= 2 and len(opp) >= 1:
+            sh = list(same); random.shuffle(sh)
+            return [anchor] + sh[:2] + sort_by_mixed_least(opp, mixed_counts)[:1]
+        if len(opp) >= 3:
+            return [anchor] + sort_by_mixed_least(opp, mixed_counts)[:3]
+        return None
 
-    # 3순위: 잡복 반대 (anchor + 반대 성별 3명)
-    elif len(opp) >= 3:
-        group = [anchor] + sort_by_mixed_least(opp, mixed_counts)[:3]
+    dispatch = {"동성": try_dongsong, "혼복": try_mixed, "잡복": try_jabbok}
 
-    # 최후수단
-    else:
+    for ptype in priority:
+        result = dispatch[ptype]()
+        if result is not None:
+            group = result
+            break
+
+    # 최후수단 (위 3가지 모두 불가)
+    if group is None:
         others = sort_by_mixed_least(rest, mixed_counts)
-        group = [anchor] + others[:3]
+        group  = [anchor] + others[:3]
 
     if group is None or len(group) < 4:
         return None, pool[:]
@@ -225,11 +253,12 @@ def build_one_group(
 def build_all_groups(
     pool: List[str],
     mixed_counts: Dict[str, int],
+    league: str = "A리그",
 ) -> Tuple[List[List[str]], List[str]]:
     """pool 전체를 4명 그룹으로 분할. 나머지는 leftovers 반환."""
     groups, remaining = [], list(pool)
     while len(remaining) >= 4:
-        group, remaining = build_one_group(remaining, mixed_counts)
+        group, remaining = build_one_group(remaining, mixed_counts, league)
         if group is None:
             break
         groups.append(group)
@@ -237,102 +266,177 @@ def build_all_groups(
 
 
 # ============================================================
-# 섹션 5: 정규 라운드 매치 생성 (강제 포함 로직)
+# 섹션 5: 정규 라운드 매치 생성
 # ============================================================
 
 def _pick_3_for_anchor(
     anchor: str,
     remaining: List[str],
     mixed_counts: Dict[str, int],
+    league: str = "A리그",
 ) -> Optional[List[str]]:
     """
-    anchor 1명에 맞춰 나머지 3명을 우선순위대로 선발.
-    동성복 > 혼복 > 잡복, 혼성 자리 = mixed_count 최소 우선.
+    anchor 1명에 맞춰 나머지 3명을 리그 우선순위대로 선발.
+    혼성 자리 = mixed_count 최소 우선.
     """
     if len(remaining) < 3:
         return None
+
     g     = get_gender(anchor)
     men   = [p for p in remaining if get_gender(p) == "M"]
     women = [p for p in remaining if get_gender(p) == "W"]
+    priority = get_priority(league)
 
-    if g == "M":
-        if len(men) >= 3:
+    def try_dongsong():
+        if g == "M" and len(men) >= 3:
             return men[:3]
-        if len(men) >= 1 and len(women) >= 2:
+        if g == "W" and len(women) >= 3:
+            return women[:3]
+        return None
+
+    def try_mixed():
+        if g == "M" and len(men) >= 1 and len(women) >= 2:
             return (sort_by_mixed_least(men, mixed_counts)[:1]
                   + sort_by_mixed_least(women, mixed_counts)[:2])
-        if len(men) >= 2 and len(women) >= 1:
-            m2 = list(men); random.shuffle(m2)
-            return m2[:2] + sort_by_mixed_least(women, mixed_counts)[:1]
-        if len(women) >= 3:
-            return sort_by_mixed_least(women, mixed_counts)[:3]
-    elif g == "W":
-        if len(women) >= 3:
-            return women[:3]
-        if len(women) >= 1 and len(men) >= 2:
+        if g == "W" and len(women) >= 1 and len(men) >= 2:
             return (sort_by_mixed_least(women, mixed_counts)[:1]
                   + sort_by_mixed_least(men, mixed_counts)[:2])
-        if len(women) >= 2 and len(men) >= 1:
-            w2 = list(women); random.shuffle(w2)
-            return w2[:2] + sort_by_mixed_least(men, mixed_counts)[:1]
-        if len(men) >= 3:
-            return sort_by_mixed_least(men, mixed_counts)[:3]
+        return None
+
+    def try_jabbok():
+        if g == "M":
+            if len(men) >= 2 and len(women) >= 1:
+                m2 = list(men); random.shuffle(m2)
+                return m2[:2] + sort_by_mixed_least(women, mixed_counts)[:1]
+            if len(women) >= 3:
+                return sort_by_mixed_least(women, mixed_counts)[:3]
+        elif g == "W":
+            if len(women) >= 2 and len(men) >= 1:
+                w2 = list(women); random.shuffle(w2)
+                return w2[:2] + sort_by_mixed_least(men, mixed_counts)[:1]
+            if len(men) >= 3:
+                return sort_by_mixed_least(men, mixed_counts)[:3]
+        return None
+
+    dispatch = {"동성": try_dongsong, "혼복": try_mixed, "잡복": try_jabbok}
+    for ptype in priority:
+        result = dispatch[ptype]()
+        if result is not None:
+            return result
+
     # 최후수단
     rest = sort_by_mixed_least(remaining, mixed_counts)
     return rest[:3] if len(rest) >= 3 else None
 
 
 def make_round_matches(
-    players: List[str],
+    players:      List[str],
     game_counts:  Dict[str, int],
     mixed_counts: Dict[str, int],
-    global_state: MatchState,
-    round_state:  MatchState,
+    gs: MatchState,
+    rs: MatchState,
+    league: str = "A리그",
 ) -> List[dict]:
     """
-    정규 라운드 매치 생성.
-    경기 횟수 최소 선수(소수 성별 포함)를 각 그룹의 앵커로 강제 배정.
-    leftover는 이벤트 라운드(4R)에서 처리.
+    리그 우선순위에 맞게 그룹 구성 후 매치 생성.
+
+    단계:
+    1. 리그 1순위 매치 타입을 pool에서 먼저 최대한 구성 (선처리)
+       - A리그(동성 우선): 남복/여복 그룹 먼저 확보
+       - B리그(혼복 우선): 혼복 그룹 먼저 확보
+    2. 나머지 pool → 소수 성별 anchor 기반 greedy 구성
+    3. leftover는 이벤트 라운드(4R)에서 처리
     """
     n_groups = len(players) // 4
     if n_groups == 0:
         return []
 
-    # 경기 횟수 오름차순 정렬
-    pool = sorted(players, key=lambda p: (game_counts.get(base_name(p), 0), random.random()))
+    # 성별 인원 수 (소수 성별 anchor 우선 배정용)
+    gender_count: Dict[str, int] = {}
+    for p in players:
+        g = get_gender(p)
+        gender_count[g] = gender_count.get(g, 0) + 1
 
-    # 경기수 최소 선수 n_groups명 = 각 그룹의 앵커
-    forced_anchors = pool[:n_groups]
-    remaining_pool = [p for p in pool if p not in forced_anchors]
-
+    priority    = get_priority(league)
     groups_of_4: List[List[str]] = []
+    working     = sorted(players, key=lambda p: (
+        game_counts.get(base_name(p), 0),
+        gender_count.get(get_gender(p), 99),
+        random.random()
+    ))
 
-    for anchor in forced_anchors:
-        three = _pick_3_for_anchor(anchor, remaining_pool, mixed_counts)
-        if three is None or len(three) < 3:
-            remaining_pool.insert(0, anchor)
-            continue
-        group = [anchor] + three
-        groups_of_4.append(group)
-        for p in group:
-            if p in remaining_pool:
-                remaining_pool.remove(p)
+    men_all   = [p for p in working if get_gender(p) == "M"]
+    women_all = [p for p in working if get_gender(p) == "W"]
 
-    # 남은 선수로 추가 그룹 구성
-    if len(remaining_pool) >= 4:
-        extra_groups, _ = build_all_groups(remaining_pool, mixed_counts)
-        groups_of_4.extend(extra_groups)
+    # ── 1단계: 1순위 타입 선처리 ──────────────────────────
+    top_ptype = priority[0]
+
+    if top_ptype == "동성":
+        # 실제 구성 가능한 순수 동성 그룹 수
+        # max(0, n_groups-1): 최소 1슬롯은 anchor 방식용으로 확보
+        preprocess_slots = min(max(0, n_groups - 1), len(men_all)//4 + len(women_all)//4)
+        men_s   = sorted(men_all,   key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+        women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+        while len(men_s) >= 4 and len(groups_of_4) < preprocess_slots:
+            grp = men_s[:4]; men_s = men_s[4:]
+            groups_of_4.append(grp)
+            for p in grp: working.remove(p)
+        while len(women_s) >= 4 and len(groups_of_4) < preprocess_slots:
+            grp = women_s[:4]; women_s = women_s[4:]
+            groups_of_4.append(grp)
+            for p in grp: working.remove(p)
+
+    elif top_ptype == "혼복":
+        # 소수 성별 인원수 기반 보장 슬롯 제외 후 혼복 최대 구성
+        minority_cnt     = min(len(men_all), len(women_all))
+        preprocess_slots = min(n_groups, minority_cnt // 2)  # 남2+여2 단위
+        while len(groups_of_4) < preprocess_slots:
+            men_avail   = [p for p in working if get_gender(p) == "M"]
+            women_avail = [p for p in working if get_gender(p) == "W"]
+            if len(men_avail) < 2 or len(women_avail) < 2:
+                break
+            m2 = sort_by_mixed_least(men_avail,   mixed_counts)[:2]
+            w2 = sort_by_mixed_least(women_avail, mixed_counts)[:2]
+            grp = m2 + w2
+            groups_of_4.append(grp)
+            for p in grp: working.remove(p)
+
+    # ── 2단계: 나머지 pool → anchor 기반 greedy 구성 ──────
+    remaining_need = n_groups - len(groups_of_4)
+    if remaining_need > 0 and len(working) >= 4:
+        wpool = sorted(working, key=lambda p: (
+            game_counts.get(base_name(p), 0),
+            gender_count.get(get_gender(p), 99),
+            random.random()
+        ))
+        anchors        = wpool[:remaining_need]
+        remaining_pool = [p for p in wpool if p not in anchors]
+
+        for anchor in anchors:
+            three = _pick_3_for_anchor(anchor, remaining_pool, mixed_counts, league)
+            if three is None or len(three) < 3:
+                remaining_pool.insert(0, anchor)
+                continue
+            grp = [anchor] + three
+            groups_of_4.append(grp)
+            for p in grp:
+                if p in remaining_pool:
+                    remaining_pool.remove(p)
+
+        if len(remaining_pool) >= 4:
+            extra, _ = build_all_groups(remaining_pool, mixed_counts, league)
+            groups_of_4.extend(extra)
 
     # fallback
     if not groups_of_4:
-        groups_of_4, _ = build_all_groups(pool, mixed_counts)
+        groups_of_4, _ = build_all_groups(working, mixed_counts, league)
 
     matches = []
     for g in groups_of_4:
         if len(g) < 4: continue
         random.shuffle(g)
-        t1, t2 = best_pairing(g, global_state, round_state)
-        commit_pairing(t1, t2, global_state, round_state)
+        t1, t2 = best_pairing(g, gs, rs)
+        commit_pairing(t1, t2, gs, rs)
         mt = classify_match([base_name(p) for p in list(t1) + list(t2)])
         matches.append({"team1": t1, "team2": t2, "type": mt})
     return matches
@@ -346,6 +450,7 @@ def build_event_round(
     players:      List[str],
     game_counts:  Dict[str, int],
     mixed_counts: Dict[str, int],
+    league:       str = "A리그",
     min_games:    int = 3,
     max_games:    int = 4,
 ) -> List[Tuple[List[str], List[str]]]:
@@ -357,9 +462,9 @@ def build_event_round(
     - 반환: [(원본그룹, 중복태그그룹)] 리스트
     """
     all_groups: List[Tuple[List[str], List[str]]] = []
-    local_counts = dict(game_counts)  # 이벤트 내 누적 추적
+    local_counts = dict(game_counts)
 
-    for _ in range(20):  # 안전 상한
+    for _ in range(20):
         need = [p for p in players if local_counts.get(base_name(p), 0) < min_games]
         if not need:
             break
@@ -369,10 +474,18 @@ def build_event_round(
             if p not in need and local_counts.get(base_name(p), 0) < max_games
         ]
 
-        # pool: 미달자를 game_count 낮은 순(anchor 강제 포함 보장)
-        pool = sorted(need, key=lambda p: (local_counts.get(base_name(p), 0), random.random()))
+        # 성별별 인원 수 (소수 성별 anchor 우선)
+        gender_count: Dict[str, int] = {}
+        for p in players:
+            g = get_gender(p)
+            gender_count[g] = gender_count.get(g, 0) + 1
 
-        # 4의 배수로 맞추기
+        pool = sorted(need, key=lambda p: (
+            local_counts.get(base_name(p), 0),
+            gender_count.get(get_gender(p), 99),
+            random.random()
+        ))
+
         while len(pool) % 4 != 0:
             cands = [p for p in avail if p not in pool]
             cands = sort_by_mixed_least(cands, mixed_counts)
@@ -384,7 +497,7 @@ def build_event_round(
         if len(pool) < 4:
             break
 
-        groups, leftovers = build_all_groups(pool, mixed_counts)
+        groups, leftovers = build_all_groups(pool, mixed_counts, league)
 
         if leftovers:
             cands = [p for p in avail if p not in leftovers and p not in pool]
@@ -392,7 +505,7 @@ def build_event_round(
             while len(leftovers) < 4 and cands:
                 leftovers.append(cands.pop(0))
             if len(leftovers) >= 4:
-                eg, _ = build_all_groups(leftovers, mixed_counts)
+                eg, _ = build_all_groups(leftovers, mixed_counts, league)
                 groups.extend(eg)
 
         if not groups:
@@ -461,7 +574,7 @@ def generate_schedule_from_leagues(
         for r in range(1, num_rounds + 1):
             rname = f"{r}R"
             rs    = MatchState()
-            matches = make_round_matches(players, game_counts, mixed_counts, gs, rs)
+            matches = make_round_matches(players, game_counts, mixed_counts, gs, rs, league_name)
             for m in matches:
                 t1, t2, mt = m["team1"], m["team2"], m["type"]
                 for p_raw in list(t1) + list(t2):
@@ -476,7 +589,7 @@ def generate_schedule_from_leagues(
 
         # 이벤트 라운드 (4R)
         rs = MatchState()
-        for raw_g, tagged_g in build_event_round(players, game_counts, mixed_counts):
+        for raw_g, tagged_g in build_event_round(players, game_counts, mixed_counts, league_name):
             random.shuffle(tagged_g)
             t1, t2 = best_pairing(tagged_g, gs, rs)
             commit_pairing(t1, t2, gs, rs)
@@ -528,7 +641,7 @@ def parse_custom_players(text: str, league_prefix: str) -> List[str]:
 
 st.set_page_config(page_title="TELA Tennis Match", page_icon="🎾", layout="wide")
 
-st.title("🎾 TELA CLUB Random Match Generator v2.02")
+st.title("🎾 TELA CLUB Random Match Generator v2.0")
 st.markdown(
     "**매치 우선순위:** 동성복(남복/여복) → 혼복(2M+2W) → 잡복(3:1) &nbsp;|&nbsp; "
     "**혼성 자리 → 혼성 최소 참여자 우선** &nbsp;|&nbsp; "
