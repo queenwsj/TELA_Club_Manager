@@ -423,7 +423,11 @@ def make_round_matches(
             import math
             minority_cnt2 = min(len(men_all), len(women_all))
             minority_groups_needed = math.ceil(minority_cnt2 / 4) if minority_cnt2 > 0 else 0
-            dong_slots = min(dong_possible, max(0, n_groups - minority_groups_needed))
+            # dong_forced이면 최대한 동성 선처리 (소수성별은 anchor에서 처리)
+            if dong_forced:
+                dong_slots = min(dong_possible, n_groups)
+            else:
+                dong_slots = min(dong_possible, max(0, n_groups - minority_groups_needed))
             men_s   = sorted(men_all,   key=lambda p: (game_counts.get(base_name(p),0), random.random()))
             women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
             while len(men_s) >= 4 and len(groups_of_4) < dong_slots:
