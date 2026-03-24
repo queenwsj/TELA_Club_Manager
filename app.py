@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v2.04
+TELA CLUB Random Match Generator v2.0
 ======================================
 핵심 규칙:
   1. 1인 최소 3경기 보장 / 최대 4경기 제한
@@ -264,7 +264,7 @@ def _pick_3_for_anchor(
     mixed_counts: Dict[str, int],
     league: str = "A리그",
 ) -> Optional[List[str]]:
-    """anchor에 맞춰 나머지 3명 선발 (리그 우선순위 적용)."""
+    """anchor에 맞춰 나머지 3명 선발 (리그 우선순위 + 쿼터 적용)."""
     if len(remaining) < 3: return None
 
     g        = get_gender(anchor)
@@ -272,21 +272,68 @@ def _pick_3_for_anchor(
     women    = [p for p in remaining if get_gender(p) == "W"]
     priority = get_priority(league)
 
+    # 혼성 쿼터 여유 있는 이성 선수 필터 (쿼터 없는 리그는 전체 사용)
+    if g == "M":
+        opp_quota = [p for p in women if mixed_quota_ok(p, mixed_counts, league)]
+        opp_all   = women
+    else:
+        opp_quota = [p for p in men   if mixed_quota_ok(p, mixed_counts, league)]
+        opp_all   = men
+    anchor_ok = mixed_quota_ok(anchor, mixed_counts, league)
+
     def try_dongsong():
         if g == "M" and len(men) >= 3:   return men[:3]
         if g == "W" and len(women) >= 3: return women[:3]
         return None
 
     def try_mixed():
-        if g == "M" and len(men) >= 1 and len(women) >= 2:
-            return (sort_by_mixed_least(men, mixed_counts)[:1]
-                  + sort_by_mixed_least(women, mixed_counts)[:2])
-        if g == "W" and len(women) >= 1 and len(men) >= 2:
-            return (sort_by_mixed_least(women, mixed_counts)[:1]
-                  + sort_by_mixed_least(men, mixed_counts)[:2])
-        return None
+        # anchor 쿼터 초과면 혼복 불가
+        if not anchor_ok: return None
+        # 이성 파트너도 쿼터 여유 있는 선수만 사용
+        opp_use = opp_quota if len(opp_quota) >= 2 else []
+        if not opp_use: return None  # 쿼터 여유 이성 < 2명이면 혼복 불가
+        if g == "M":
+            m_use = [p for p in men if mixed_quota_ok(p, mixed_counts, league)]
+            if len(m_use) >= 1:
+                return sort_by_mixed_least(m_use, mixed_counts)[:1] + sort_by_mixed_least(opp_use, mixed_counts)[:2]
+            # same 쿼터 여유 없어도 이성이 있으면 잡복 방향으로
+            return None
+        else:
+            w_use = [p for p in women if mixed_quota_ok(p, mixed_counts, league)]
+            if len(w_use) >= 1:
+                return sort_by_mixed_least(w_use, mixed_counts)[:1] + sort_by_mixed_least(opp_use, mixed_counts)[:2]
+            return None
 
     def try_jabbok():
+        # 잡복도 혼성 → 쿼터 여유 있는 이성만 사용 (없으면 전체)
+        opp_use = opp_quota if opp_quota else opp_all
+        if g == "M":
+            if len(men) >= 2 and len(opp_use) >= 1:
+                m2 = list(men); random.shuffle(m2)
+                return m2[:2] + sort_by_mixed_least(opp_use, mixed_counts)[:1]
+            if len(opp_use) >= 3:
+                return sort_by_mixed_least(opp_use, mixed_counts)[:3]
+        elif g == "W":
+            if len(women) >= 2 and len(opp_use) >= 1:
+                w2 = list(women); random.shuffle(w2)
+                return w2[:2] + sort_by_mixed_least(opp_use, mixed_counts)[:1]
+            if len(opp_use) >= 3:
+                return sort_by_mixed_least(opp_use, mixed_counts)[:3]
+        return None
+
+    dispatch = {"동성": try_dongsong, "혼복": try_mixed, "잡복": try_jabbok}
+    for ptype in priority:
+        result = dispatch[ptype]()
+        if result is not None: return result
+
+    # fallback: 쿼터 무시하고 재시도 (3~4회 보장 우선)
+    def try_mixed_fallback():
+        if g == "M" and len(men) >= 1 and len(women) >= 2:
+            return sort_by_mixed_least(men, mixed_counts)[:1] + sort_by_mixed_least(women, mixed_counts)[:2]
+        if g == "W" and len(women) >= 1 and len(men) >= 2:
+            return sort_by_mixed_least(women, mixed_counts)[:1] + sort_by_mixed_least(men, mixed_counts)[:2]
+        return None
+    def try_jabbok_fallback():
         if g == "M":
             if len(men) >= 2 and len(women) >= 1:
                 m2 = list(men); random.shuffle(m2)
@@ -301,9 +348,8 @@ def _pick_3_for_anchor(
                 return sort_by_mixed_least(men, mixed_counts)[:3]
         return None
 
-    dispatch = {"동성": try_dongsong, "혼복": try_mixed, "잡복": try_jabbok}
-    for ptype in priority:
-        result = dispatch[ptype]()
+    for fn in [try_dongsong, try_mixed_fallback, try_jabbok_fallback]:
+        result = fn()
         if result is not None: return result
 
     rest = sort_by_mixed_least(remaining, mixed_counts)
@@ -317,19 +363,16 @@ def make_round_matches(
     gs: MatchState,
     rs: MatchState,
     league: str = "A리그",
+    dong_forced: bool = False,
 ) -> List[dict]:
     """
     리그 우선순위 + 쿼터를 고려해 그룹 구성 후 매치 생성.
 
-    쿼터 적용 전략 (선처리 레벨에서만):
-    - 혼복 우선 리그(B리그): 혼복 선처리 시 쿼터 여유 있는 선수만 투입
-    - 쿼터 소진 시 자동으로 동성복 anchor 방식으로 전환
-    - anchor/이벤트 로직은 기존 그대로 유지 → 3~4회 보장 안전
+    dong_forced=True: 동성복 가능하면 동성 선처리 우선 (마지막 라운드 등)
     """
     n_groups = len(players) // 4
     if n_groups == 0: return []
 
-    # 성별 인원 수 (소수성별 anchor 우선 배정)
     gender_count: Dict[str, int] = {}
     for p in players:
         g = get_gender(p)
@@ -351,7 +394,147 @@ def make_round_matches(
 
     top_ptype = priority[0]
 
-    # ── 1단계: 1순위 타입 선처리 ──────────────────────────
+    # ── 1단계: 1순위 타입 선처리 ─────────────────────────────
+    if top_ptype == "동성":
+        preprocess_slots = min(max(0, n_groups - 1), len(men_all)//4 + len(women_all)//4)
+        men_s   = sorted(men_all,   key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+        women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+        while len(men_s) >= 4 and len(groups_of_4) < preprocess_slots:
+            grp = men_s[:4]; men_s = men_s[4:]
+            groups_of_4.append(grp); [working.remove(p) for p in grp]
+        while len(women_s) >= 4 and len(groups_of_4) < preprocess_slots:
+            grp = women_s[:4]; women_s = women_s[4:]
+            groups_of_4.append(grp); [working.remove(p) for p in grp]
+
+    elif top_ptype == "혼복":
+        quota_ok_m = [p for p in men_all   if mixed_quota_ok(p, mixed_counts, league)]
+        quota_ok_w = [p for p in women_all if mixed_quota_ok(p, mixed_counts, league)]
+        max_by_quota = min(len(quota_ok_m)//2, len(quota_ok_w)//2)
+        minority_cnt = min(len(men_all), len(women_all))
+
+        # 동성 선처리 조건:
+        #   1) 혼복 쿼터 소진 (mixed_possible=False) 또는
+        #   2) dong_forced=True (마지막 라운드 동성 보장)
+        dong_possible = len(men_all)//4 + len(women_all)//4
+        mixed_possible = (max_by_quota > 0 and minority_cnt >= 2)
+
+        if not mixed_possible or dong_forced:
+            # 소수성별이 들어갈 그룹 최소 1개 확보 (3~4회 보장 위반 방지)
+            import math
+            minority_cnt2 = min(len(men_all), len(women_all))
+            minority_groups_needed = math.ceil(minority_cnt2 / 4) if minority_cnt2 > 0 else 0
+            dong_slots = min(dong_possible, max(0, n_groups - minority_groups_needed))
+            men_s   = sorted(men_all,   key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+            women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+            while len(men_s) >= 4 and len(groups_of_4) < dong_slots:
+                grp = men_s[:4]; men_s = men_s[4:]
+                groups_of_4.append(grp); [working.remove(p) for p in grp]
+            while len(women_s) >= 4 and len(groups_of_4) < dong_slots:
+                grp = women_s[:4]; women_s = women_s[4:]
+                groups_of_4.append(grp); [working.remove(p) for p in grp]
+            # dong_forced이고 선처리가 안 됐으면 anchor 방식에서 동성 우선 적용
+            # (이후 anchor 방식에서 dong_forced 플래그를 활용)
+        else:
+            # 혼복 선처리 (anchor용 슬롯 1개 확보)
+            preprocess_slots = min(max(0, n_groups - 1), minority_cnt // 2, max_by_quota)
+            while len(groups_of_4) < preprocess_slots:
+                men_avail   = [p for p in working if get_gender(p)=="M"
+                               and mixed_quota_ok(p, mixed_counts, league)]
+                women_avail = [p for p in working if get_gender(p)=="W"
+                               and mixed_quota_ok(p, mixed_counts, league)]
+                if len(men_avail) < 2 or len(women_avail) < 2: break
+                m2 = sort_by_mixed_least(men_avail,   mixed_counts)[:2]
+                w2 = sort_by_mixed_least(women_avail, mixed_counts)[:2]
+                grp = m2 + w2
+                groups_of_4.append(grp); [working.remove(p) for p in grp]
+
+    # ── 2단계: 나머지 → anchor 기반 greedy ───────────────────
+    remaining_need = n_groups - len(groups_of_4)
+    if remaining_need > 0 and len(working) >= 4:
+        wpool = sorted(working, key=sort_key)
+
+        men_w   = [p for p in wpool if get_gender(p) == "M"]
+        women_w = [p for p in wpool if get_gender(p) == "W"]
+
+        # dong_forced이고 아직 동성 선처리가 안된 경우:
+        # 다수성별(동성 구성 가능한 쪽)을 anchor 앞에 배치
+        dong_still_needed = dong_forced and len(groups_of_4) == 0
+        if dong_still_needed and len(women_w) >= 4:
+            # 여자4명 이상 → 여자 anchor 우선 (여복 유도)
+            first_g, second_g = women_w, men_w
+        elif dong_still_needed and len(men_w) >= 4:
+            # 남자4명 이상 → 남자 anchor 우선 (남복 유도)
+            first_g, second_g = men_w, women_w
+        elif len(men_w) <= len(women_w):
+            first_g, second_g = men_w, women_w   # 소수성별 우선 (기본)
+        else:
+            first_g, second_g = women_w, men_w
+
+        interleaved: List[str] = []
+        for a, b in zip_longest(first_g, second_g):
+            if a is not None: interleaved.append(a)
+            if b is not None: interleaved.append(b)
+        anchors        = interleaved[:remaining_need]
+        remaining_pool = [p for p in wpool if p not in anchors]
+
+        # dong_forced 시 anchor → _pick_3_for_anchor에 "동성 우선" 강제
+        anchor_league = "A리그" if dong_still_needed else league  # A리그 우선순위=동성>혼복
+
+        for anchor in anchors:
+            three = _pick_3_for_anchor(anchor, remaining_pool, mixed_counts, anchor_league)
+            if three is None or len(three) < 3:
+                # 동성 강제 실패 → 원래 리그 우선순위로 재시도
+                three = _pick_3_for_anchor(anchor, remaining_pool, mixed_counts, league)
+            if three is None or len(three) < 3:
+                remaining_pool.insert(0, anchor); continue
+            grp = [anchor] + three
+            groups_of_4.append(grp)
+            for p in grp:
+                if p in remaining_pool: remaining_pool.remove(p)
+
+        if len(remaining_pool) >= 4:
+            extra, _ = build_all_groups(remaining_pool, mixed_counts, league)
+            groups_of_4.extend(extra)
+
+    if not groups_of_4:
+        groups_of_4, _ = build_all_groups(working, mixed_counts, league)
+
+    matches = []
+    for g in groups_of_4:
+        if len(g) < 4: continue
+        random.shuffle(g)
+        t1, t2 = best_pairing(g, gs, rs)
+        commit_pairing(t1, t2, gs, rs)
+        mt = classify_match([base_name(p) for p in list(t1) + list(t2)])
+        matches.append({"team1": t1, "team2": t2, "type": mt})
+    return matches
+
+
+    n_groups = len(players) // 4
+    if n_groups == 0: return []
+
+    gender_count: Dict[str, int] = {}
+    for p in players:
+        g = get_gender(p)
+        gender_count[g] = gender_count.get(g, 0) + 1
+
+    priority = get_priority(league)
+
+    def sort_key(p):
+        return (
+            game_counts.get(base_name(p), 0),
+            gender_count.get(get_gender(p), 99),
+            random.random()
+        )
+
+    working   = sorted(players, key=sort_key)
+    men_all   = [p for p in working if get_gender(p) == "M"]
+    women_all = [p for p in working if get_gender(p) == "W"]
+    groups_of_4: List[List[str]] = []
+
+    top_ptype = priority[0]
+
+    # ── 1단계: 1순위 타입 선처리 ─────────────────────────────
     if top_ptype == "동성":
         # 순수 동성 그룹 최대 구성 (anchor용 슬롯 최소 1개 확보)
         preprocess_slots = min(max(0, n_groups - 1), len(men_all)//4 + len(women_all)//4)
@@ -359,57 +542,54 @@ def make_round_matches(
         women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
         while len(men_s) >= 4 and len(groups_of_4) < preprocess_slots:
             grp = men_s[:4]; men_s = men_s[4:]
-            groups_of_4.append(grp)
-            for p in grp: working.remove(p)
+            groups_of_4.append(grp); [working.remove(p) for p in grp]
         while len(women_s) >= 4 and len(groups_of_4) < preprocess_slots:
             grp = women_s[:4]; women_s = women_s[4:]
-            groups_of_4.append(grp)
-            for p in grp: working.remove(p)
+            groups_of_4.append(grp); [working.remove(p) for p in grp]
 
     elif top_ptype == "혼복":
-        minority_cnt = min(len(men_all), len(women_all))
-        # 쿼터 여유 있는 선수만으로 구성 가능한 혼복 수
+        # 쿼터 여유 있는 선수 수로 이번 라운드 최대 혼복 경기 수 계산
         quota_ok_m = [p for p in men_all   if mixed_quota_ok(p, mixed_counts, league)]
         quota_ok_w = [p for p in women_all if mixed_quota_ok(p, mixed_counts, league)]
         max_by_quota = min(len(quota_ok_m)//2, len(quota_ok_w)//2)
-        # anchor용 슬롯 확보 + 쿼터 상한
-        preprocess_slots = min(max(0, n_groups - 1), minority_cnt // 2, max_by_quota)
+        minority_cnt = min(len(men_all), len(women_all))
 
-        if preprocess_slots == 0 and n_groups > 0:
-            # 쿼터 소진 → 동성 선처리로 자동 전환
-            dong_slots = min(max(0, n_groups - 1), len(men_all)//4 + len(women_all)//4)
-            men_s   = sorted(men_all,   key=lambda p: (game_counts.get(base_name(p),0), random.random()))
-            women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
-            while len(men_s) >= 4 and len(groups_of_4) < dong_slots:
-                grp = men_s[:4]; men_s = men_s[4:]
-                groups_of_4.append(grp)
-                for p in grp: working.remove(p)
-            while len(women_s) >= 4 and len(groups_of_4) < dong_slots:
-                grp = women_s[:4]; women_s = women_s[4:]
-                groups_of_4.append(grp)
-                for p in grp: working.remove(p)
-        else:
+        # 혼복 가능 여부: 쿼터 여유 있는 남녀가 각 2명 이상
+        mixed_possible = (max_by_quota > 0 and minority_cnt >= 2)
+
+        if mixed_possible:
+            # 혼복 선처리 (anchor용 슬롯 1개 확보)
+            preprocess_slots = min(max(0, n_groups - 1), minority_cnt // 2, max_by_quota)
             while len(groups_of_4) < preprocess_slots:
-                men_avail   = [p for p in working if get_gender(p) == "M"
+                men_avail   = [p for p in working if get_gender(p)=="M"
                                and mixed_quota_ok(p, mixed_counts, league)]
-                women_avail = [p for p in working if get_gender(p) == "W"
+                women_avail = [p for p in working if get_gender(p)=="W"
                                and mixed_quota_ok(p, mixed_counts, league)]
                 if len(men_avail) < 2 or len(women_avail) < 2: break
                 m2 = sort_by_mixed_least(men_avail,   mixed_counts)[:2]
                 w2 = sort_by_mixed_least(women_avail, mixed_counts)[:2]
                 grp = m2 + w2
-                groups_of_4.append(grp)
-                for p in grp: working.remove(p)
+                groups_of_4.append(grp); [working.remove(p) for p in grp]
+        else:
+            # 혼복 불가 → 동성 선처리로 전환 (여자4명이면 여복 보장)
+            dong_slots = min(n_groups, len(men_all)//4 + len(women_all)//4)
+            men_s   = sorted(men_all,   key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+            women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
+            while len(men_s) >= 4 and len(groups_of_4) < dong_slots:
+                grp = men_s[:4]; men_s = men_s[4:]
+                groups_of_4.append(grp); [working.remove(p) for p in grp]
+            while len(women_s) >= 4 and len(groups_of_4) < dong_slots:
+                grp = women_s[:4]; women_s = women_s[4:]
+                groups_of_4.append(grp); [working.remove(p) for p in grp]
 
-    # ── 2단계: 나머지 → anchor 기반 greedy (기존 로직 유지) ─
+    # ── 2단계: 나머지 → anchor 기반 greedy ───────────────────
     remaining_need = n_groups - len(groups_of_4)
     if remaining_need > 0 and len(working) >= 4:
         wpool = sorted(working, key=sort_key)
 
-        # 남↔여 교차(interleave) anchor: 소수 성별을 먼저 배치
+        # 소수 성별이 anchor 앞자리를 차지하도록 교차 배치
         men_w   = [p for p in wpool if get_gender(p) == "M"]
         women_w = [p for p in wpool if get_gender(p) == "W"]
-        # 소수 성별이 anchor 앞자리를 차지하도록
         if len(men_w) <= len(women_w):
             first_g, second_g = men_w, women_w
         else:
@@ -564,7 +744,12 @@ def generate_schedule_from_leagues(
         for r in range(1, num_rounds + 1):
             rname = f"{r}R"
             rs    = MatchState()
-            matches = make_round_matches(players, game_counts, mixed_counts, gs, rs, league_name)
+            # 마지막 라운드에 dong_forced=True → B리그에서 동성복 보장
+            is_last = (r == num_rounds)
+            matches = make_round_matches(
+                players, game_counts, mixed_counts, gs, rs, league_name,
+                dong_forced=is_last
+            )
             for m in matches:
                 t1, t2, mt = m["team1"], m["team2"], m["type"]
                 for p_raw in list(t1) + list(t2):
@@ -649,7 +834,7 @@ def stats_to_df(all_stats: Dict[str, PlayerStats]) -> pd.DataFrame:
 
 st.set_page_config(page_title="TELA Tennis Match", page_icon="🎾", layout="wide")
 
-st.title("🎾 TELA CLUB Random Match Generator v2.04")
+st.title("🎾 TELA CLUB Random Match Generator v2.0")
 st.markdown(
     "**A리그:** 동성복 → 혼복 → 잡복 &nbsp;|&nbsp; "
     "**B리그:** 혼복(≤2회) → 동성복(≥1회) → 잡복 &nbsp;|&nbsp; "
