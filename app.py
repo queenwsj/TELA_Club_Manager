@@ -884,6 +884,8 @@ if page == "📊 점수판":
         for idx, match in enumerate(schedule):
             s1 = session_state.get(f"sc1_{idx}", 0)
             s2 = session_state.get(f"sc2_{idx}", 0)
+            # 저장된 점수가 있으면(score1 키 존재) locked 상태
+            saved = str(idx) in session_state.get("sb_scores", {})
             matches_data.append({
                 "idx":    idx,
                 "round":  match["round"],
@@ -895,6 +897,7 @@ if page == "📊 점수판":
                 "type":   match["type"],
                 "s1":     s1,
                 "s2":     s2,
+                "saved":  saved,
             })
 
         matches_json = _json.dumps(matches_data, ensure_ascii=False)
@@ -902,187 +905,154 @@ if page == "📊 점수판":
 
         html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <style>
-*{{ box-sizing:border-box; margin:0; padding:0; }}
-body{{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-       background:#f5f5f5; padding:6px; }}
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      background:#f5f5f5;padding:6px;}}
 
-/* ── 라운드: 세로 스택 ─────────────────────────────── */
-.rnd-block {{
-    margin-bottom: 10px;
-    background: #fff;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 1px 4px rgba(0,0,0,.08);
-}}
-.rnd-hdr {{
-    background: #1a1a2e;
-    color: #fff;
-    font-weight: 700;
-    font-size: 0.92rem;
-    text-align: center;
-    padding: 8px 4px;
-    letter-spacing: 1px;
-}}
+/* 라운드 블록 */
+.rnd-block{{margin-bottom:10px;background:#fff;border-radius:8px;
+            overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);}}
+.rnd-hdr{{background:#1a1a2e;color:#fff;font-weight:700;font-size:0.92rem;
+           text-align:center;padding:8px 4px;letter-spacing:1px;}}
 
-/* ── 리그 구분 ─────────────────────────────────────── */
-.lg-section {{ padding: 6px 8px 4px; }}
-.lg-lbl {{
-    font-size: 0.75rem;
-    font-weight: 700;
-    padding: 2px 0 4px 6px;
-    margin-bottom: 4px;
-}}
+/* 리그 섹션 */
+.lg-section{{padding:6px 8px 4px;}}
+.lg-lbl{{font-size:0.75rem;font-weight:700;padding:2px 0 4px 6px;margin-bottom:4px;}}
 
-/* ── 경기 2열 그리드 ────────────────────────────────── */
-/* 아이폰 17 기준(393px) → 사이드바 제외 실제 콘텐츠 너비 ~360px
-   2열이면 1열당 약 175px → 충분 */
-.match-grid {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 5px;
-}}
+/* 경기 1열 */
+.match-list{{display:flex;flex-direction:column;gap:6px;}}
 
-/* ── 경기 카드 ─────────────────────────────────────── */
-.mc {{
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
-    overflow: hidden;
-    background: #fff;
-}}
-.mc-body {{
-    display: flex;
-    align-items: stretch;
-}}
-.mc-team-l {{ flex:2; padding:4px 2px 2px 5px; min-width:0; }}
-.mc-team-r {{ flex:2; padding:4px 5px 2px 2px; text-align:right; min-width:0; }}
-.mc-score {{
-    flex:0 0 22px;
-    background:#f0f0f0;
-    display:flex; align-items:center; justify-content:center;
-    font-size:0.88rem; font-weight:800; color:#222;
-}}
-.mc-vs {{
-    flex:0 0 14px;
-    display:flex; align-items:center; justify-content:center;
-    font-size:0.58rem; color:#bbb;
-}}
-.mc-ft {{
-    background:#fafafa; font-size:0.6rem; color:#aaa;
-    text-align:right; padding:1px 5px;
-}}
-.pn {{ font-size:0.72rem; font-weight:600; color:#222;
-       line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-.pw {{ color:#b71c1c !important; font-weight:800 !important; }}
+/* 경기 카드 */
+.mc{{border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;background:#fff;}}
+.mc-body{{display:flex;align-items:stretch;}}
+.mc-team-l{{flex:3;padding:5px 2px 3px 7px;min-width:0;}}
+.mc-team-r{{flex:3;padding:5px 7px 3px 2px;text-align:right;min-width:0;}}
+.mc-score{{flex:0 0 26px;background:#f0f0f0;display:flex;align-items:center;
+            justify-content:center;font-size:0.95rem;font-weight:800;color:#222;}}
+.mc-vs{{flex:0 0 16px;display:flex;align-items:center;justify-content:center;
+         font-size:0.6rem;color:#bbb;}}
+.mc-ft{{background:#fafafa;font-size:0.62rem;color:#aaa;text-align:right;padding:2px 7px;}}
+.pn{{font-size:0.78rem;font-weight:600;color:#222;line-height:1.4;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}
+.pw{{color:#b71c1c!important;font-weight:800!important;}}
 
-/* ── 입력행: [- N +] [저장] [- N +] ─────────────────── */
-.inp-row {{
-    display:flex; align-items:center; gap:2px;
-    padding:3px 2px 4px;
-}}
-.inp-box {{
-    flex:1; display:flex; align-items:center;
-    border:1px solid #ccc; border-radius:5px;
-    overflow:hidden; background:#f8f8f8; height:32px;
-    min-width:0;
-}}
-.inp-btn {{
-    width:26px; height:32px; border:none;
-    background:#e8e8e8; font-size:1rem; font-weight:700;
-    cursor:pointer; color:#333; flex-shrink:0;
-    display:flex; align-items:center; justify-content:center;
-    -webkit-tap-highlight-color:transparent;
-    touch-action:manipulation;
-}}
-.inp-btn:active {{ background:#d0d0d0; }}
-.inp-num {{
-    flex:1; text-align:center; font-size:0.95rem; font-weight:700;
-    border:none; background:transparent; width:100%;
-    -moz-appearance:textfield;
-}}
+/* 저장된 카드 배경 */
+.mc.saved-card{{background:#f9fff9;border-color:#a5d6a7;}}
+
+/* 입력행 */
+.inp-row{{display:flex;align-items:center;gap:3px;padding:4px 4px 5px;}}
+.inp-box{{flex:1;display:flex;align-items:center;border:1px solid #ccc;
+           border-radius:5px;overflow:hidden;background:#f8f8f8;height:36px;min-width:0;}}
+.inp-box.locked{{background:#eee;border-color:#ddd;}}
+
+/* - + 버튼 */
+.inp-btn{{width:30px;height:36px;border:none;background:#e8e8e8;font-size:1.05rem;
+           font-weight:700;cursor:pointer;color:#333;flex-shrink:0;
+           display:flex;align-items:center;justify-content:center;
+           -webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
+.inp-btn:active{{background:#d0d0d0;}}
+.inp-btn:disabled{{color:#bbb;cursor:default;background:#eee;}}
+.inp-btn.hidden{{visibility:hidden;}}
+
+/* 점수 숫자 표시 */
+.inp-num{{flex:1;text-align:center;font-size:1rem;font-weight:700;
+           border:none;background:transparent;width:100%;
+           -moz-appearance:textfield;}}
 .inp-num::-webkit-inner-spin-button,
-.inp-num::-webkit-outer-spin-button {{ -webkit-appearance:none; }}
-.save-btn {{
-    flex:0 0 44px; height:32px;
-    background:#e53935; color:#fff; border:none;
-    border-radius:5px; font-size:0.78rem; font-weight:700;
-    cursor:pointer;
-    -webkit-tap-highlight-color:transparent;
-    touch-action:manipulation;
+.inp-num::-webkit-outer-spin-button{{-webkit-appearance:none;}}
+.inp-num:disabled{{color:#333;}}
+
+/* 저장 버튼 */
+.save-btn{{flex:0 0 54px;height:36px;background:#e53935;color:#fff;border:none;
+            border-radius:5px;font-size:0.82rem;font-weight:700;cursor:pointer;
+            -webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
+.save-btn:active{{background:#b71c1c;}}
+
+/* 수정 버튼 */
+.edit-btn{{flex:0 0 54px;height:36px;background:#1565c0;color:#fff;border:none;
+            border-radius:5px;font-size:0.82rem;font-weight:700;cursor:pointer;
+            -webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
+.edit-btn:active{{background:#0d47a1;}}
+
+/* 저장완료 배지 */
+.saved-badge{{
+    font-size:0.68rem;color:#2e7d32;font-weight:700;
+    text-align:center;padding:2px 0 3px;
+    display:flex;align-items:center;justify-content:center;gap:3px;
 }}
-.save-btn:active {{ background:#b71c1c; }}
 </style>
 </head><body>
-
 <div id="root"></div>
-
 <script>
 (function(){{
   const matches = {matches_json};
   const rounds  = {rounds_json};
+  const MAX = 6, MIN = 0;
 
+  // 로컬 점수 상태
   const scores = {{}};
-  matches.forEach(m => {{ scores[m.idx] = {{s1:m.s1, s2:m.s2}}; }});
+  // 잠금 상태 (저장된 경기)
+  const locked = {{}};
 
-  const MAX_SCORE = 6;
-  const MIN_SCORE = 0;
+  matches.forEach(m => {{
+    scores[m.idx] = {{s1: m.s1, s2: m.s2}};
+    locked[m.idx] = m.saved;
+  }});
 
   function pWin(a,b){{ return (a+b)>0 && a>b; }}
 
   function render(){{
     const root = document.getElementById('root');
     root.innerHTML = '';
-
     rounds.forEach(rnd => {{
       const rndMs = matches.filter(m => m.round === rnd);
       if(!rndMs.length) return;
-
       const block = document.createElement('div');
       block.className = 'rnd-block';
-
       const lbl = rnd.replace('(이벤트)','') + (rnd.includes('이벤트')?' ⭐':'');
       block.innerHTML = `<div class="rnd-hdr">${{lbl}}</div>`;
-
       const leagues = [...new Set(rndMs.map(m=>m.league))];
       leagues.forEach(lg => {{
         const lgColor = lg.includes('A') ? '#2e7d32' : '#1565c0';
         const sec = document.createElement('div');
         sec.className = 'lg-section';
-
         const lblDiv = document.createElement('div');
         lblDiv.className = 'lg-lbl';
         lblDiv.style.cssText = `color:${{lgColor}};border-left:3px solid ${{lgColor}};padding-left:6px;`;
         lblDiv.textContent = lg;
         sec.appendChild(lblDiv);
-
-        const grid = document.createElement('div');
-        grid.className = 'match-grid';
-
+        const list = document.createElement('div');
+        list.className = 'match-list';
         rndMs.filter(m=>m.league===lg).forEach(m => {{
-          grid.appendChild(buildMatch(m, lgColor));
+          list.appendChild(buildMatch(m, lgColor));
         }});
-
-        sec.appendChild(grid);
+        sec.appendChild(list);
         block.appendChild(sec);
       }});
-
       root.appendChild(block);
     }});
-
-    // 높이 자동 통보 (Streamlit iframe 여백 제거)
-    const h = document.body.scrollHeight;
-    window.parent.postMessage({{type:'streamlit:setFrameHeight', height:h+20}}, '*');
+    notifyHeight();
   }}
 
   function buildMatch(m, lgColor){{
     const wrap = document.createElement('div');
-    const sc = scores[m.idx];
-    const t1w = pWin(sc.s1,sc.s2);
-    const t2w = pWin(sc.s2,sc.s1);
+    wrap.id = 'wrap_' + m.idx;
+    refreshMatch(m, lgColor, wrap);
+    return wrap;
+  }}
+
+  function refreshMatch(m, lgColor, wrap){{
+    const sc  = scores[m.idx];
+    const lk  = locked[m.idx];
+    const t1w = pWin(sc.s1, sc.s2);
+    const t2w = pWin(sc.s2, sc.s1);
+    const savedCls = lk ? ' saved-card' : '';
+    const btnHide  = lk ? ' hidden' : '';
 
     wrap.innerHTML = `
-<div class="mc" style="border-left:4px solid ${{lgColor}}">
+<div class="mc${{savedCls}}" style="border-left:4px solid ${{lgColor}}">
   <div class="mc-body">
     <div class="mc-team-l">
       <div class="pn${{t1w?' pw':''}}">${{m.t1a}}</div>
@@ -1099,39 +1069,55 @@ body{{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   <div class="mc-ft">${{m.type}}</div>
 </div>
 <div class="inp-row">
-  <div class="inp-box">
-    <button class="inp-btn" ontouchstart="adj(${{m.idx}},1,-1)" onclick="adj(${{m.idx}},1,-1)">−</button>
-    <input class="inp-num" type="number" id="i1_${{m.idx}}"
-           value="${{sc.s1}}" min="${{MIN_SCORE}}" max="${{MAX_SCORE}}"
-           oninput="onInp(${{m.idx}},1,this.value)">
-    <button class="inp-btn" ontouchstart="adj(${{m.idx}},1,1)" onclick="adj(${{m.idx}},1,1)">+</button>
+  <div class="inp-box${{lk?' locked':''}}">
+    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
+            ontouchend="ev(event,()=>adj(${{m.idx}},1,-1))"
+            onclick="adj(${{m.idx}},1,-1)">−</button>
+    <input  class="inp-num" type="number" id="i1_${{m.idx}}"
+            value="${{sc.s1}}" min="${{MIN}}" max="${{MAX}}"
+            ${{lk?'disabled':''}}
+            oninput="onInp(${{m.idx}},1,this.value)">
+    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
+            ontouchend="ev(event,()=>adj(${{m.idx}},1,1))"
+            onclick="adj(${{m.idx}},1,1)">+</button>
   </div>
-  <button class="save-btn" onclick="doSave(${{m.idx}})">저장</button>
-  <div class="inp-box">
-    <button class="inp-btn" ontouchstart="adj(${{m.idx}},2,-1)" onclick="adj(${{m.idx}},2,-1)">−</button>
-    <input class="inp-num" type="number" id="i2_${{m.idx}}"
-           value="${{sc.s2}}" min="${{MIN_SCORE}}" max="${{MAX_SCORE}}"
-           oninput="onInp(${{m.idx}},2,this.value)">
-    <button class="inp-btn" ontouchstart="adj(${{m.idx}},2,1)" onclick="adj(${{m.idx}},2,1)">+</button>
+  ${{lk
+    ? `<button class="edit-btn" onclick="doEdit(${{m.idx}})">수정</button>`
+    : `<button class="save-btn" onclick="doSave(${{m.idx}})">저장</button>`
+  }}
+  <div class="inp-box${{lk?' locked':''}}">
+    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
+            ontouchend="ev(event,()=>adj(${{m.idx}},2,-1))"
+            onclick="adj(${{m.idx}},2,-1)">−</button>
+    <input  class="inp-num" type="number" id="i2_${{m.idx}}"
+            value="${{sc.s2}}" min="${{MIN}}" max="${{MAX}}"
+            ${{lk?'disabled':''}}
+            oninput="onInp(${{m.idx}},2,this.value)">
+    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
+            ontouchend="ev(event,()=>adj(${{m.idx}},2,1))"
+            onclick="adj(${{m.idx}},2,1)">+</button>
   </div>
-</div>`;
-    return wrap;
+</div>
+${{lk ? '<div class="saved-badge">✅ 저장완료</div>' : ''}}`;
   }}
 
+  // touchend 중복 방지 (click도 발생하므로)
+  function ev(e, fn){{ e.preventDefault(); fn(); }}
+
   window.adj = function(idx,team,delta){{
+    if(locked[idx]) return;
     const el = document.getElementById((team===1?'i1_':'i2_')+idx);
     let v = parseInt(el.value||'0') + delta;
-    if(v < MIN_SCORE) v = MIN_SCORE;
-    if(v > MAX_SCORE) v = MAX_SCORE;
+    if(v<MIN) v=MIN; if(v>MAX) v=MAX;
     el.value = v;
     scores[idx][team===1?'s1':'s2'] = v;
     document.getElementById((team===1?'d1_':'d2_')+idx).textContent = v;
   }};
 
   window.onInp = function(idx,team,val){{
+    if(locked[idx]) return;
     let v = parseInt(val)||0;
-    if(v < MIN_SCORE) v = MIN_SCORE;
-    if(v > MAX_SCORE) v = MAX_SCORE;
+    if(v<MIN) v=MIN; if(v>MAX) v=MAX;
     scores[idx][team===1?'s1':'s2'] = v;
     document.getElementById((team===1?'d1_':'d2_')+idx).textContent = v;
   }};
@@ -1146,6 +1132,24 @@ body{{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     window.location.href = url.toString();
   }};
 
+  window.doEdit = function(idx){{
+    locked[idx] = false;
+    // 해당 wrap만 다시 그리기
+    const wrap = document.getElementById('wrap_'+idx);
+    const m = matches.find(x=>x.idx===idx);
+    // lgColor 재계산
+    const lgColor = m.league.includes('A') ? '#2e7d32' : '#1565c0';
+    refreshMatch(m, lgColor, wrap);
+    notifyHeight();
+  }};
+
+  function notifyHeight(){{
+    setTimeout(()=>{{
+      const h = document.documentElement.scrollHeight;
+      window.parent.postMessage({{type:'streamlit:setFrameHeight',height:h+10}},'*');
+    }}, 100);
+  }}
+
   render();
 }})();
 </script>
@@ -1153,8 +1157,9 @@ body{{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         return html
 
     sb_html = build_scoreboard_html(schedule, rounds, st.session_state, selected_date)
-    # height=1은 JS postMessage로 자동 조절됨 (여백 최소화)
-    st.components.v1.html(sb_html, height=max(400, len(schedule) * 90), scrolling=False)
+    n_matches = len(schedule)
+    est_height = 120 + n_matches * 130
+    st.components.v1.html(sb_html, height=est_height, scrolling=False)
 
     # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
