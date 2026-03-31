@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v3.00
+TELA CLUB Random Match Generator v2.06
 ======================================
 변경사항:
   - 사이드바 메뉴: 점수판 → 랜덤페어 순서
@@ -843,13 +843,20 @@ if page == "📊 점수판":
     display_date = selected_date.replace("-","년 ",1).replace("-","월 ")+"일"
     st.markdown(f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:12px;">{display_date}</div>', unsafe_allow_html=True)
 
-    # ── HTML 기반 좌우 컬럼 그리드 (모바일 강제 flex row) ──
-    # 각 경기의 점수는 st.number_input으로 별도 렌더링하되
-    # 카드 시각화는 HTML로 처리
+    # ── session_state key 초기화 (최초 1회) ─────────────────
+    # number_input은 key 기반으로만 관리 → value= 파라미터 제거
+    # 이렇게 해야 +/- 버튼이 즉시 반영되고 카드 표시값과 일치함
+    for idx, match in enumerate(schedule):
+        k1 = f"sc1_{idx}"; k2 = f"sc2_{idx}"
+        saved_sc = st.session_state["sb_scores"].get(str(idx), {})
+        if k1 not in st.session_state:
+            st.session_state[k1] = saved_sc.get("score1", 0)
+        if k2 not in st.session_state:
+            st.session_state[k2] = saved_sc.get("score2", 0)
 
-    # 먼저 점수 입력 위젯을 (숨겨진 영역 없이) 각 라운드 컬럼 안에서 처리
-    n_rounds  = len(rounds)
-    st_cols   = st.columns(n_rounds, gap="small")
+    # ── 라운드별 좌우 컬럼 (모바일 강제 flex row) ────────────
+    n_rounds = len(rounds)
+    st_cols  = st.columns(n_rounds, gap="small")
 
     for col_i, (rnd, stcol) in enumerate(zip(rounds, st_cols)):
         rnd_matches = [(idx, m) for idx, m in enumerate(schedule) if m["round"] == rnd]
@@ -859,7 +866,6 @@ if page == "📊 점수판":
             rnd_label = rnd.replace("(이벤트)","") + (" ⭐" if "이벤트" in rnd else "")
             st.markdown(f'<div class="rnd-header">{rnd_label}</div>', unsafe_allow_html=True)
 
-            # 리그별 분리
             leagues_in_rnd = []
             seen_lg = set()
             for _, m in rnd_matches:
@@ -872,35 +878,57 @@ if page == "📊 점수판":
 
                 lg_color = "#2e7d32" if "A" in league else "#1565c0"
                 st.markdown(
-                    f'<div class="lg-label" style="color:{lg_color};border-left:3px solid {lg_color};padding-left:6px;">'
+                    f'<div class="lg-label" style="color:{lg_color};'
+                    f'border-left:3px solid {lg_color};padding-left:6px;">'
                     f'{league}</div>', unsafe_allow_html=True
                 )
 
                 for idx, match in lg_matches:
-                    sc   = scores.get(str(idx), {})
-                    s1v  = sc.get("score1", 0)
-                    s2v  = sc.get("score2", 0)
-                    t1a  = pname(match["team1"][0])
-                    t1b  = pname(match["team1"][1])
-                    t2a  = pname(match["team2"][0])
-                    t2b  = pname(match["team2"][1])
+                    t1a   = pname(match["team1"][0])
+                    t1b   = pname(match["team1"][1])
+                    t2a   = pname(match["team2"][0])
+                    t2b   = pname(match["team2"][1])
                     mtype = match["type"]
+                    k1    = f"sc1_{idx}"
+                    k2    = f"sc2_{idx}"
 
-                    t1_win = s1v > s2v and (s1v+s2v) > 0
-                    t2_win = s2v > s1v and (s1v+s2v) > 0
+                    # ── 1단계: 점수 입력 위젯 (key만, value= 없음) ──
+                    ic1, ic_dash, ic2 = st.columns([5, 1, 5])
+                    s1_cur = ic1.number_input(
+                        "팀1점수", min_value=0, max_value=99,
+                        key=k1, label_visibility="collapsed"
+                    )
+                    ic_dash.markdown(
+                        '<div style="text-align:center;padding-top:6px;'
+                        'font-weight:700;color:#aaa;">-</div>',
+                        unsafe_allow_html=True
+                    )
+                    s2_cur = ic2.number_input(
+                        "팀2점수", min_value=0, max_value=99,
+                        key=k2, label_visibility="collapsed"
+                    )
+
+                    # ── 2단계: 위젯 값을 session_state에 반영 ────────
+                    st.session_state["sb_scores"][str(idx)] = {
+                        "score1": s1_cur, "score2": s2_cur
+                    }
+
+                    # ── 3단계: 카드 (위젯 후 렌더 → 값 일치 보장) ───
+                    t1_win = s1_cur > s2_cur and (s1_cur+s2_cur) > 0
+                    t2_win = s2_cur > s1_cur and (s1_cur+s2_cur) > 0
                     t1_cls = "player-win" if t1_win else ""
                     t2_cls = "player-win" if t2_win else ""
 
                     card = f"""
-<div class="match-card" style="border-left:4px solid {lg_color};">
+<div class="match-card" style="border-left:4px solid {lg_color};margin-top:4px;">
   <div class="match-body">
     <div class="team-left">
       <div class="player-name {t1_cls}">{t1a}</div>
       <div class="player-name {t1_cls}">{t1b}</div>
     </div>
-    <div class="score-box">{s1v}</div>
+    <div class="score-box">{s1_cur}</div>
     <div class="vs-box">vs</div>
-    <div class="score-box">{s2v}</div>
+    <div class="score-box">{s2_cur}</div>
     <div class="team-right">
       <div class="player-name {t2_cls}">{t2a}</div>
       <div class="player-name {t2_cls}">{t2b}</div>
@@ -910,34 +938,28 @@ if page == "📊 점수판":
 </div>"""
                     st.markdown(card, unsafe_allow_html=True)
 
-                    # 점수 입력 (카드 바로 아래)
-                    ic1, ic_dash, ic2 = st.columns([5, 1, 5])
-                    s1_new = ic1.number_input("팀1점수", min_value=0, max_value=99,
-                                              value=s1v, key=f"sc1_{idx}",
-                                              label_visibility="collapsed")
-                    ic_dash.markdown('<div style="text-align:center;padding-top:6px;font-weight:700;color:#888;">-</div>', unsafe_allow_html=True)
-                    s2_new = ic2.number_input("팀2점수", min_value=0, max_value=99,
-                                              value=s2v, key=f"sc2_{idx}",
-                                              label_visibility="collapsed")
-                    st.session_state["sb_scores"][str(idx)] = {"score1": s1_new, "score2": s2_new}
+                    # ── 4단계: 경기별 저장 버튼 ──────────────────────
+                    if st.button(
+                        "💾 저장",
+                        key=f"save_{idx}",
+                        use_container_width=True,
+                    ):
+                        shelf_save(
+                            selected_date,
+                            serialize_schedule(st.session_state["sb_schedule"]),
+                            st.session_state["sb_scores"],
+                        )
+                        st.toast(f"✅ {t1a}/{t1b} vs {t2a}/{t2b} 저장!", icon="💾")
 
-    # ── 확정 버튼 (날짜별 영구저장) ────────────────────────
+    # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
-    col_save1, col_save2, col_save3 = st.columns([2, 2, 3])
-
-    with col_save1:
-        if st.button("✅ 점수 확정 저장", type="primary", use_container_width=True):
-            shelf_save(
-                selected_date,
-                serialize_schedule(st.session_state["sb_schedule"]),
-                st.session_state["sb_scores"]
-            )
-            st.success(f"✅ [{selected_date}] 저장 완료! 새로고침해도 유지됩니다.")
-
-    with col_save2:
-        if st.button("🔄 점수 초기화", type="secondary", use_container_width=True):
-            st.session_state["sb_scores"] = {}
-            st.rerun()
+    if st.button("🔄 점수 전체 초기화", type="secondary"):
+        # session_state의 sc1_, sc2_ 키도 초기화
+        for idx in range(len(schedule)):
+            st.session_state.pop(f"sc1_{idx}", None)
+            st.session_state.pop(f"sc2_{idx}", None)
+        st.session_state["sb_scores"] = {}
+        st.rerun()
 
     # ── 통계 ───────────────────────────────────────────────
     st.markdown("### 📈 선수별 통계")
@@ -1171,6 +1193,6 @@ elif page == "🎲 랜덤페어":
                 ### 점수판
                 1. 대진표 생성 후 사이드바에서 **📊 점수판** 선택
                 2. 날짜 선택 또는 직접 입력
-                3. 각 경기 점수 입력 후 **✅ 점수 확정 저장** 클릭
+                3. 각 경기 점수 입력 후 경기 카드 하단 **💾 저장** 버튼 클릭
                 4. 새로고침 후에도 날짜별로 저장 유지
                 """)
