@@ -1155,7 +1155,17 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
 
     sb_html = build_full_html(schedule, rounds, scores, st.session_state)
     n = len(schedule)
-    st.components.v1.html(sb_html, height=300 + n * 155, scrolling=True)
+    # 높이 정밀 계산:
+    # - 경기 카드: 약 68px (카드 본문 + 배지)
+    # - 입력행: 42px
+    # - 경기당 합계: ~112px
+    # - 라운드 헤더: 40px × 라운드 수
+    # - 리그 헤더: 24px × 리그 수 (A+B = 최대 2개/라운드)
+    # - 여유분: 60px
+    n_rounds = len(rounds)
+    n_leagues = len(set(m["league"] for m in schedule))
+    est = (n * 112) + (n_rounds * 40) + (n_rounds * n_leagues * 24) + 60
+    st.components.v1.html(sb_html, height=est, scrolling=False)
 
     # ── 전체 초기화 ─────────────────────────────────────────
     st.markdown("---")
