@@ -843,152 +843,329 @@ if page == "📊 점수판":
     display_date = selected_date.replace("-","년 ",1).replace("-","월 ")+"일"
     st.markdown(f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:12px;">{display_date}</div>', unsafe_allow_html=True)
 
-    # ── session_state key 초기화 (최초 1회) ─────────────────
-    for idx, match in enumerate(schedule):
-        k1 = f"sc1_{idx}"; k2 = f"sc2_{idx}"
-        saved_sc = st.session_state["sb_scores"].get(str(idx), {})
-        if k1 not in st.session_state:
-            st.session_state[k1] = saved_sc.get("score1", 0)
-        if k2 not in st.session_state:
-            st.session_state[k2] = saved_sc.get("score2", 0)
+    # ── session_state key 초기화 ──────────────────────────────
+    for i, match in enumerate(schedule):
+        saved_sc = st.session_state["sb_scores"].get(str(i), {})
+        if f"sc1_{i}" not in st.session_state:
+            st.session_state[f"sc1_{i}"] = saved_sc.get("score1", 0)
+        if f"sc2_{i}" not in st.session_state:
+            st.session_state[f"sc2_{i}"] = saved_sc.get("score2", 0)
 
-    # ── CSS: 모바일 강제 flex row + number_input 버튼 순서 ──
-    # Streamlit st.columns는 모바일에서 세로로 쌓임 → 완전히 다른 방식 사용
-    # 라운드별 컬럼: CSS Grid로 강제 가로 배치
-    # number_input의 - + 버튼: CSS로 순서 재배치 (- 왼쪽, + 오른쪽)
-    st.markdown(f"""
-    <style>
-    /* 라운드 그리드: 모바일 포함 항상 가로 */
-    .rnd-grid {{
-        display: grid;
-        grid-template-columns: repeat({len(rounds)}, 1fr);
-        gap: 8px;
-        width: 100%;
-    }}
-    .rnd-cell {{ min-width: 0; }}
-
-    /* number_input: - 왼쪽, 숫자 가운데, + 오른쪽 강제 */
-    [data-testid="stNumberInput"] > div {{
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: center !important;
-    }}
-    [data-testid="stNumberInput"] input {{
-        order: 2 !important;
-        text-align: center !important;
-        flex: 1 !important;
-        font-weight: 700 !important;
-        font-size: 1rem !important;
-    }}
-    /* 감소 버튼(-): 왼쪽 */
-    [data-testid="stNumberInput"] button:first-of-type {{
-        order: 1 !important;
-    }}
-    /* 증가 버튼(+): 오른쪽 */
-    [data-testid="stNumberInput"] button:last-of-type {{
-        order: 3 !important;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-
-    # ── 라운드 컨테이너 HTML 오픈 ────────────────────────────
-    st.markdown('<div class="rnd-grid">', unsafe_allow_html=True)
-
-    for col_i, rnd in enumerate(rounds):
-        rnd_matches = [(idx, m) for idx, m in enumerate(schedule) if m["round"] == rnd]
-        if not rnd_matches: continue
-
-        rnd_label = rnd.replace("(이벤트)","") + (" ⭐" if "이벤트" in rnd else "")
-
-        # 각 라운드 셀 오픈
-        st.markdown(f'<div class="rnd-cell">', unsafe_allow_html=True)
-        st.markdown(f'<div class="rnd-header">{rnd_label}</div>', unsafe_allow_html=True)
-
-        leagues_in_rnd = []
-        seen_lg = set()
-        for _, m in rnd_matches:
-            if m["league"] not in seen_lg:
-                leagues_in_rnd.append(m["league"]); seen_lg.add(m["league"])
-
-        for league in leagues_in_rnd:
-            lg_matches = [(idx,m) for idx,m in rnd_matches if m["league"]==league]
-            if not lg_matches: continue
-
-            lg_color = "#2e7d32" if "A" in league else "#1565c0"
-            st.markdown(
-                f'<div class="lg-label" style="color:{lg_color};'
-                f'border-left:3px solid {lg_color};padding-left:6px;">'
-                f'{league}</div>', unsafe_allow_html=True
+    # ── 저장 트리거 수신 ────────────────────────────────────
+    # JS에서 window.location에 ?save_idx=N 파라미터로 전달
+    import urllib.parse
+    qp = st.query_params
+    save_trigger = qp.get("save_idx", None)
+    if save_trigger is not None:
+        try:
+            sidx = int(save_trigger)
+            s1v  = int(qp.get("s1", st.session_state.get(f"sc1_{sidx}", 0)))
+            s2v  = int(qp.get("s2", st.session_state.get(f"sc2_{sidx}", 0)))
+            st.session_state[f"sc1_{sidx}"] = s1v
+            st.session_state[f"sc2_{sidx}"] = s2v
+            st.session_state["sb_scores"][str(sidx)] = {"score1": s1v, "score2": s2v}
+            shelf_save(
+                selected_date,
+                serialize_schedule(st.session_state["sb_schedule"]),
+                st.session_state["sb_scores"],
             )
+            st.query_params.clear()
+            st.rerun()
+        except Exception:
+            st.query_params.clear()
 
-            for idx, match in lg_matches:
-                t1a   = pname(match["team1"][0])
-                t1b   = pname(match["team1"][1])
-                t2a   = pname(match["team2"][0])
-                t2b   = pname(match["team2"][1])
-                mtype = match["type"]
-                k1    = f"sc1_{idx}"
-                k2    = f"sc2_{idx}"
+    # ── 전체 점수판 HTML 빌드 ───────────────────────────────
+    # 모든 라운드를 순수 HTML+JS로 렌더링 (Streamlit 컬럼 미사용)
+    # → 모바일 포함 항상 가로 배치 보장
 
-                # ── 1단계: 카드 먼저 ─────────────────────────────
-                s1_disp = st.session_state.get(k1, 0)
-                s2_disp = st.session_state.get(k2, 0)
-                t1_win  = s1_disp > s2_disp and (s1_disp+s2_disp) > 0
-                t2_win  = s2_disp > s1_disp and (s1_disp+s2_disp) > 0
-                t1_cls  = "player-win" if t1_win else ""
-                t2_cls  = "player-win" if t2_win else ""
+    def build_scoreboard_html(schedule, rounds, session_state, selected_date):
+        n = len(rounds)
+        cols_css = " ".join(["1fr"] * n)
 
-                card = f"""
-<div class="match-card" style="border-left:4px solid {lg_color};margin-top:4px;">
-  <div class="match-body">
-    <div class="team-left">
-      <div class="player-name {t1_cls}">{t1a}</div>
-      <div class="player-name {t1_cls}">{t1b}</div>
-    </div>
-    <div class="score-box">{s1_disp}</div>
-    <div class="vs-box">vs</div>
-    <div class="score-box">{s2_disp}</div>
-    <div class="team-right">
-      <div class="player-name {t2_cls}">{t2a}</div>
-      <div class="player-name {t2_cls}">{t2b}</div>
-    </div>
-  </div>
-  <div class="match-footer">{mtype}</div>
-</div>"""
-                st.markdown(card, unsafe_allow_html=True)
+        # 각 경기 데이터 JSON 빌드
+        import json as _json
+        matches_data = []
+        for idx, match in enumerate(schedule):
+            s1 = session_state.get(f"sc1_{idx}", 0)
+            s2 = session_state.get(f"sc2_{idx}", 0)
+            matches_data.append({
+                "idx":   idx,
+                "round": match["round"],
+                "league": match["league"],
+                "t1a":  pname(match["team1"][0]),
+                "t1b":  pname(match["team1"][1]),
+                "t2a":  pname(match["team2"][0]),
+                "t2b":  pname(match["team2"][1]),
+                "type": match["type"],
+                "s1":   s1,
+                "s2":   s2,
+            })
 
-                # ── 2단계: [- s1 +] [저장] [- s2 +] ─────────────
-                ic1, ic_mid, ic2 = st.columns([5, 3, 5])
-                s1_cur = ic1.number_input(
-                    "팀1점수", min_value=0, max_value=99,
-                    key=k1, label_visibility="collapsed"
-                )
-                s2_cur = ic2.number_input(
-                    "팀2점수", min_value=0, max_value=99,
-                    key=k2, label_visibility="collapsed"
-                )
+        matches_json = _json.dumps(matches_data, ensure_ascii=False)
+        rounds_json  = _json.dumps(rounds, ensure_ascii=False)
 
-                # ── 3단계: session_state 반영 ─────────────────────
-                st.session_state["sb_scores"][str(idx)] = {
-                    "score1": s1_cur, "score2": s2_cur
-                }
+        html = f"""
+<style>
+.sb-outer {{
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}}
+.sb-grid {{
+    display: grid;
+    grid-template-columns: {cols_css};
+    gap: 8px;
+    min-width: {n * 200}px;
+}}
+.rnd-col {{ min-width: 0; }}
+.rnd-hdr {{
+    background: #1a1a2e;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 7px 4px;
+    border-radius: 6px 6px 0 0;
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+}}
+.lg-lbl {{
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 2px 0 3px 6px;
+    margin: 6px 0 2px 0;
+}}
+.mc {{
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    margin-bottom: 3px;
+    overflow: hidden;
+    background: #fff;
+}}
+.mc-body {{
+    display: flex;
+    align-items: stretch;
+}}
+.mc-team-l {{ flex: 3; padding: 5px 4px 3px 7px; }}
+.mc-team-r {{ flex: 3; padding: 5px 7px 3px 4px; text-align: right; }}
+.mc-score {{
+    flex: 0 0 28px;
+    background: #f0f0f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: #222;
+}}
+.mc-vs {{
+    flex: 0 0 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.62rem;
+    color: #aaa;
+}}
+.mc-ft {{
+    background: #fafafa;
+    font-size: 0.65rem;
+    color: #999;
+    text-align: right;
+    padding: 2px 7px;
+}}
+.pn {{ font-size: 0.78rem; font-weight: 600; color: #222; line-height: 1.3; }}
+.pw {{ color: #b71c1c !important; }}
+/* 입력행: [- 숫자 +] [저장] [- 숫자 +] */
+.inp-row {{
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin: 3px 0 6px 0;
+}}
+.inp-box {{
+    flex: 1;
+    display: flex;
+    align-items: center;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f8f8f8;
+    height: 36px;
+}}
+.inp-btn {{
+    width: 30px;
+    height: 36px;
+    border: none;
+    background: #eee;
+    font-size: 1.1rem;
+    font-weight: 700;
+    cursor: pointer;
+    color: #444;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}}
+.inp-btn:active {{ background: #ddd; }}
+.inp-num {{
+    flex: 1;
+    text-align: center;
+    font-size: 1rem;
+    font-weight: 700;
+    border: none;
+    background: transparent;
+    width: 100%;
+    -moz-appearance: textfield;
+}}
+.inp-num::-webkit-inner-spin-button,
+.inp-num::-webkit-outer-spin-button {{ -webkit-appearance: none; }}
+.save-btn {{
+    flex: 0 0 52px;
+    height: 36px;
+    background: #e53935;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+}}
+.save-btn:active {{ background: #b71c1c; }}
+</style>
 
-                # ── 4단계: 저장 버튼 (가운데) ─────────────────────
-                with ic_mid:
-                    if st.button(
-                        "저장", key=f"save_{idx}",
-                        use_container_width=True, type="primary",
-                    ):
-                        shelf_save(
-                            selected_date,
-                            serialize_schedule(st.session_state["sb_schedule"]),
-                            st.session_state["sb_scores"],
-                        )
-                        st.toast(f"✅ {t1a}/{t1b} vs {t2a}/{t2b} 저장!", icon="💾")
+<div class="sb-outer">
+  <div class="sb-grid" id="sbGrid"></div>
+</div>
 
-        st.markdown('</div>', unsafe_allow_html=True)  # rnd-cell 닫기
+<script>
+(function() {{
+  const matches  = {matches_json};
+  const rounds   = {rounds_json};
+  const selDate  = {_json.dumps(selected_date)};
 
-    st.markdown('</div>', unsafe_allow_html=True)  # rnd-grid 닫기
+  // 점수 상태 (로컬)
+  const scores = {{}};
+  matches.forEach(m => {{
+    scores[m.idx] = {{ s1: m.s1, s2: m.s2 }};
+  }});
+
+  function pWin(s1, s2) {{
+    return (s1 + s2) > 0 && s1 > s2;
+  }}
+
+  function buildGrid() {{
+    const grid = document.getElementById('sbGrid');
+    grid.innerHTML = '';
+
+    rounds.forEach(rnd => {{
+      const rndMatches = matches.filter(m => m.round === rnd);
+      if (!rndMatches.length) return;
+
+      const col = document.createElement('div');
+      col.className = 'rnd-col';
+
+      const lbl = rnd.replace('(이벤트)','') + (rnd.includes('이벤트') ? ' ⭐' : '');
+      col.innerHTML = `<div class="rnd-hdr">${{lbl}}</div>`;
+
+      // 리그별
+      const leagues = [...new Set(rndMatches.map(m => m.league))];
+      leagues.forEach(lg => {{
+        const lgColor = lg.includes('A') ? '#2e7d32' : '#1565c0';
+        const lgDiv = document.createElement('div');
+        lgDiv.className = 'lg-lbl';
+        lgDiv.style.cssText = `color:${{lgColor}};border-left:3px solid ${{lgColor}};padding-left:6px;`;
+        lgDiv.textContent = lg;
+        col.appendChild(lgDiv);
+
+        rndMatches.filter(m => m.league === lg).forEach(m => {{
+          col.appendChild(buildMatch(m, lgColor));
+        }});
+      }});
+
+      grid.appendChild(col);
+    }});
+  }}
+
+  function buildMatch(m, lgColor) {{
+    const wrap = document.createElement('div');
+    const sc   = scores[m.idx];
+    const t1w  = pWin(sc.s1, sc.s2);
+    const t2w  = pWin(sc.s2, sc.s1);
+
+    wrap.innerHTML = `
+      <div class="mc" style="border-left:4px solid ${{lgColor}};">
+        <div class="mc-body">
+          <div class="mc-team-l">
+            <div class="pn ${{t1w?'pw':''}}">${{m.t1a}}</div>
+            <div class="pn ${{t1w?'pw':''}}">${{m.t1b}}</div>
+          </div>
+          <div class="mc-score" id="disp_s1_${{m.idx}}">${{sc.s1}}</div>
+          <div class="mc-vs">vs</div>
+          <div class="mc-score" id="disp_s2_${{m.idx}}">${{sc.s2}}</div>
+          <div class="mc-team-r">
+            <div class="pn ${{t2w?'pw':''}}">${{m.t2a}}</div>
+            <div class="pn ${{t2w?'pw':''}}">${{m.t2b}}</div>
+          </div>
+        </div>
+        <div class="mc-ft">${{m.type}}</div>
+      </div>
+      <div class="inp-row">
+        <div class="inp-box">
+          <button class="inp-btn" onclick="adj(${{m.idx}},1,-1)">−</button>
+          <input class="inp-num" type="number" id="inp_s1_${{m.idx}}"
+                 value="${{sc.s1}}" min="0" max="99"
+                 oninput="onInput(${{m.idx}},1,this.value)">
+          <button class="inp-btn" onclick="adj(${{m.idx}},1,1)">+</button>
+        </div>
+        <button class="save-btn" onclick="doSave(${{m.idx}})">저장</button>
+        <div class="inp-box">
+          <button class="inp-btn" onclick="adj(${{m.idx}},2,-1)">−</button>
+          <input class="inp-num" type="number" id="inp_s2_${{m.idx}}"
+                 value="${{sc.s2}}" min="0" max="99"
+                 oninput="onInput(${{m.idx}},2,this.value)">
+          <button class="inp-btn" onclick="adj(${{m.idx}},2,1)">+</button>
+        </div>
+      </div>`;
+    return wrap;
+  }}
+
+  window.adj = function(idx, team, delta) {{
+    const key = team === 1 ? 'inp_s1_' : 'inp_s2_';
+    const inp = document.getElementById(key + idx);
+    let val = parseInt(inp.value || '0') + delta;
+    if (val < 0) val = 0;
+    if (val > 99) val = 99;
+    inp.value = val;
+    scores[idx][team === 1 ? 's1' : 's2'] = val;
+    document.getElementById((team===1?'disp_s1_':'disp_s2_') + idx).textContent = val;
+  }};
+
+  window.onInput = function(idx, team, val) {{
+    let v = parseInt(val) || 0;
+    if (v < 0) v = 0; if (v > 99) v = 99;
+    scores[idx][team === 1 ? 's1' : 's2'] = v;
+    document.getElementById((team===1?'disp_s1_':'disp_s2_') + idx).textContent = v;
+  }};
+
+  window.doSave = function(idx) {{
+    const s1 = scores[idx].s1;
+    const s2 = scores[idx].s2;
+    // Streamlit query_params로 저장 트리거
+    const url = new URL(window.location.href);
+    url.searchParams.set('save_idx', idx);
+    url.searchParams.set('s1', s1);
+    url.searchParams.set('s2', s2);
+    window.location.href = url.toString();
+  }};
+
+  buildGrid();
+}})();
+</script>
+"""
+        return html
+
+    sb_html = build_scoreboard_html(schedule, rounds, st.session_state, selected_date)
+    st.components.v1.html(sb_html, height=max(600, len(schedule) * 120), scrolling=True)
 
     # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
