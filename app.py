@@ -844,8 +844,6 @@ if page == "📊 점수판":
     st.markdown(f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:12px;">{display_date}</div>', unsafe_allow_html=True)
 
     # ── session_state key 초기화 (최초 1회) ─────────────────
-    # number_input은 key 기반으로만 관리 → value= 파라미터 제거
-    # 이렇게 해야 +/- 버튼이 즉시 반영되고 카드 표시값과 일치함
     for idx, match in enumerate(schedule):
         k1 = f"sc1_{idx}"; k2 = f"sc2_{idx}"
         saved_sc = st.session_state["sb_scores"].get(str(idx), {})
@@ -854,91 +852,102 @@ if page == "📊 점수판":
         if k2 not in st.session_state:
             st.session_state[k2] = saved_sc.get("score2", 0)
 
-    # ── 라운드별 좌우 컬럼 (모바일 강제 flex row) ────────────
-    n_rounds = len(rounds)
-    st_cols  = st.columns(n_rounds, gap="small")
+    # ── CSS: 모바일 강제 flex row + number_input 버튼 순서 ──
+    # Streamlit st.columns는 모바일에서 세로로 쌓임 → 완전히 다른 방식 사용
+    # 라운드별 컬럼: CSS Grid로 강제 가로 배치
+    # number_input의 - + 버튼: CSS로 순서 재배치 (- 왼쪽, + 오른쪽)
+    st.markdown(f"""
+    <style>
+    /* 라운드 그리드: 모바일 포함 항상 가로 */
+    .rnd-grid {{
+        display: grid;
+        grid-template-columns: repeat({len(rounds)}, 1fr);
+        gap: 8px;
+        width: 100%;
+    }}
+    .rnd-cell {{ min-width: 0; }}
 
-    for col_i, (rnd, stcol) in enumerate(zip(rounds, st_cols)):
+    /* number_input: - 왼쪽, 숫자 가운데, + 오른쪽 강제 */
+    [data-testid="stNumberInput"] > div {{
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+    }}
+    [data-testid="stNumberInput"] input {{
+        order: 2 !important;
+        text-align: center !important;
+        flex: 1 !important;
+        font-weight: 700 !important;
+        font-size: 1rem !important;
+    }}
+    /* 감소 버튼(-): 왼쪽 */
+    [data-testid="stNumberInput"] button:first-of-type {{
+        order: 1 !important;
+    }}
+    /* 증가 버튼(+): 오른쪽 */
+    [data-testid="stNumberInput"] button:last-of-type {{
+        order: 3 !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── 라운드 컨테이너 HTML 오픈 ────────────────────────────
+    st.markdown('<div class="rnd-grid">', unsafe_allow_html=True)
+
+    for col_i, rnd in enumerate(rounds):
         rnd_matches = [(idx, m) for idx, m in enumerate(schedule) if m["round"] == rnd]
         if not rnd_matches: continue
 
-        with stcol:
-            rnd_label = rnd.replace("(이벤트)","") + (" ⭐" if "이벤트" in rnd else "")
-            st.markdown(f'<div class="rnd-header">{rnd_label}</div>', unsafe_allow_html=True)
+        rnd_label = rnd.replace("(이벤트)","") + (" ⭐" if "이벤트" in rnd else "")
 
-            leagues_in_rnd = []
-            seen_lg = set()
-            for _, m in rnd_matches:
-                if m["league"] not in seen_lg:
-                    leagues_in_rnd.append(m["league"]); seen_lg.add(m["league"])
+        # 각 라운드 셀 오픈
+        st.markdown(f'<div class="rnd-cell">', unsafe_allow_html=True)
+        st.markdown(f'<div class="rnd-header">{rnd_label}</div>', unsafe_allow_html=True)
 
-            for league in leagues_in_rnd:
-                lg_matches = [(idx,m) for idx,m in rnd_matches if m["league"]==league]
-                if not lg_matches: continue
+        leagues_in_rnd = []
+        seen_lg = set()
+        for _, m in rnd_matches:
+            if m["league"] not in seen_lg:
+                leagues_in_rnd.append(m["league"]); seen_lg.add(m["league"])
 
-                lg_color = "#2e7d32" if "A" in league else "#1565c0"
-                st.markdown(
-                    f'<div class="lg-label" style="color:{lg_color};'
-                    f'border-left:3px solid {lg_color};padding-left:6px;">'
-                    f'{league}</div>', unsafe_allow_html=True
-                )
+        for league in leagues_in_rnd:
+            lg_matches = [(idx,m) for idx,m in rnd_matches if m["league"]==league]
+            if not lg_matches: continue
 
-                for idx, match in lg_matches:
-                    t1a   = pname(match["team1"][0])
-                    t1b   = pname(match["team1"][1])
-                    t2a   = pname(match["team2"][0])
-                    t2b   = pname(match["team2"][1])
-                    mtype = match["type"]
-                    k1    = f"sc1_{idx}"
-                    k2    = f"sc2_{idx}"
+            lg_color = "#2e7d32" if "A" in league else "#1565c0"
+            st.markdown(
+                f'<div class="lg-label" style="color:{lg_color};'
+                f'border-left:3px solid {lg_color};padding-left:6px;">'
+                f'{league}</div>', unsafe_allow_html=True
+            )
 
-                    # ── 1단계: [- 점수1 +] [저장] [- 점수2 +] 한 줄 레이아웃 ──
-                    ic1, ic_mid, ic2 = st.columns([5, 3, 5])
-                    s1_cur = ic1.number_input(
-                        "팀1점수", min_value=0, max_value=99,
-                        key=k1, label_visibility="collapsed"
-                    )
-                    s2_cur = ic2.number_input(
-                        "팀2점수", min_value=0, max_value=99,
-                        key=k2, label_visibility="collapsed"
-                    )
+            for idx, match in lg_matches:
+                t1a   = pname(match["team1"][0])
+                t1b   = pname(match["team1"][1])
+                t2a   = pname(match["team2"][0])
+                t2b   = pname(match["team2"][1])
+                mtype = match["type"]
+                k1    = f"sc1_{idx}"
+                k2    = f"sc2_{idx}"
 
-                    # ── 2단계: 위젯 값을 session_state에 반영 ────────
-                    st.session_state["sb_scores"][str(idx)] = {
-                        "score1": s1_cur, "score2": s2_cur
-                    }
+                # ── 1단계: 카드 먼저 ─────────────────────────────
+                s1_disp = st.session_state.get(k1, 0)
+                s2_disp = st.session_state.get(k2, 0)
+                t1_win  = s1_disp > s2_disp and (s1_disp+s2_disp) > 0
+                t2_win  = s2_disp > s1_disp and (s1_disp+s2_disp) > 0
+                t1_cls  = "player-win" if t1_win else ""
+                t2_cls  = "player-win" if t2_win else ""
 
-                    # ── 3단계: 저장 버튼 (가운데) ────────────────────
-                    with ic_mid:
-                        if st.button(
-                            "저장",
-                            key=f"save_{idx}",
-                            use_container_width=True,
-                            type="primary",
-                        ):
-                            shelf_save(
-                                selected_date,
-                                serialize_schedule(st.session_state["sb_schedule"]),
-                                st.session_state["sb_scores"],
-                            )
-                            st.toast(f"✅ {t1a}/{t1b} vs {t2a}/{t2b} 저장!", icon="💾")
-
-                    # ── 4단계: 카드 (위젯 후 렌더 → 값 일치 보장) ───
-                    t1_win = s1_cur > s2_cur and (s1_cur+s2_cur) > 0
-                    t2_win = s2_cur > s1_cur and (s1_cur+s2_cur) > 0
-                    t1_cls = "player-win" if t1_win else ""
-                    t2_cls = "player-win" if t2_win else ""
-
-                    card = f"""
+                card = f"""
 <div class="match-card" style="border-left:4px solid {lg_color};margin-top:4px;">
   <div class="match-body">
     <div class="team-left">
       <div class="player-name {t1_cls}">{t1a}</div>
       <div class="player-name {t1_cls}">{t1b}</div>
     </div>
-    <div class="score-box">{s1_cur}</div>
+    <div class="score-box">{s1_disp}</div>
     <div class="vs-box">vs</div>
-    <div class="score-box">{s2_cur}</div>
+    <div class="score-box">{s2_disp}</div>
     <div class="team-right">
       <div class="player-name {t2_cls}">{t2a}</div>
       <div class="player-name {t2_cls}">{t2b}</div>
@@ -946,7 +955,40 @@ if page == "📊 점수판":
   </div>
   <div class="match-footer">{mtype}</div>
 </div>"""
-                    st.markdown(card, unsafe_allow_html=True)
+                st.markdown(card, unsafe_allow_html=True)
+
+                # ── 2단계: [- s1 +] [저장] [- s2 +] ─────────────
+                ic1, ic_mid, ic2 = st.columns([5, 3, 5])
+                s1_cur = ic1.number_input(
+                    "팀1점수", min_value=0, max_value=99,
+                    key=k1, label_visibility="collapsed"
+                )
+                s2_cur = ic2.number_input(
+                    "팀2점수", min_value=0, max_value=99,
+                    key=k2, label_visibility="collapsed"
+                )
+
+                # ── 3단계: session_state 반영 ─────────────────────
+                st.session_state["sb_scores"][str(idx)] = {
+                    "score1": s1_cur, "score2": s2_cur
+                }
+
+                # ── 4단계: 저장 버튼 (가운데) ─────────────────────
+                with ic_mid:
+                    if st.button(
+                        "저장", key=f"save_{idx}",
+                        use_container_width=True, type="primary",
+                    ):
+                        shelf_save(
+                            selected_date,
+                            serialize_schedule(st.session_state["sb_schedule"]),
+                            st.session_state["sb_scores"],
+                        )
+                        st.toast(f"✅ {t1a}/{t1b} vs {t2a}/{t2b} 저장!", icon="💾")
+
+        st.markdown('</div>', unsafe_allow_html=True)  # rnd-cell 닫기
+
+    st.markdown('</div>', unsafe_allow_html=True)  # rnd-grid 닫기
 
     # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
