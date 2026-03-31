@@ -786,21 +786,18 @@ if page == "📊 점수판":
     today_str   = date.today().strftime("%Y-%m-%d")
     saved_keys  = shelf_list_dates()  # "날짜_번호" 형식
 
-    col_m1, col_m2 = st.columns([3, 2])
-    with col_m1:
-        sb_mode = st.radio("모드", ["새 점수판 (날짜+번호 입력)", "저장된 점수판 불러오기"],
-                           index=0, horizontal=False, label_visibility="collapsed")
-    with col_m2:
-        if sb_mode == "새 점수판 (날짜+번호 입력)":
-            sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
-            sb_num  = st.text_input("일련번호 (예: 001)", value="001", key="sb_num_inp")
-            selected_key = f"{sb_date}_{sb_num}"
+    sb_mode = st.radio("모드", ["새 점수판 (날짜+번호 입력)", "저장된 점수판 불러오기"],
+                       index=0, horizontal=True, label_visibility="collapsed")
+    if sb_mode == "새 점수판 (날짜+번호 입력)":
+        sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
+        sb_num  = st.text_input("일련번호 (예: 001)", value="001", key="sb_num_inp")
+        selected_key = f"{sb_date}_{sb_num}"
+    else:
+        if saved_keys:
+            selected_key = st.selectbox("저장된 점수판 선택", saved_keys)
         else:
-            if saved_keys:
-                selected_key = st.selectbox("저장된 점수판 선택", saved_keys)
-            else:
-                st.info("저장된 데이터가 없습니다.")
-                selected_key = f"{today_str}_001"
+            st.info("저장된 데이터가 없습니다.")
+            selected_key = f"{today_str}_001"
 
     st.caption(f"현재 키: **{selected_key}**")
 
@@ -847,44 +844,10 @@ if page == "📊 점수판":
     )
 
     # ════════════════════════════════════════════════════════
-    # 전략: 카드+입력행을 하나의 HTML 컴포넌트로 렌더링
-    # 저장/수정 버튼 클릭 → st.form_submit_button 방식
-    # 각 경기를 독립적인 st.form으로 감싸서 한 줄 보장
+    # 전략: 전체 점수판을 단일 HTML 컴포넌트로 렌더링
+    # 저장/수정 버튼 → hidden st.button으로 트리거
+    # st.columns 완전 제거 → 모바일 한 줄 보장
     # ════════════════════════════════════════════════════════
-    import json as _json
-
-    # 전역 CSS: number_input을 한 줄로 강제 (모바일 대응)
-    st.markdown("""
-    <style>
-    /* form 마진 제거 */
-    [data-testid="stForm"] { border:none !important; padding:0 !important; }
-    /* number_input 내부 flex 강제 */
-    [data-testid="stNumberInput"] > div {
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: center !important;
-        flex-wrap: nowrap !important;
-    }
-    [data-testid="stNumberInput"] input {
-        order: 2 !important; text-align: center !important;
-        flex: 1 !important; min-width: 0 !important;
-        font-weight: 700 !important;
-    }
-    [data-testid="stNumberInput"] button:first-of-type { order: 1 !important; flex-shrink:0; }
-    [data-testid="stNumberInput"] button:last-of-type  { order: 3 !important; flex-shrink:0; }
-    /* 입력행 컨테이너 강제 한 줄 */
-    .inp-line {
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: center !important;
-        gap: 4px !important;
-        flex-wrap: nowrap !important;
-        width: 100% !important;
-    }
-    .inp-line > div { flex: 1; min-width: 0; }
-    .inp-line > button { flex-shrink: 0; }
-    </style>
-    """, unsafe_allow_html=True)
 
     def pname_short(code):
         raw = base_name(code)
@@ -893,138 +856,306 @@ if page == "📊 점수판":
             return raw[2:] + g
         return raw
 
-    def match_card_html(t1a, t1b, t2a, t2b, s1, s2, mtype, lg_color, is_locked):
-        t1w = s1 > s2 and (s1+s2) > 0
-        t2w = s2 > s1 and (s1+s2) > 0
-        p1c = "color:#b71c1c;font-weight:800" if t1w else "color:#222"
-        p2c = "color:#b71c1c;font-weight:800" if t2w else "color:#222"
-        bg  = "#f0fff0" if is_locked else "#fff"
-        bdr = "#a5d6a7" if is_locked else "#e0e0e0"
-        badge = "✅ 저장완료" if is_locked else ""
-        badge_html = f'<div style="font-size:0.65rem;color:#2e7d32;font-weight:700;text-align:right;padding:1px 6px;">{badge}</div>' if is_locked else ""
-        return f"""<div style="border:1px solid {bdr};border-left:4px solid {lg_color};
-border-radius:6px;overflow:hidden;background:{bg};margin-bottom:3px;">
-  <div style="display:flex;align-items:stretch;">
-    <div style="flex:3;padding:5px 2px 3px 7px;min-width:0;">
-      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t1a}</div>
-      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t1b}</div>
+    # ── 저장/수정 트리거: hidden Streamlit 버튼 방식 ─────────
+    # HTML 컴포넌트 안의 JS는 postMessage를 쓸 수 없으므로
+    # URL query_params 대신 st.session_state에 직접 쓰는
+    # hidden number_input 트릭 사용
+    #
+    # 실제 저장은 HTML 내 버튼 클릭 시 _save_trigger를 세팅하고
+    # Streamlit이 다음 rerun에서 처리
+    #
+    # ★ 핵심: HTML에서 저장 버튼 클릭 → URL ?act=save&idx=N&s1=X&s2=Y
+    #          Streamlit query_params로 수신 → shelve 저장
+    #          (iframe이 아닌 전체 페이지 URL 변경이므로 동작)
+    qp = st.query_params
+    act = qp.get("act", None)
+    if act is not None:
+        try:
+            pidx = int(qp.get("idx", -1))
+            if act == "save" and pidx >= 0:
+                s1v = int(qp.get("s1", 0))
+                s2v = int(qp.get("s2", 0))
+                scores[str(pidx)] = {"score1": s1v, "score2": s2v}
+                st.session_state["sb_scores"] = scores
+                st.session_state[f"locked_{pidx}"] = True
+                shelf_save(
+                    selected_key,
+                    serialize_schedule(st.session_state["sb_schedule"]),
+                    scores,
+                )
+            elif act == "edit" and pidx >= 0:
+                st.session_state[f"locked_{pidx}"] = False
+        except Exception:
+            pass
+        st.query_params.clear()
+        st.rerun()
+
+    # ── 전체 점수판 HTML 빌드 ─────────────────────────────────
+    import json as _json
+
+    def build_full_html(schedule, rounds, scores, session_state):
+        matches_data = []
+        for idx, match in enumerate(schedule):
+            sc        = scores.get(str(idx), {})
+            is_locked = session_state.get(f"locked_{idx}", bool(sc))
+            matches_data.append({
+                "idx":      idx,
+                "round":    match["round"],
+                "league":   match["league"],
+                "t1a":      pname_short(match["team1"][0]),
+                "t1b":      pname_short(match["team1"][1]),
+                "t2a":      pname_short(match["team2"][0]),
+                "t2b":      pname_short(match["team2"][1]),
+                "type":     match["type"],
+                "s1":       sc.get("score1", 0),
+                "s2":       sc.get("score2", 0),
+                "locked":   is_locked,
+            })
+
+        mj = _json.dumps(matches_data, ensure_ascii=False)
+        rj = _json.dumps(rounds, ensure_ascii=False)
+
+        return f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
+      background:#f5f5f5;padding:4px;font-size:14px;}}
+.rnd-hdr{{background:#1a1a2e;color:#fff;font-weight:700;font-size:0.88rem;
+           text-align:center;padding:7px 4px;border-radius:6px;margin:8px 0 5px;
+           letter-spacing:1px;}}
+.lg-lbl{{font-size:0.72rem;font-weight:700;padding:2px 0 3px 6px;margin:3px 0 2px;}}
+.mc{{border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;
+      background:#fff;margin-bottom:4px;}}
+.mc.lk{{background:#f0fff0;border-color:#a5d6a7;}}
+.mc-body{{display:flex;align-items:stretch;}}
+.mc-tl{{flex:3;padding:5px 2px 3px 6px;min-width:0;}}
+.mc-tr{{flex:3;padding:5px 6px 3px 2px;text-align:right;min-width:0;}}
+.mc-sc{{flex:0 0 26px;background:#f0f0f0;display:flex;align-items:center;
+         justify-content:center;font-size:0.9rem;font-weight:800;color:#222;}}
+.mc-vs{{flex:0 0 14px;display:flex;align-items:center;justify-content:center;
+         font-size:0.55rem;color:#bbb;}}
+.mc-ft{{background:#fafafa;font-size:0.6rem;color:#aaa;text-align:right;padding:1px 6px;}}
+.mc-bj{{font-size:0.62rem;color:#2e7d32;font-weight:700;text-align:right;padding:1px 6px;}}
+.pn{{font-size:0.75rem;font-weight:600;line-height:1.35;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}
+.pw{{color:#b71c1c!important;font-weight:800!important;}}
+
+/* ── 입력행: 항상 한 줄 ── */
+.inp-row{{
+  display:flex;
+  flex-direction:row;
+  align-items:center;
+  gap:3px;
+  padding:3px 3px 4px;
+  width:100%;
+}}
+.inp-box{{
+  flex:1;
+  display:flex;
+  flex-direction:row;
+  align-items:center;
+  border:1px solid #ccc;
+  border-radius:5px;
+  overflow:hidden;
+  background:#f8f8f8;
+  height:34px;
+  min-width:0;
+}}
+.inp-box.lk{{background:#ebebeb;border-color:#ddd;}}
+.ibtn{{
+  width:28px;height:34px;border:none;
+  background:#e5e5e5;font-size:1rem;font-weight:700;
+  color:#333;cursor:pointer;flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+  display:flex;align-items:center;justify-content:center;
+}}
+.ibtn:active{{background:#ccc;}}
+.inum{{
+  flex:1;min-width:0;text-align:center;
+  font-size:0.95rem;font-weight:700;
+  border:none;background:transparent;
+  -moz-appearance:textfield;
+}}
+.inum::-webkit-inner-spin-button,
+.inum::-webkit-outer-spin-button{{-webkit-appearance:none;}}
+.inum:disabled{{color:#444;}}
+.sbtn{{
+  flex:0 0 52px;height:34px;
+  background:#e53935;color:#fff;border:none;
+  border-radius:5px;font-size:0.78rem;font-weight:700;
+  cursor:pointer;white-space:nowrap;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}}
+.sbtn:active{{background:#b71c1c;}}
+.ebtn{{
+  flex:0 0 52px;height:34px;
+  background:#1565c0;color:#fff;border:none;
+  border-radius:5px;font-size:0.78rem;font-weight:700;
+  cursor:pointer;white-space:nowrap;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}}
+.ebtn:active{{background:#0d47a1;}}
+.scr-disp{{
+  flex:1;height:34px;background:#ebebeb;
+  display:flex;align-items:center;justify-content:center;
+  font-size:0.95rem;font-weight:700;color:#444;
+  border-radius:5px;border:1px solid #ddd;
+}}
+</style></head><body>
+<div id="root"></div>
+<script>
+(function(){{
+  const matches = {mj};
+  const rounds  = {rj};
+  const MAX=6, MIN=0;
+
+  // 로컬 점수 상태
+  const scores  = {{}};
+  const locked  = {{}};
+  matches.forEach(m=>{{
+    scores[m.idx] = {{s1:m.s1, s2:m.s2}};
+    locked[m.idx] = m.locked;
+  }});
+
+  function pWin(a,b){{return (a+b)>0&&a>b;}}
+
+  function render(){{
+    const root=document.getElementById('root');
+    root.innerHTML='';
+    rounds.forEach(rnd=>{{
+      const ms=matches.filter(m=>m.round===rnd);
+      if(!ms.length)return;
+      const lbl=rnd.replace('(이벤트)','')+(rnd.includes('이벤트')?' ⭐':'');
+      const h=document.createElement('div');
+      h.className='rnd-hdr'; h.textContent=lbl;
+      root.appendChild(h);
+      const lgs=[...new Set(ms.map(m=>m.league))];
+      lgs.forEach(lg=>{{
+        const lc=lg.includes('A')?'#2e7d32':'#1565c0';
+        const ld=document.createElement('div');
+        ld.className='lg-lbl';
+        ld.style.cssText=`color:${{lc}};border-left:3px solid ${{lc}};padding-left:6px;`;
+        ld.textContent=lg;
+        root.appendChild(ld);
+        ms.filter(m=>m.league===lg).forEach(m=>{{
+          root.appendChild(buildMatch(m,lc));
+        }});
+      }});
+    }});
+  }}
+
+  function buildMatch(m,lc){{
+    const w=document.createElement('div');
+    w.id='w'+m.idx;
+    redraw(m,lc,w);
+    return w;
+  }}
+
+  function redraw(m,lc,w){{
+    const sc=scores[m.idx];
+    const lk=locked[m.idx];
+    const t1w=pWin(sc.s1,sc.s2), t2w=pWin(sc.s2,sc.s1);
+    const p1=t1w?'pw':'', p2=t2w?'pw':'';
+    w.innerHTML=`
+<div class="mc${{lk?' lk':''}}" style="border-left:4px solid ${{lc}}">
+  <div class="mc-body">
+    <div class="mc-tl">
+      <div class="pn ${{p1}}">${{m.t1a}}</div>
+      <div class="pn ${{p1}}">${{m.t1b}}</div>
     </div>
-    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s1}</div>
-    <div style="flex:0 0 16px;display:flex;align-items:center;justify-content:center;font-size:0.58rem;color:#bbb;">vs</div>
-    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s2}</div>
-    <div style="flex:3;padding:5px 7px 3px 2px;text-align:right;min-width:0;">
-      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t2a}</div>
-      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t2b}</div>
+    <div class="mc-sc">${{sc.s1}}</div>
+    <div class="mc-vs">vs</div>
+    <div class="mc-sc">${{sc.s2}}</div>
+    <div class="mc-tr">
+      <div class="pn ${{p2}}">${{m.t2a}}</div>
+      <div class="pn ${{p2}}">${{m.t2b}}</div>
     </div>
   </div>
-  <div style="background:#fafafa;font-size:0.62rem;color:#aaa;text-align:right;padding:1px 6px;">{mtype}</div>
-  {badge_html}
-</div>"""
+  <div class="mc-ft">${{m.type}}</div>
+  ${{lk?'<div class="mc-bj">✅ 저장완료</div>':''}}
+</div>
+<div class="inp-row">
+  ${{lk
+    ? `<div class="scr-disp">${{sc.s1}}</div>
+       <button class="ebtn" onclick="doEdit(${{m.idx}})">✏️ 수정</button>
+       <div class="scr-disp">${{sc.s2}}</div>`
+    : `<div class="inp-box">
+         <button class="ibtn" onclick="adj(${{m.idx}},1,-1)">−</button>
+         <input class="inum" id="i1_${{m.idx}}" type="number"
+                value="${{sc.s1}}" min="${{MIN}}" max="${{MAX}}"
+                oninput="onInp(${{m.idx}},1,this.value)">
+         <button class="ibtn" onclick="adj(${{m.idx}},1,1)">+</button>
+       </div>
+       <button class="sbtn" onclick="doSave(${{m.idx}})">💾 저장</button>
+       <div class="inp-box">
+         <button class="ibtn" onclick="adj(${{m.idx}},2,-1)">−</button>
+         <input class="inum" id="i2_${{m.idx}}" type="number"
+                value="${{sc.s2}}" min="${{MIN}}" max="${{MAX}}"
+                oninput="onInp(${{m.idx}},2,this.value)">
+         <button class="ibtn" onclick="adj(${{m.idx}},2,1)">+</button>
+       </div>`
+  }}
+</div>`;
+  }}
 
-    # ── 라운드별 렌더링 ──────────────────────────────────────
-    for rnd in rounds:
-        rnd_matches = [(i, m) for i, m in enumerate(schedule) if m["round"] == rnd]
-        if not rnd_matches: continue
+  window.adj=function(idx,t,d){{
+    const el=document.getElementById((t===1?'i1_':'i2_')+idx);
+    let v=parseInt(el.value||'0')+d;
+    if(v<MIN)v=MIN; if(v>MAX)v=MAX;
+    el.value=v;
+    scores[idx][t===1?'s1':'s2']=v;
+  }};
 
-        rnd_label = rnd.replace("(이벤트)", "") + (" ⭐" if "이벤트" in rnd else "")
-        st.markdown(
-            f'<div style="background:#1a1a2e;color:#fff;font-weight:700;font-size:0.92rem;'
-            f'text-align:center;padding:8px;border-radius:6px;margin:10px 0 6px 0;'
-            f'letter-spacing:1px;">{rnd_label}</div>',
-            unsafe_allow_html=True
-        )
+  window.onInp=function(idx,t,val){{
+    let v=parseInt(val)||0;
+    if(v<MIN)v=MIN; if(v>MAX)v=MAX;
+    scores[idx][t===1?'s1':'s2']=v;
+  }};
 
-        leagues_in_rnd = []
-        seen_lg = set()
-        for _, m in rnd_matches:
-            if m["league"] not in seen_lg:
-                leagues_in_rnd.append(m["league"]); seen_lg.add(m["league"])
+  // 저장: top-level URL 변경 → Streamlit query_params 수신
+  window.doSave=function(idx){{
+    const s1=scores[idx].s1, s2=scores[idx].s2;
+    // 로컬 즉시 잠금 (UX 반응성)
+    locked[idx]=true;
+    const w=document.getElementById('w'+idx);
+    const m=matches.find(x=>x.idx===idx);
+    const lc=m.league.includes('A')?'#2e7d32':'#1565c0';
+    redraw(m,lc,w);
+    // top 페이지 URL 변경으로 Streamlit 트리거
+    const url=new URL(window.top.location.href);
+    url.searchParams.set('act','save');
+    url.searchParams.set('idx',idx);
+    url.searchParams.set('s1',s1);
+    url.searchParams.set('s2',s2);
+    window.top.location.href=url.toString();
+  }};
 
-        for league in leagues_in_rnd:
-            lg_color   = "#2e7d32" if "A" in league else "#1565c0"
-            lg_matches = [(i, m) for i, m in rnd_matches if m["league"] == league]
+  window.doEdit=function(idx){{
+    locked[idx]=false;
+    const w=document.getElementById('w'+idx);
+    const m=matches.find(x=>x.idx===idx);
+    const lc=m.league.includes('A')?'#2e7d32':'#1565c0';
+    redraw(m,lc,w);
+    const url=new URL(window.top.location.href);
+    url.searchParams.set('act','edit');
+    url.searchParams.set('idx',idx);
+    window.top.location.href=url.toString();
+  }};
 
-            st.markdown(
-                f'<div style="color:{lg_color};font-size:0.75rem;font-weight:700;'
-                f'border-left:3px solid {lg_color};padding-left:6px;margin:4px 0 2px;">'
-                f'{league}</div>', unsafe_allow_html=True
-            )
+  render();
+}})();
+</script>
+</body></html>"""
 
-            for idx, match in lg_matches:
-                sc        = scores.get(str(idx), {})
-                is_locked = st.session_state.get(f"locked_{idx}", bool(sc))
-                s1_cur    = sc.get("score1", 0)
-                s2_cur    = sc.get("score2", 0)
-
-                t1a   = pname_short(match["team1"][0])
-                t1b   = pname_short(match["team1"][1])
-                t2a   = pname_short(match["team2"][0])
-                t2b   = pname_short(match["team2"][1])
-                mtype = match["type"]
-
-                # 카드
-                st.markdown(
-                    match_card_html(t1a, t1b, t2a, t2b, s1_cur, s2_cur,
-                                    mtype, lg_color, is_locked),
-                    unsafe_allow_html=True
-                )
-
-                # 입력행 — st.form으로 감싸서 엔터/버튼 클릭 시 submit
-                with st.form(key=f"form_{idx}", clear_on_submit=False):
-                    # 한 줄 CSS 컨테이너
-                    st.markdown('<div class="inp-line">', unsafe_allow_html=True)
-
-                    fa, fb, fc = st.columns([5, 3, 5])
-
-                    if is_locked:
-                        fa.markdown(
-                            f'<div style="background:#eee;border-radius:5px;height:36px;'
-                            f'display:flex;align-items:center;justify-content:center;'
-                            f'font-size:1rem;font-weight:700;color:#555;">{s1_cur}</div>',
-                            unsafe_allow_html=True
-                        )
-                        fc.markdown(
-                            f'<div style="background:#eee;border-radius:5px;height:36px;'
-                            f'display:flex;align-items:center;justify-content:center;'
-                            f'font-size:1rem;font-weight:700;color:#555;">{s2_cur}</div>',
-                            unsafe_allow_html=True
-                        )
-                        submitted = fb.form_submit_button(
-                            "✏️ 수정", use_container_width=True
-                        )
-                        if submitted:
-                            st.session_state[f"locked_{idx}"] = False
-                            st.rerun()
-                    else:
-                        s1_new = fa.number_input(
-                            "팀1", min_value=0, max_value=6,
-                            value=s1_cur, key=f"ni1_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        s2_new = fc.number_input(
-                            "팀2", min_value=0, max_value=6,
-                            value=s2_cur, key=f"ni2_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        submitted = fb.form_submit_button(
-                            "💾 저장", use_container_width=True,
-                            type="primary"
-                        )
-                        if submitted:
-                            scores[str(idx)] = {
-                                "score1": int(s1_new),
-                                "score2": int(s2_new)
-                            }
-                            st.session_state["sb_scores"] = scores
-                            st.session_state[f"locked_{idx}"] = True
-                            shelf_save(
-                                selected_key,
-                                serialize_schedule(st.session_state["sb_schedule"]),
-                                scores,
-                            )
-                            st.rerun()
-
-                    st.markdown('</div>', unsafe_allow_html=True)
+    sb_html = build_full_html(schedule, rounds, scores, st.session_state)
+    n = len(schedule)
+    st.components.v1.html(sb_html, height=300 + n * 155, scrolling=True)
 
     # ── 전체 초기화 ─────────────────────────────────────────
     st.markdown("---")
