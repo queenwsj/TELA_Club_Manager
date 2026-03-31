@@ -844,23 +844,31 @@ if page == "📊 점수판":
     st.markdown(f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:12px;">{display_date}</div>', unsafe_allow_html=True)
 
     # ── session_state key 초기화 ──────────────────────────────
+    # sb_scores에 저장된 값이 있으면 항상 그걸로 덮어씀 (수정 저장 후 반영 보장)
     for i, match in enumerate(schedule):
         saved_sc = st.session_state["sb_scores"].get(str(i), {})
-        if f"sc1_{i}" not in st.session_state:
+        if saved_sc:
+            # 저장된 값이 있으면 항상 최신 저장값으로 강제 동기화
             st.session_state[f"sc1_{i}"] = saved_sc.get("score1", 0)
-        if f"sc2_{i}" not in st.session_state:
             st.session_state[f"sc2_{i}"] = saved_sc.get("score2", 0)
+        else:
+            if f"sc1_{i}" not in st.session_state:
+                st.session_state[f"sc1_{i}"] = 0
+            if f"sc2_{i}" not in st.session_state:
+                st.session_state[f"sc2_{i}"] = 0
 
     # ── 저장 트리거 수신 ────────────────────────────────────
-    # JS에서 window.location에 ?save_idx=N 파라미터로 전달
-    import urllib.parse
     qp = st.query_params
     save_trigger = qp.get("save_idx", None)
     if save_trigger is not None:
         try:
             sidx = int(save_trigger)
-            s1v  = int(qp.get("s1", st.session_state.get(f"sc1_{sidx}", 0)))
-            s2v  = int(qp.get("s2", st.session_state.get(f"sc2_{sidx}", 0)))
+            # URL 파라미터의 s1/s2를 최우선 적용 (수정 후 저장 포함)
+            s1v = int(qp.get("s1", 0))
+            s2v = int(qp.get("s2", 0))
+            # session_state 키를 항상 최신값으로 강제 갱신 (기존 키 삭제 후 재설정)
+            st.session_state.pop(f"sc1_{sidx}", None)
+            st.session_state.pop(f"sc2_{sidx}", None)
             st.session_state[f"sc1_{sidx}"] = s1v
             st.session_state[f"sc2_{sidx}"] = s2v
             st.session_state["sb_scores"][str(sidx)] = {"score1": s1v, "score2": s2v}
@@ -871,7 +879,7 @@ if page == "📊 점수판":
             )
             st.query_params.clear()
             st.rerun()
-        except Exception:
+        except Exception as e:
             st.query_params.clear()
 
     # ── 전체 점수판 HTML 빌드 ───────────────────────────────
@@ -1158,8 +1166,10 @@ ${{lk ? '<div class="saved-badge">✅ 저장완료</div>' : ''}}`;
 
     sb_html = build_scoreboard_html(schedule, rounds, st.session_state, selected_date)
     n_matches = len(schedule)
-    est_height = 120 + n_matches * 130
-    st.components.v1.html(sb_html, height=est_height, scrolling=False)
+    # 경기당 약 160px (카드+입력행+배지+여백) + 라운드헤더/리그헤더 여유분
+    # scrolling=True로 내부 스크롤 대신 충분한 높이 확보
+    est_height = 300 + n_matches * 160
+    st.components.v1.html(sb_html, height=est_height, scrolling=True)
 
     # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
