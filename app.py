@@ -782,411 +782,227 @@ if page == "📊 점수판":
 
     st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
 
-    # ── 날짜 선택 / 수기 입력 ──────────────────────────────
-    saved_dates = shelf_list_dates()
+    # ── 날짜 + 일련번호 입력 ────────────────────────────────
     today_str   = date.today().strftime("%Y-%m-%d")
+    saved_keys  = shelf_list_dates()  # "날짜_번호" 형식
 
-    col_date1, col_date2 = st.columns([2, 3])
-    with col_date1:
-        date_mode = st.radio("날짜 방식", ["오늘 날짜", "직접 입력", "저장된 날짜 불러오기"],
-                              index=0, horizontal=False, label_visibility="collapsed")
-    with col_date2:
-        if date_mode == "오늘 날짜":
-            selected_date = today_str
-            st.markdown(f"**📅 {selected_date}**")
-        elif date_mode == "직접 입력":
-            selected_date = st.text_input("날짜 입력 (YYYY-MM-DD)", value=today_str)
+    col_m1, col_m2 = st.columns([3, 2])
+    with col_m1:
+        sb_mode = st.radio("모드", ["새 점수판 (날짜+번호 입력)", "저장된 점수판 불러오기"],
+                           index=0, horizontal=False, label_visibility="collapsed")
+    with col_m2:
+        if sb_mode == "새 점수판 (날짜+번호 입력)":
+            sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
+            sb_num  = st.text_input("일련번호 (예: 001)", value="001", key="sb_num_inp")
+            selected_key = f"{sb_date}_{sb_num}"
         else:
-            if saved_dates:
-                selected_date = st.selectbox("저장된 날짜 선택", saved_dates)
+            if saved_keys:
+                selected_key = st.selectbox("저장된 점수판 선택", saved_keys)
             else:
                 st.info("저장된 데이터가 없습니다.")
-                selected_date = today_str
+                selected_key = f"{today_str}_001"
 
-    st.caption(f"현재 날짜 키: **{selected_date}**")
+    st.caption(f"현재 키: **{selected_key}**")
 
-    # ── 해당 날짜 데이터 로드 ──────────────────────────────
-    loaded = shelf_load(selected_date)
-
-    # session_state 동기화
-    if "sb_date" not in st.session_state or st.session_state["sb_date"] != selected_date:
-        st.session_state["sb_date"] = selected_date
+    # ── 데이터 로드 / 세션 동기화 ───────────────────────────
+    if st.session_state.get("sb_key") != selected_key:
+        st.session_state["sb_key"] = selected_key
+        loaded = shelf_load(selected_key)
         if loaded:
             st.session_state["sb_schedule"] = deserialize_schedule(loaded["schedule"])
             st.session_state["sb_scores"]   = loaded["scores"]
         else:
-            # 랜덤페어에서 생성된 것 있으면 가져오기
-            if "schedule" in st.session_state:
-                st.session_state["sb_schedule"] = st.session_state["schedule"]
+            # 랜덤페어에서 생성된 대진표가 있으면 사용
+            rp_sched = st.session_state.get("rp_schedule")
+            rp_key   = st.session_state.get("rp_key", "")
+            if rp_sched and rp_key == selected_key:
+                st.session_state["sb_schedule"] = rp_sched
                 st.session_state["sb_scores"]   = {}
             else:
                 st.session_state["sb_schedule"] = None
                 st.session_state["sb_scores"]   = {}
 
-    schedule = st.session_state.get("sb_schedule", None)
+    schedule = st.session_state.get("sb_schedule")
 
     if not schedule:
-        st.warning("⚠️ 이 날짜에 저장된 대진표가 없습니다.")
-        st.info("👈 **🎲 랜덤페어**에서 대진표를 생성하거나, 저장된 날짜를 선택해주세요.")
+        st.warning("⚠️ 이 키에 저장된 대진표가 없습니다.")
+        st.info("👈 **🎲 랜덤페어**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
         st.stop()
 
-    scores = st.session_state.get("sb_scores", {})
-
-    # ── 라운드 목록 ────────────────────────────────────────
-    rounds = []
-    seen_r = set()
+    scores  = st.session_state.setdefault("sb_scores", {})
+    rounds  = []
+    seen_r  = set()
     for m in schedule:
-        r = m["round"]
-        if r not in seen_r: rounds.append(r); seen_r.add(r)
+        if m["round"] not in seen_r:
+            rounds.append(m["round"]); seen_r.add(m["round"])
 
-    # ── 날짜 표시 ──────────────────────────────────────────
-    display_date = selected_date.replace("-","년 ",1).replace("-","월 ")+"일"
-    st.markdown(f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:12px;">{display_date}</div>', unsafe_allow_html=True)
+    # ── 날짜 표시 ───────────────────────────────────────────
+    parts = selected_key.split("_")
+    disp_date = parts[0] if parts else selected_key
+    disp_num  = parts[1] if len(parts) > 1 else ""
+    st.markdown(
+        f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:8px;">'
+        f'{disp_date} · {disp_num}</div>',
+        unsafe_allow_html=True
+    )
 
-    # ── session_state key 초기화 ──────────────────────────────
-    # sb_scores에 저장된 값이 있으면 항상 그걸로 덮어씀 (수정 저장 후 반영 보장)
-    for i, match in enumerate(schedule):
-        saved_sc = st.session_state["sb_scores"].get(str(i), {})
-        if saved_sc:
-            # 저장된 값이 있으면 항상 최신 저장값으로 강제 동기화
-            st.session_state[f"sc1_{i}"] = saved_sc.get("score1", 0)
-            st.session_state[f"sc2_{i}"] = saved_sc.get("score2", 0)
-        else:
-            if f"sc1_{i}" not in st.session_state:
-                st.session_state[f"sc1_{i}"] = 0
-            if f"sc2_{i}" not in st.session_state:
-                st.session_state[f"sc2_{i}"] = 0
+    # ════════════════════════════════════════════════════════
+    # 점수 입력 UI (순수 Streamlit) + HTML 시각화 카드
+    # 각 경기마다:
+    #   [HTML 카드 시각화]
+    #   [- s1 +] [저장/수정] [- s2 +]  ← Streamlit 위젯
+    # ════════════════════════════════════════════════════════
+    import json as _json
 
-    # ── 저장 트리거 수신 ────────────────────────────────────
-    qp = st.query_params
-    save_trigger = qp.get("save_idx", None)
-    if save_trigger is not None:
-        try:
-            sidx = int(save_trigger)
-            # URL 파라미터의 s1/s2를 최우선 적용 (수정 후 저장 포함)
-            s1v = int(qp.get("s1", 0))
-            s2v = int(qp.get("s2", 0))
-            # session_state 키를 항상 최신값으로 강제 갱신 (기존 키 삭제 후 재설정)
-            st.session_state.pop(f"sc1_{sidx}", None)
-            st.session_state.pop(f"sc2_{sidx}", None)
-            st.session_state[f"sc1_{sidx}"] = s1v
-            st.session_state[f"sc2_{sidx}"] = s2v
-            st.session_state["sb_scores"][str(sidx)] = {"score1": s1v, "score2": s2v}
-            shelf_save(
-                selected_date,
-                serialize_schedule(st.session_state["sb_schedule"]),
-                st.session_state["sb_scores"],
+    def card_html(t1a, t1b, t2a, t2b, s1, s2, mtype, lg_color, is_saved):
+        t1w = s1 > s2 and (s1+s2) > 0
+        t2w = s2 > s1 and (s1+s2) > 0
+        p1c = "color:#b71c1c;font-weight:800" if t1w else "color:#222"
+        p2c = "color:#b71c1c;font-weight:800" if t2w else "color:#222"
+        bg  = "#f0fff0" if is_saved else "#fff"
+        bdr = "#a5d6a7" if is_saved else "#e0e0e0"
+        badge = '<div style="font-size:0.68rem;color:#2e7d32;font-weight:700;text-align:right;padding:2px 7px;">✅ 저장완료</div>' if is_saved else ""
+        return f"""
+<div style="border:1px solid {bdr};border-left:4px solid {lg_color};
+            border-radius:6px;overflow:hidden;background:{bg};margin-bottom:2px;">
+  <div style="display:flex;align-items:stretch;">
+    <div style="flex:3;padding:5px 2px 3px 7px;">
+      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;">{t1a}</div>
+      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;">{t1b}</div>
+    </div>
+    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;
+                justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s1}</div>
+    <div style="flex:0 0 18px;display:flex;align-items:center;justify-content:center;
+                font-size:0.6rem;color:#bbb;">vs</div>
+    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;
+                justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s2}</div>
+    <div style="flex:3;padding:5px 7px 3px 2px;text-align:right;">
+      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;">{t2a}</div>
+      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;">{t2b}</div>
+    </div>
+  </div>
+  <div style="background:#fafafa;font-size:0.62rem;color:#aaa;text-align:right;padding:2px 7px;">{mtype}</div>
+  {badge}
+</div>"""
+
+    def pname_short(code):
+        raw = base_name(code)
+        if is_custom_code(raw):
+            g = "(남)" if raw[1].upper()=="M" else "(여)"
+            return raw[2:] + g
+        return raw
+
+    # 라운드별 렌더링
+    for rnd in rounds:
+        rnd_matches = [(i, m) for i, m in enumerate(schedule) if m["round"] == rnd]
+        if not rnd_matches: continue
+
+        rnd_label = rnd.replace("(이벤트)", "") + (" ⭐" if "이벤트" in rnd else "")
+        st.markdown(
+            f'<div style="background:#1a1a2e;color:#fff;font-weight:700;font-size:0.92rem;'
+            f'text-align:center;padding:8px;border-radius:6px;margin:10px 0 6px 0;'
+            f'letter-spacing:1px;">{rnd_label}</div>',
+            unsafe_allow_html=True
+        )
+
+        # 리그별
+        leagues_in_rnd = []
+        seen_lg = set()
+        for _, m in rnd_matches:
+            if m["league"] not in seen_lg:
+                leagues_in_rnd.append(m["league"]); seen_lg.add(m["league"])
+
+        for league in leagues_in_rnd:
+            lg_color  = "#2e7d32" if "A" in league else "#1565c0"
+            lg_matches = [(i, m) for i, m in rnd_matches if m["league"] == league]
+
+            st.markdown(
+                f'<div style="color:{lg_color};font-size:0.75rem;font-weight:700;'
+                f'border-left:3px solid {lg_color};padding-left:6px;margin:4px 0;">'
+                f'{league}</div>', unsafe_allow_html=True
             )
-            st.query_params.clear()
-            st.rerun()
-        except Exception as e:
-            st.query_params.clear()
 
-    # ── 전체 점수판 HTML 빌드 ───────────────────────────────
-    # 모든 라운드를 순수 HTML+JS로 렌더링 (Streamlit 컬럼 미사용)
-    # → 모바일 포함 항상 가로 배치 보장
+            for idx, match in lg_matches:
+                sc       = scores.get(str(idx), {})
+                is_saved = bool(sc)
+                is_locked = st.session_state.get(f"locked_{idx}", is_saved)
 
-    def build_scoreboard_html(schedule, rounds, session_state, selected_date):
-        import json as _json
-        matches_data = []
-        for idx, match in enumerate(schedule):
-            s1 = session_state.get(f"sc1_{idx}", 0)
-            s2 = session_state.get(f"sc2_{idx}", 0)
-            # 저장된 점수가 있으면(score1 키 존재) locked 상태
-            saved = str(idx) in session_state.get("sb_scores", {})
-            matches_data.append({
-                "idx":    idx,
-                "round":  match["round"],
-                "league": match["league"],
-                "t1a":    pname(match["team1"][0]),
-                "t1b":    pname(match["team1"][1]),
-                "t2a":    pname(match["team2"][0]),
-                "t2b":    pname(match["team2"][1]),
-                "type":   match["type"],
-                "s1":     s1,
-                "s2":     s2,
-                "saved":  saved,
-            })
+                s1_cur = sc.get("score1", 0)
+                s2_cur = sc.get("score2", 0)
 
-        matches_json = _json.dumps(matches_data, ensure_ascii=False)
-        rounds_json  = _json.dumps(rounds, ensure_ascii=False)
+                t1a = pname_short(match["team1"][0])
+                t1b = pname_short(match["team1"][1])
+                t2a = pname_short(match["team2"][0])
+                t2b = pname_short(match["team2"][1])
+                mtype = match["type"]
 
-        html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<style>
-*{{box-sizing:border-box;margin:0;padding:0;}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-      background:#f5f5f5;padding:6px;}}
+                # ── 시각화 카드 ─────────────────────────────
+                st.markdown(
+                    card_html(t1a, t1b, t2a, t2b, s1_cur, s2_cur, mtype, lg_color, is_locked),
+                    unsafe_allow_html=True
+                )
 
-/* 라운드 블록 */
-.rnd-block{{margin-bottom:10px;background:#fff;border-radius:8px;
-            overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);}}
-.rnd-hdr{{background:#1a1a2e;color:#fff;font-weight:700;font-size:0.92rem;
-           text-align:center;padding:8px 4px;letter-spacing:1px;}}
+                # ── 점수 입력 + 저장/수정 버튼 (Streamlit 위젯) ─
+                c1, c_btn, c2 = st.columns([5, 3, 5])
 
-/* 리그 섹션 */
-.lg-section{{padding:6px 8px 4px;}}
-.lg-lbl{{font-size:0.75rem;font-weight:700;padding:2px 0 4px 6px;margin-bottom:4px;}}
+                if is_locked:
+                    # 잠금 상태: 숫자만 표시, 수정 버튼
+                    c1.markdown(
+                        f'<div style="background:#eee;border-radius:5px;height:38px;'
+                        f'display:flex;align-items:center;justify-content:center;'
+                        f'font-size:1.1rem;font-weight:700;color:#555;">{s1_cur}</div>',
+                        unsafe_allow_html=True
+                    )
+                    c2.markdown(
+                        f'<div style="background:#eee;border-radius:5px;height:38px;'
+                        f'display:flex;align-items:center;justify-content:center;'
+                        f'font-size:1.1rem;font-weight:700;color:#555;">{s2_cur}</div>',
+                        unsafe_allow_html=True
+                    )
+                    if c_btn.button("✏️ 수정", key=f"edit_{idx}", use_container_width=True):
+                        st.session_state[f"locked_{idx}"] = False
+                        st.rerun()
+                else:
+                    # 편집 상태: number_input + 저장 버튼
+                    s1_new = c1.number_input(
+                        "팀1", min_value=0, max_value=6,
+                        value=s1_cur, key=f"ni1_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    s2_new = c2.number_input(
+                        "팀2", min_value=0, max_value=6,
+                        value=s2_cur, key=f"ni2_{idx}",
+                        label_visibility="collapsed"
+                    )
+                    if c_btn.button("💾 저장", key=f"save_{idx}",
+                                    use_container_width=True, type="primary"):
+                        scores[str(idx)] = {"score1": int(s1_new), "score2": int(s2_new)}
+                        st.session_state["sb_scores"] = scores
+                        st.session_state[f"locked_{idx}"] = True
+                        shelf_save(
+                            selected_key,
+                            serialize_schedule(st.session_state["sb_schedule"]),
+                            scores,
+                        )
+                        st.rerun()
 
-/* 경기 1열 */
-.match-list{{display:flex;flex-direction:column;gap:6px;}}
+                st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
 
-/* 경기 카드 */
-.mc{{border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;background:#fff;}}
-.mc-body{{display:flex;align-items:stretch;}}
-.mc-team-l{{flex:3;padding:5px 2px 3px 7px;min-width:0;}}
-.mc-team-r{{flex:3;padding:5px 7px 3px 2px;text-align:right;min-width:0;}}
-.mc-score{{flex:0 0 26px;background:#f0f0f0;display:flex;align-items:center;
-            justify-content:center;font-size:0.95rem;font-weight:800;color:#222;}}
-.mc-vs{{flex:0 0 16px;display:flex;align-items:center;justify-content:center;
-         font-size:0.6rem;color:#bbb;}}
-.mc-ft{{background:#fafafa;font-size:0.62rem;color:#aaa;text-align:right;padding:2px 7px;}}
-.pn{{font-size:0.78rem;font-weight:600;color:#222;line-height:1.4;
-      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}
-.pw{{color:#b71c1c!important;font-weight:800!important;}}
-
-/* 저장된 카드 배경 */
-.mc.saved-card{{background:#f9fff9;border-color:#a5d6a7;}}
-
-/* 입력행 */
-.inp-row{{display:flex;align-items:center;gap:3px;padding:4px 4px 5px;}}
-.inp-box{{flex:1;display:flex;align-items:center;border:1px solid #ccc;
-           border-radius:5px;overflow:hidden;background:#f8f8f8;height:36px;min-width:0;}}
-.inp-box.locked{{background:#eee;border-color:#ddd;}}
-
-/* - + 버튼 */
-.inp-btn{{width:30px;height:36px;border:none;background:#e8e8e8;font-size:1.05rem;
-           font-weight:700;cursor:pointer;color:#333;flex-shrink:0;
-           display:flex;align-items:center;justify-content:center;
-           -webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
-.inp-btn:active{{background:#d0d0d0;}}
-.inp-btn:disabled{{color:#bbb;cursor:default;background:#eee;}}
-.inp-btn.hidden{{visibility:hidden;}}
-
-/* 점수 숫자 표시 */
-.inp-num{{flex:1;text-align:center;font-size:1rem;font-weight:700;
-           border:none;background:transparent;width:100%;
-           -moz-appearance:textfield;}}
-.inp-num::-webkit-inner-spin-button,
-.inp-num::-webkit-outer-spin-button{{-webkit-appearance:none;}}
-.inp-num:disabled{{color:#333;}}
-
-/* 저장 버튼 */
-.save-btn{{flex:0 0 54px;height:36px;background:#e53935;color:#fff;border:none;
-            border-radius:5px;font-size:0.82rem;font-weight:700;cursor:pointer;
-            -webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
-.save-btn:active{{background:#b71c1c;}}
-
-/* 수정 버튼 */
-.edit-btn{{flex:0 0 54px;height:36px;background:#1565c0;color:#fff;border:none;
-            border-radius:5px;font-size:0.82rem;font-weight:700;cursor:pointer;
-            -webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
-.edit-btn:active{{background:#0d47a1;}}
-
-/* 저장완료 배지 */
-.saved-badge{{
-    font-size:0.68rem;color:#2e7d32;font-weight:700;
-    text-align:center;padding:2px 0 3px;
-    display:flex;align-items:center;justify-content:center;gap:3px;
-}}
-</style>
-</head><body>
-<div id="root"></div>
-<script>
-(function(){{
-  const matches = {matches_json};
-  const rounds  = {rounds_json};
-  const MAX = 6, MIN = 0;
-
-  // 로컬 점수 상태
-  const scores = {{}};
-  // 잠금 상태 (저장된 경기)
-  const locked = {{}};
-
-  matches.forEach(m => {{
-    scores[m.idx] = {{s1: m.s1, s2: m.s2}};
-    locked[m.idx] = m.saved;
-  }});
-
-  function pWin(a,b){{ return (a+b)>0 && a>b; }}
-
-  function render(){{
-    const root = document.getElementById('root');
-    root.innerHTML = '';
-    rounds.forEach(rnd => {{
-      const rndMs = matches.filter(m => m.round === rnd);
-      if(!rndMs.length) return;
-      const block = document.createElement('div');
-      block.className = 'rnd-block';
-      const lbl = rnd.replace('(이벤트)','') + (rnd.includes('이벤트')?' ⭐':'');
-      block.innerHTML = `<div class="rnd-hdr">${{lbl}}</div>`;
-      const leagues = [...new Set(rndMs.map(m=>m.league))];
-      leagues.forEach(lg => {{
-        const lgColor = lg.includes('A') ? '#2e7d32' : '#1565c0';
-        const sec = document.createElement('div');
-        sec.className = 'lg-section';
-        const lblDiv = document.createElement('div');
-        lblDiv.className = 'lg-lbl';
-        lblDiv.style.cssText = `color:${{lgColor}};border-left:3px solid ${{lgColor}};padding-left:6px;`;
-        lblDiv.textContent = lg;
-        sec.appendChild(lblDiv);
-        const list = document.createElement('div');
-        list.className = 'match-list';
-        rndMs.filter(m=>m.league===lg).forEach(m => {{
-          list.appendChild(buildMatch(m, lgColor));
-        }});
-        sec.appendChild(list);
-        block.appendChild(sec);
-      }});
-      root.appendChild(block);
-    }});
-    notifyHeight();
-  }}
-
-  function buildMatch(m, lgColor){{
-    const wrap = document.createElement('div');
-    wrap.id = 'wrap_' + m.idx;
-    refreshMatch(m, lgColor, wrap);
-    return wrap;
-  }}
-
-  function refreshMatch(m, lgColor, wrap){{
-    const sc  = scores[m.idx];
-    const lk  = locked[m.idx];
-    const t1w = pWin(sc.s1, sc.s2);
-    const t2w = pWin(sc.s2, sc.s1);
-    const savedCls = lk ? ' saved-card' : '';
-    const btnHide  = lk ? ' hidden' : '';
-
-    wrap.innerHTML = `
-<div class="mc${{savedCls}}" style="border-left:4px solid ${{lgColor}}">
-  <div class="mc-body">
-    <div class="mc-team-l">
-      <div class="pn${{t1w?' pw':''}}">${{m.t1a}}</div>
-      <div class="pn${{t1w?' pw':''}}">${{m.t1b}}</div>
-    </div>
-    <div class="mc-score" id="d1_${{m.idx}}">${{sc.s1}}</div>
-    <div class="mc-vs">vs</div>
-    <div class="mc-score" id="d2_${{m.idx}}">${{sc.s2}}</div>
-    <div class="mc-team-r">
-      <div class="pn${{t2w?' pw':''}}">${{m.t2a}}</div>
-      <div class="pn${{t2w?' pw':''}}">${{m.t2b}}</div>
-    </div>
-  </div>
-  <div class="mc-ft">${{m.type}}</div>
-</div>
-<div class="inp-row">
-  <div class="inp-box${{lk?' locked':''}}">
-    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
-            ontouchend="ev(event,()=>adj(${{m.idx}},1,-1))"
-            onclick="adj(${{m.idx}},1,-1)">−</button>
-    <input  class="inp-num" type="number" id="i1_${{m.idx}}"
-            value="${{sc.s1}}" min="${{MIN}}" max="${{MAX}}"
-            ${{lk?'disabled':''}}
-            oninput="onInp(${{m.idx}},1,this.value)">
-    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
-            ontouchend="ev(event,()=>adj(${{m.idx}},1,1))"
-            onclick="adj(${{m.idx}},1,1)">+</button>
-  </div>
-  ${{lk
-    ? `<button class="edit-btn" onclick="doEdit(${{m.idx}})">수정</button>`
-    : `<button class="save-btn" onclick="doSave(${{m.idx}})">저장</button>`
-  }}
-  <div class="inp-box${{lk?' locked':''}}">
-    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
-            ontouchend="ev(event,()=>adj(${{m.idx}},2,-1))"
-            onclick="adj(${{m.idx}},2,-1)">−</button>
-    <input  class="inp-num" type="number" id="i2_${{m.idx}}"
-            value="${{sc.s2}}" min="${{MIN}}" max="${{MAX}}"
-            ${{lk?'disabled':''}}
-            oninput="onInp(${{m.idx}},2,this.value)">
-    <button class="inp-btn${{btnHide}}" ${{lk?'disabled':''}}
-            ontouchend="ev(event,()=>adj(${{m.idx}},2,1))"
-            onclick="adj(${{m.idx}},2,1)">+</button>
-  </div>
-</div>
-${{lk ? '<div class="saved-badge">✅ 저장완료</div>' : ''}}`;
-  }}
-
-  // touchend 중복 방지 (click도 발생하므로)
-  function ev(e, fn){{ e.preventDefault(); fn(); }}
-
-  window.adj = function(idx,team,delta){{
-    if(locked[idx]) return;
-    const el = document.getElementById((team===1?'i1_':'i2_')+idx);
-    let v = parseInt(el.value||'0') + delta;
-    if(v<MIN) v=MIN; if(v>MAX) v=MAX;
-    el.value = v;
-    scores[idx][team===1?'s1':'s2'] = v;
-    document.getElementById((team===1?'d1_':'d2_')+idx).textContent = v;
-  }};
-
-  window.onInp = function(idx,team,val){{
-    if(locked[idx]) return;
-    let v = parseInt(val)||0;
-    if(v<MIN) v=MIN; if(v>MAX) v=MAX;
-    scores[idx][team===1?'s1':'s2'] = v;
-    document.getElementById((team===1?'d1_':'d2_')+idx).textContent = v;
-  }};
-
-  window.doSave = function(idx){{
-    const s1 = scores[idx].s1;
-    const s2 = scores[idx].s2;
-    const url = new URL(window.location.href);
-    url.searchParams.set('save_idx', idx);
-    url.searchParams.set('s1', s1);
-    url.searchParams.set('s2', s2);
-    window.location.href = url.toString();
-  }};
-
-  window.doEdit = function(idx){{
-    locked[idx] = false;
-    // 해당 wrap만 다시 그리기
-    const wrap = document.getElementById('wrap_'+idx);
-    const m = matches.find(x=>x.idx===idx);
-    // lgColor 재계산
-    const lgColor = m.league.includes('A') ? '#2e7d32' : '#1565c0';
-    refreshMatch(m, lgColor, wrap);
-    notifyHeight();
-  }};
-
-  function notifyHeight(){{
-    setTimeout(()=>{{
-      const h = document.documentElement.scrollHeight;
-      window.parent.postMessage({{type:'streamlit:setFrameHeight',height:h+10}},'*');
-    }}, 100);
-  }}
-
-  render();
-}})();
-</script>
-</body></html>"""
-        return html
-
-    sb_html = build_scoreboard_html(schedule, rounds, st.session_state, selected_date)
-    n_matches = len(schedule)
-    # 경기당 약 160px (카드+입력행+배지+여백) + 라운드헤더/리그헤더 여유분
-    # scrolling=True로 내부 스크롤 대신 충분한 높이 확보
-    est_height = 300 + n_matches * 160
-    st.components.v1.html(sb_html, height=est_height, scrolling=True)
-
-    # ── 전체 초기화 버튼 ─────────────────────────────────────
+    # ── 전체 초기화 ─────────────────────────────────────────
     st.markdown("---")
     if st.button("🔄 점수 전체 초기화", type="secondary"):
-        # session_state의 sc1_, sc2_ 키도 초기화
-        for idx in range(len(schedule)):
-            st.session_state.pop(f"sc1_{idx}", None)
-            st.session_state.pop(f"sc2_{idx}", None)
+        for i in range(len(schedule)):
+            st.session_state.pop(f"ni1_{i}", None)
+            st.session_state.pop(f"ni2_{i}", None)
+            st.session_state.pop(f"locked_{i}", None)
         st.session_state["sb_scores"] = {}
         st.rerun()
 
-    # ── 통계 ───────────────────────────────────────────────
+    # ── 통계 ────────────────────────────────────────────────
     st.markdown("### 📈 선수별 통계")
-    df_sb = compute_scoreboard_stats(schedule, st.session_state.get("sb_scores",{}))
-
+    df_sb = compute_scoreboard_stats(schedule, st.session_state.get("sb_scores", {}))
     if df_sb.empty:
-        st.info("점수를 입력하면 통계가 표시됩니다.")
+        st.info("점수를 저장하면 통계가 표시됩니다.")
     else:
         for league in ["A리그", "B리그"]:
             df_lg = df_sb[df_sb["리그"]==league].drop(columns=["리그"]).reset_index(drop=True)
@@ -1202,9 +1018,11 @@ ${{lk ? '<div class="saved-badge">✅ 저장완료</div>' : ''}}`;
                 styles = [""]*len(row)
                 if "승" in row.index:
                     wi = row.index.get_loc("승")
-                    if row["승"]==mw and mw>0: styles[wi]="background-color:#FFF176;font-weight:bold"
+                    if row["승"]==mw and mw>0:
+                        styles[wi] = "background-color:#FFF176;font-weight:bold"
                 return styles
-            st.dataframe(df_lg.style.apply(hl_sb,axis=1), use_container_width=True, hide_index=True)
+            st.dataframe(df_lg.style.apply(hl_sb, axis=1),
+                         use_container_width=True, hide_index=True)
 
 
 # ============================================================
@@ -1243,6 +1061,16 @@ elif page == "🎲 랜덤페어":
     seed_val = None
     if use_seed:
         seed_val = st.sidebar.number_input("시드 번호", min_value=0, max_value=9999, value=42, step=1)
+
+    # ── 날짜 + 일련번호 (점수판 연동 키) ──────────────────
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("📅 **날짜 & 일련번호**")
+    rp_date = st.sidebar.text_input("날짜 (YYYY-MM-DD)",
+                                     value=date.today().strftime("%Y-%m-%d"),
+                                     key="rp_date")
+    rp_num  = st.sidebar.text_input("일련번호 (예: 001)", value="001", key="rp_num")
+    rp_key  = f"{rp_date}_{rp_num}"
+    st.sidebar.caption(f"저장 키: {rp_key}")
 
     # ── 관리자 비밀번호 ────────────────────────────────────
     st.sidebar.markdown("---")
@@ -1298,9 +1126,15 @@ elif page == "🎲 랜덤페어":
         st.session_state["schedule"]    = schedule
         st.session_state["stats"]       = stats
         st.session_state["scores"]      = {}
+        # 점수판 연동: rp_key로 자동 저장
+        st.session_state["rp_schedule"] = schedule
+        st.session_state["rp_key"]      = rp_key
         st.session_state["sb_schedule"] = schedule
         st.session_state["sb_scores"]   = {}
-        st.session_state["sb_date"]     = ""   # 날짜 동기화 리셋
+        st.session_state["sb_key"]      = ""   # 날짜 동기화 리셋
+        # shelve에 대진표 저장 (점수판에서 바로 불러올 수 있게)
+        shelf_save(rp_key, serialize_schedule(schedule), {})
+        st.success(f"✅ 대진표가 **{rp_key}** 키로 저장되었습니다. 점수판에서 같은 키를 입력하면 불러올 수 있습니다.")
 
         seed_label = f"시드 #{int(seed_val)}" if (use_seed and seed_val is not None) else "시드 없음(랜덤)"
 
