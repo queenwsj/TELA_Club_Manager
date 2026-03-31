@@ -391,10 +391,12 @@ def make_round_matches(
         women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
         while len(men_s) >= 4 and len(groups_of_4) < preprocess_slots:
             grp = men_s[:4]; men_s = men_s[4:]
-            groups_of_4.append(grp); [working.remove(p) for p in grp]
+            groups_of_4.append(grp)
+            for p in grp: working.remove(p)
         while len(women_s) >= 4 and len(groups_of_4) < preprocess_slots:
             grp = women_s[:4]; women_s = women_s[4:]
-            groups_of_4.append(grp); [working.remove(p) for p in grp]
+            groups_of_4.append(grp)
+            for p in grp: working.remove(p)
 
     elif top_ptype == "혼복":
         quota_ok_m = [p for p in men_all   if mixed_quota_ok(p, mixed_counts, league)]
@@ -417,10 +419,12 @@ def make_round_matches(
             women_s = sorted(women_all, key=lambda p: (game_counts.get(base_name(p),0), random.random()))
             while len(men_s) >= 4 and len(groups_of_4) < dong_slots:
                 grp = men_s[:4]; men_s = men_s[4:]
-                groups_of_4.append(grp); [working.remove(p) for p in grp]
+                groups_of_4.append(grp)
+                for p in grp: working.remove(p)
             while len(women_s) >= 4 and len(groups_of_4) < dong_slots:
                 grp = women_s[:4]; women_s = women_s[4:]
-                groups_of_4.append(grp); [working.remove(p) for p in grp]
+                groups_of_4.append(grp)
+                for p in grp: working.remove(p)
         else:
             preprocess_slots = min(max(0, n_groups - 1), minority_cnt // 2, max_by_quota)
             while len(groups_of_4) < preprocess_slots:
@@ -432,7 +436,8 @@ def make_round_matches(
                 m2 = sort_by_mixed_least(men_avail,   mixed_counts)[:2]
                 w2 = sort_by_mixed_least(women_avail, mixed_counts)[:2]
                 grp = m2 + w2
-                groups_of_4.append(grp); [working.remove(p) for p in grp]
+                groups_of_4.append(grp)
+                for p in grp: working.remove(p)
 
     # ── 2단계: 나머지 → anchor 기반 greedy ───────────────────
     remaining_need = n_groups - len(groups_of_4)
