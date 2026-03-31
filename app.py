@@ -879,66 +879,75 @@ if page == "📊 점수판":
     # → 모바일 포함 항상 가로 배치 보장
 
     def build_scoreboard_html(schedule, rounds, session_state, selected_date):
-        n = len(rounds)
-        cols_css = " ".join(["1fr"] * n)
-
-        # 각 경기 데이터 JSON 빌드
         import json as _json
         matches_data = []
         for idx, match in enumerate(schedule):
             s1 = session_state.get(f"sc1_{idx}", 0)
             s2 = session_state.get(f"sc2_{idx}", 0)
             matches_data.append({
-                "idx":   idx,
-                "round": match["round"],
+                "idx":    idx,
+                "round":  match["round"],
                 "league": match["league"],
-                "t1a":  pname(match["team1"][0]),
-                "t1b":  pname(match["team1"][1]),
-                "t2a":  pname(match["team2"][0]),
-                "t2b":  pname(match["team2"][1]),
-                "type": match["type"],
-                "s1":   s1,
-                "s2":   s2,
+                "t1a":    pname(match["team1"][0]),
+                "t1b":    pname(match["team1"][1]),
+                "t2a":    pname(match["team2"][0]),
+                "t2b":    pname(match["team2"][1]),
+                "type":   match["type"],
+                "s1":     s1,
+                "s2":     s2,
             })
 
         matches_json = _json.dumps(matches_data, ensure_ascii=False)
         rounds_json  = _json.dumps(rounds, ensure_ascii=False)
 
-        html = f"""
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-.sb-outer {{
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+*{{ box-sizing:border-box; margin:0; padding:0; }}
+body{{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       background:#f5f5f5; padding:6px; }}
+
+/* ── 라운드: 세로 스택 ─────────────────────────────── */
+.rnd-block {{
+    margin-bottom: 10px;
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
 }}
-.sb-grid {{
-    display: grid;
-    grid-template-columns: {cols_css};
-    gap: 8px;
-    min-width: {n * 200}px;
-}}
-.rnd-col {{ min-width: 0; }}
 .rnd-hdr {{
     background: #1a1a2e;
     color: #fff;
     font-weight: 700;
-    font-size: 0.9rem;
+    font-size: 0.92rem;
     text-align: center;
-    padding: 7px 4px;
-    border-radius: 6px 6px 0 0;
-    margin-bottom: 4px;
+    padding: 8px 4px;
     letter-spacing: 1px;
 }}
+
+/* ── 리그 구분 ─────────────────────────────────────── */
+.lg-section {{ padding: 6px 8px 4px; }}
 .lg-lbl {{
     font-size: 0.75rem;
     font-weight: 700;
-    padding: 2px 0 3px 6px;
-    margin: 6px 0 2px 0;
+    padding: 2px 0 4px 6px;
+    margin-bottom: 4px;
 }}
+
+/* ── 경기 2열 그리드 ────────────────────────────────── */
+/* 아이폰 17 기준(393px) → 사이드바 제외 실제 콘텐츠 너비 ~360px
+   2열이면 1열당 약 175px → 충분 */
+.match-grid {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+}}
+
+/* ── 경기 카드 ─────────────────────────────────────── */
 .mc {{
-    border: 1px solid #ddd;
+    border: 1px solid #e0e0e0;
     border-radius: 6px;
-    margin-bottom: 3px;
     overflow: hidden;
     background: #fff;
 }}
@@ -946,211 +955,190 @@ if page == "📊 점수판":
     display: flex;
     align-items: stretch;
 }}
-.mc-team-l {{ flex: 3; padding: 5px 4px 3px 7px; }}
-.mc-team-r {{ flex: 3; padding: 5px 7px 3px 4px; text-align: right; }}
+.mc-team-l {{ flex:2; padding:4px 2px 2px 5px; min-width:0; }}
+.mc-team-r {{ flex:2; padding:4px 5px 2px 2px; text-align:right; min-width:0; }}
 .mc-score {{
-    flex: 0 0 28px;
-    background: #f0f0f0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.95rem;
-    font-weight: 800;
-    color: #222;
+    flex:0 0 22px;
+    background:#f0f0f0;
+    display:flex; align-items:center; justify-content:center;
+    font-size:0.88rem; font-weight:800; color:#222;
 }}
 .mc-vs {{
-    flex: 0 0 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.62rem;
-    color: #aaa;
+    flex:0 0 14px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:0.58rem; color:#bbb;
 }}
 .mc-ft {{
-    background: #fafafa;
-    font-size: 0.65rem;
-    color: #999;
-    text-align: right;
-    padding: 2px 7px;
+    background:#fafafa; font-size:0.6rem; color:#aaa;
+    text-align:right; padding:1px 5px;
 }}
-.pn {{ font-size: 0.78rem; font-weight: 600; color: #222; line-height: 1.3; }}
-.pw {{ color: #b71c1c !important; }}
-/* 입력행: [- 숫자 +] [저장] [- 숫자 +] */
+.pn {{ font-size:0.72rem; font-weight:600; color:#222;
+       line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.pw {{ color:#b71c1c !important; font-weight:800 !important; }}
+
+/* ── 입력행: [- N +] [저장] [- N +] ─────────────────── */
 .inp-row {{
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    margin: 3px 0 6px 0;
+    display:flex; align-items:center; gap:2px;
+    padding:3px 2px 4px;
 }}
 .inp-box {{
-    flex: 1;
-    display: flex;
-    align-items: center;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    overflow: hidden;
-    background: #f8f8f8;
-    height: 36px;
+    flex:1; display:flex; align-items:center;
+    border:1px solid #ccc; border-radius:5px;
+    overflow:hidden; background:#f8f8f8; height:32px;
+    min-width:0;
 }}
 .inp-btn {{
-    width: 30px;
-    height: 36px;
-    border: none;
-    background: #eee;
-    font-size: 1.1rem;
-    font-weight: 700;
-    cursor: pointer;
-    color: #444;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    width:26px; height:32px; border:none;
+    background:#e8e8e8; font-size:1rem; font-weight:700;
+    cursor:pointer; color:#333; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:manipulation;
 }}
-.inp-btn:active {{ background: #ddd; }}
+.inp-btn:active {{ background:#d0d0d0; }}
 .inp-num {{
-    flex: 1;
-    text-align: center;
-    font-size: 1rem;
-    font-weight: 700;
-    border: none;
-    background: transparent;
-    width: 100%;
-    -moz-appearance: textfield;
+    flex:1; text-align:center; font-size:0.95rem; font-weight:700;
+    border:none; background:transparent; width:100%;
+    -moz-appearance:textfield;
 }}
 .inp-num::-webkit-inner-spin-button,
-.inp-num::-webkit-outer-spin-button {{ -webkit-appearance: none; }}
+.inp-num::-webkit-outer-spin-button {{ -webkit-appearance:none; }}
 .save-btn {{
-    flex: 0 0 52px;
-    height: 36px;
-    background: #e53935;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    font-weight: 700;
-    cursor: pointer;
+    flex:0 0 44px; height:32px;
+    background:#e53935; color:#fff; border:none;
+    border-radius:5px; font-size:0.78rem; font-weight:700;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:manipulation;
 }}
-.save-btn:active {{ background: #b71c1c; }}
+.save-btn:active {{ background:#b71c1c; }}
 </style>
+</head><body>
 
-<div class="sb-outer">
-  <div class="sb-grid" id="sbGrid"></div>
-</div>
+<div id="root"></div>
 
 <script>
-(function() {{
-  const matches  = {matches_json};
-  const rounds   = {rounds_json};
-  const selDate  = {_json.dumps(selected_date)};
+(function(){{
+  const matches = {matches_json};
+  const rounds  = {rounds_json};
 
-  // 점수 상태 (로컬)
   const scores = {{}};
-  matches.forEach(m => {{
-    scores[m.idx] = {{ s1: m.s1, s2: m.s2 }};
-  }});
+  matches.forEach(m => {{ scores[m.idx] = {{s1:m.s1, s2:m.s2}}; }});
 
-  function pWin(s1, s2) {{
-    return (s1 + s2) > 0 && s1 > s2;
-  }}
+  const MAX_SCORE = 6;
+  const MIN_SCORE = 0;
 
-  function buildGrid() {{
-    const grid = document.getElementById('sbGrid');
-    grid.innerHTML = '';
+  function pWin(a,b){{ return (a+b)>0 && a>b; }}
+
+  function render(){{
+    const root = document.getElementById('root');
+    root.innerHTML = '';
 
     rounds.forEach(rnd => {{
-      const rndMatches = matches.filter(m => m.round === rnd);
-      if (!rndMatches.length) return;
+      const rndMs = matches.filter(m => m.round === rnd);
+      if(!rndMs.length) return;
 
-      const col = document.createElement('div');
-      col.className = 'rnd-col';
+      const block = document.createElement('div');
+      block.className = 'rnd-block';
 
-      const lbl = rnd.replace('(이벤트)','') + (rnd.includes('이벤트') ? ' ⭐' : '');
-      col.innerHTML = `<div class="rnd-hdr">${{lbl}}</div>`;
+      const lbl = rnd.replace('(이벤트)','') + (rnd.includes('이벤트')?' ⭐':'');
+      block.innerHTML = `<div class="rnd-hdr">${{lbl}}</div>`;
 
-      // 리그별
-      const leagues = [...new Set(rndMatches.map(m => m.league))];
+      const leagues = [...new Set(rndMs.map(m=>m.league))];
       leagues.forEach(lg => {{
         const lgColor = lg.includes('A') ? '#2e7d32' : '#1565c0';
-        const lgDiv = document.createElement('div');
-        lgDiv.className = 'lg-lbl';
-        lgDiv.style.cssText = `color:${{lgColor}};border-left:3px solid ${{lgColor}};padding-left:6px;`;
-        lgDiv.textContent = lg;
-        col.appendChild(lgDiv);
+        const sec = document.createElement('div');
+        sec.className = 'lg-section';
 
-        rndMatches.filter(m => m.league === lg).forEach(m => {{
-          col.appendChild(buildMatch(m, lgColor));
+        const lblDiv = document.createElement('div');
+        lblDiv.className = 'lg-lbl';
+        lblDiv.style.cssText = `color:${{lgColor}};border-left:3px solid ${{lgColor}};padding-left:6px;`;
+        lblDiv.textContent = lg;
+        sec.appendChild(lblDiv);
+
+        const grid = document.createElement('div');
+        grid.className = 'match-grid';
+
+        rndMs.filter(m=>m.league===lg).forEach(m => {{
+          grid.appendChild(buildMatch(m, lgColor));
         }});
+
+        sec.appendChild(grid);
+        block.appendChild(sec);
       }});
 
-      grid.appendChild(col);
+      root.appendChild(block);
     }});
+
+    // 높이 자동 통보 (Streamlit iframe 여백 제거)
+    const h = document.body.scrollHeight;
+    window.parent.postMessage({{type:'streamlit:setFrameHeight', height:h+20}}, '*');
   }}
 
-  function buildMatch(m, lgColor) {{
+  function buildMatch(m, lgColor){{
     const wrap = document.createElement('div');
-    const sc   = scores[m.idx];
-    const t1w  = pWin(sc.s1, sc.s2);
-    const t2w  = pWin(sc.s2, sc.s1);
+    const sc = scores[m.idx];
+    const t1w = pWin(sc.s1,sc.s2);
+    const t2w = pWin(sc.s2,sc.s1);
 
     wrap.innerHTML = `
-      <div class="mc" style="border-left:4px solid ${{lgColor}};">
-        <div class="mc-body">
-          <div class="mc-team-l">
-            <div class="pn ${{t1w?'pw':''}}">${{m.t1a}}</div>
-            <div class="pn ${{t1w?'pw':''}}">${{m.t1b}}</div>
-          </div>
-          <div class="mc-score" id="disp_s1_${{m.idx}}">${{sc.s1}}</div>
-          <div class="mc-vs">vs</div>
-          <div class="mc-score" id="disp_s2_${{m.idx}}">${{sc.s2}}</div>
-          <div class="mc-team-r">
-            <div class="pn ${{t2w?'pw':''}}">${{m.t2a}}</div>
-            <div class="pn ${{t2w?'pw':''}}">${{m.t2b}}</div>
-          </div>
-        </div>
-        <div class="mc-ft">${{m.type}}</div>
-      </div>
-      <div class="inp-row">
-        <div class="inp-box">
-          <button class="inp-btn" onclick="adj(${{m.idx}},1,-1)">−</button>
-          <input class="inp-num" type="number" id="inp_s1_${{m.idx}}"
-                 value="${{sc.s1}}" min="0" max="99"
-                 oninput="onInput(${{m.idx}},1,this.value)">
-          <button class="inp-btn" onclick="adj(${{m.idx}},1,1)">+</button>
-        </div>
-        <button class="save-btn" onclick="doSave(${{m.idx}})">저장</button>
-        <div class="inp-box">
-          <button class="inp-btn" onclick="adj(${{m.idx}},2,-1)">−</button>
-          <input class="inp-num" type="number" id="inp_s2_${{m.idx}}"
-                 value="${{sc.s2}}" min="0" max="99"
-                 oninput="onInput(${{m.idx}},2,this.value)">
-          <button class="inp-btn" onclick="adj(${{m.idx}},2,1)">+</button>
-        </div>
-      </div>`;
+<div class="mc" style="border-left:4px solid ${{lgColor}}">
+  <div class="mc-body">
+    <div class="mc-team-l">
+      <div class="pn${{t1w?' pw':''}}">${{m.t1a}}</div>
+      <div class="pn${{t1w?' pw':''}}">${{m.t1b}}</div>
+    </div>
+    <div class="mc-score" id="d1_${{m.idx}}">${{sc.s1}}</div>
+    <div class="mc-vs">vs</div>
+    <div class="mc-score" id="d2_${{m.idx}}">${{sc.s2}}</div>
+    <div class="mc-team-r">
+      <div class="pn${{t2w?' pw':''}}">${{m.t2a}}</div>
+      <div class="pn${{t2w?' pw':''}}">${{m.t2b}}</div>
+    </div>
+  </div>
+  <div class="mc-ft">${{m.type}}</div>
+</div>
+<div class="inp-row">
+  <div class="inp-box">
+    <button class="inp-btn" ontouchstart="adj(${{m.idx}},1,-1)" onclick="adj(${{m.idx}},1,-1)">−</button>
+    <input class="inp-num" type="number" id="i1_${{m.idx}}"
+           value="${{sc.s1}}" min="${{MIN_SCORE}}" max="${{MAX_SCORE}}"
+           oninput="onInp(${{m.idx}},1,this.value)">
+    <button class="inp-btn" ontouchstart="adj(${{m.idx}},1,1)" onclick="adj(${{m.idx}},1,1)">+</button>
+  </div>
+  <button class="save-btn" onclick="doSave(${{m.idx}})">저장</button>
+  <div class="inp-box">
+    <button class="inp-btn" ontouchstart="adj(${{m.idx}},2,-1)" onclick="adj(${{m.idx}},2,-1)">−</button>
+    <input class="inp-num" type="number" id="i2_${{m.idx}}"
+           value="${{sc.s2}}" min="${{MIN_SCORE}}" max="${{MAX_SCORE}}"
+           oninput="onInp(${{m.idx}},2,this.value)">
+    <button class="inp-btn" ontouchstart="adj(${{m.idx}},2,1)" onclick="adj(${{m.idx}},2,1)">+</button>
+  </div>
+</div>`;
     return wrap;
   }}
 
-  window.adj = function(idx, team, delta) {{
-    const key = team === 1 ? 'inp_s1_' : 'inp_s2_';
-    const inp = document.getElementById(key + idx);
-    let val = parseInt(inp.value || '0') + delta;
-    if (val < 0) val = 0;
-    if (val > 99) val = 99;
-    inp.value = val;
-    scores[idx][team === 1 ? 's1' : 's2'] = val;
-    document.getElementById((team===1?'disp_s1_':'disp_s2_') + idx).textContent = val;
+  window.adj = function(idx,team,delta){{
+    const el = document.getElementById((team===1?'i1_':'i2_')+idx);
+    let v = parseInt(el.value||'0') + delta;
+    if(v < MIN_SCORE) v = MIN_SCORE;
+    if(v > MAX_SCORE) v = MAX_SCORE;
+    el.value = v;
+    scores[idx][team===1?'s1':'s2'] = v;
+    document.getElementById((team===1?'d1_':'d2_')+idx).textContent = v;
   }};
 
-  window.onInput = function(idx, team, val) {{
-    let v = parseInt(val) || 0;
-    if (v < 0) v = 0; if (v > 99) v = 99;
-    scores[idx][team === 1 ? 's1' : 's2'] = v;
-    document.getElementById((team===1?'disp_s1_':'disp_s2_') + idx).textContent = v;
+  window.onInp = function(idx,team,val){{
+    let v = parseInt(val)||0;
+    if(v < MIN_SCORE) v = MIN_SCORE;
+    if(v > MAX_SCORE) v = MAX_SCORE;
+    scores[idx][team===1?'s1':'s2'] = v;
+    document.getElementById((team===1?'d1_':'d2_')+idx).textContent = v;
   }};
 
-  window.doSave = function(idx) {{
+  window.doSave = function(idx){{
     const s1 = scores[idx].s1;
     const s2 = scores[idx].s2;
-    // Streamlit query_params로 저장 트리거
     const url = new URL(window.location.href);
     url.searchParams.set('save_idx', idx);
     url.searchParams.set('s1', s1);
@@ -1158,14 +1146,15 @@ if page == "📊 점수판":
     window.location.href = url.toString();
   }};
 
-  buildGrid();
+  render();
 }})();
 </script>
-"""
+</body></html>"""
         return html
 
     sb_html = build_scoreboard_html(schedule, rounds, st.session_state, selected_date)
-    st.components.v1.html(sb_html, height=max(600, len(schedule) * 120), scrolling=True)
+    # height=1은 JS postMessage로 자동 조절됨 (여백 최소화)
+    st.components.v1.html(sb_html, height=max(400, len(schedule) * 90), scrolling=False)
 
     # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
