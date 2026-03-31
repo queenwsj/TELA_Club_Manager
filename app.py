@@ -892,16 +892,11 @@ if page == "📊 점수판":
                     k1    = f"sc1_{idx}"
                     k2    = f"sc2_{idx}"
 
-                    # ── 1단계: 점수 입력 위젯 (key만, value= 없음) ──
-                    ic1, ic_dash, ic2 = st.columns([5, 1, 5])
+                    # ── 1단계: [- 점수1 +] [저장] [- 점수2 +] 한 줄 레이아웃 ──
+                    ic1, ic_mid, ic2 = st.columns([5, 3, 5])
                     s1_cur = ic1.number_input(
                         "팀1점수", min_value=0, max_value=99,
                         key=k1, label_visibility="collapsed"
-                    )
-                    ic_dash.markdown(
-                        '<div style="text-align:center;padding-top:6px;'
-                        'font-weight:700;color:#aaa;">-</div>',
-                        unsafe_allow_html=True
                     )
                     s2_cur = ic2.number_input(
                         "팀2점수", min_value=0, max_value=99,
@@ -913,7 +908,22 @@ if page == "📊 점수판":
                         "score1": s1_cur, "score2": s2_cur
                     }
 
-                    # ── 3단계: 카드 (위젯 후 렌더 → 값 일치 보장) ───
+                    # ── 3단계: 저장 버튼 (가운데) ────────────────────
+                    with ic_mid:
+                        if st.button(
+                            "저장",
+                            key=f"save_{idx}",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            shelf_save(
+                                selected_date,
+                                serialize_schedule(st.session_state["sb_schedule"]),
+                                st.session_state["sb_scores"],
+                            )
+                            st.toast(f"✅ {t1a}/{t1b} vs {t2a}/{t2b} 저장!", icon="💾")
+
+                    # ── 4단계: 카드 (위젯 후 렌더 → 값 일치 보장) ───
                     t1_win = s1_cur > s2_cur and (s1_cur+s2_cur) > 0
                     t2_win = s2_cur > s1_cur and (s1_cur+s2_cur) > 0
                     t1_cls = "player-win" if t1_win else ""
@@ -937,19 +947,6 @@ if page == "📊 점수판":
   <div class="match-footer">{mtype}</div>
 </div>"""
                     st.markdown(card, unsafe_allow_html=True)
-
-                    # ── 4단계: 경기별 저장 버튼 ──────────────────────
-                    if st.button(
-                        "💾 저장",
-                        key=f"save_{idx}",
-                        use_container_width=True,
-                    ):
-                        shelf_save(
-                            selected_date,
-                            serialize_schedule(st.session_state["sb_schedule"]),
-                            st.session_state["sb_scores"],
-                        )
-                        st.toast(f"✅ {t1a}/{t1b} vs {t2a}/{t2b} 저장!", icon="💾")
 
     # ── 전체 초기화 버튼 ─────────────────────────────────────
     st.markdown("---")
