@@ -847,43 +847,44 @@ if page == "📊 점수판":
     )
 
     # ════════════════════════════════════════════════════════
-    # 점수 입력 UI (순수 Streamlit) + HTML 시각화 카드
-    # 각 경기마다:
-    #   [HTML 카드 시각화]
-    #   [- s1 +] [저장/수정] [- s2 +]  ← Streamlit 위젯
+    # 전략: 카드+입력행을 하나의 HTML 컴포넌트로 렌더링
+    # 저장/수정 버튼 클릭 → st.form_submit_button 방식
+    # 각 경기를 독립적인 st.form으로 감싸서 한 줄 보장
     # ════════════════════════════════════════════════════════
     import json as _json
 
-    def card_html(t1a, t1b, t2a, t2b, s1, s2, mtype, lg_color, is_saved):
-        t1w = s1 > s2 and (s1+s2) > 0
-        t2w = s2 > s1 and (s1+s2) > 0
-        p1c = "color:#b71c1c;font-weight:800" if t1w else "color:#222"
-        p2c = "color:#b71c1c;font-weight:800" if t2w else "color:#222"
-        bg  = "#f0fff0" if is_saved else "#fff"
-        bdr = "#a5d6a7" if is_saved else "#e0e0e0"
-        badge = '<div style="font-size:0.68rem;color:#2e7d32;font-weight:700;text-align:right;padding:2px 7px;">✅ 저장완료</div>' if is_saved else ""
-        return f"""
-<div style="border:1px solid {bdr};border-left:4px solid {lg_color};
-            border-radius:6px;overflow:hidden;background:{bg};margin-bottom:2px;">
-  <div style="display:flex;align-items:stretch;">
-    <div style="flex:3;padding:5px 2px 3px 7px;">
-      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;">{t1a}</div>
-      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;">{t1b}</div>
-    </div>
-    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;
-                justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s1}</div>
-    <div style="flex:0 0 18px;display:flex;align-items:center;justify-content:center;
-                font-size:0.6rem;color:#bbb;">vs</div>
-    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;
-                justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s2}</div>
-    <div style="flex:3;padding:5px 7px 3px 2px;text-align:right;">
-      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;">{t2a}</div>
-      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;">{t2b}</div>
-    </div>
-  </div>
-  <div style="background:#fafafa;font-size:0.62rem;color:#aaa;text-align:right;padding:2px 7px;">{mtype}</div>
-  {badge}
-</div>"""
+    # 전역 CSS: number_input을 한 줄로 강제 (모바일 대응)
+    st.markdown("""
+    <style>
+    /* form 마진 제거 */
+    [data-testid="stForm"] { border:none !important; padding:0 !important; }
+    /* number_input 내부 flex 강제 */
+    [data-testid="stNumberInput"] > div {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+    }
+    [data-testid="stNumberInput"] input {
+        order: 2 !important; text-align: center !important;
+        flex: 1 !important; min-width: 0 !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stNumberInput"] button:first-of-type { order: 1 !important; flex-shrink:0; }
+    [data-testid="stNumberInput"] button:last-of-type  { order: 3 !important; flex-shrink:0; }
+    /* 입력행 컨테이너 강제 한 줄 */
+    .inp-line {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        gap: 4px !important;
+        flex-wrap: nowrap !important;
+        width: 100% !important;
+    }
+    .inp-line > div { flex: 1; min-width: 0; }
+    .inp-line > button { flex-shrink: 0; }
+    </style>
+    """, unsafe_allow_html=True)
 
     def pname_short(code):
         raw = base_name(code)
@@ -892,7 +893,35 @@ if page == "📊 점수판":
             return raw[2:] + g
         return raw
 
-    # 라운드별 렌더링
+    def match_card_html(t1a, t1b, t2a, t2b, s1, s2, mtype, lg_color, is_locked):
+        t1w = s1 > s2 and (s1+s2) > 0
+        t2w = s2 > s1 and (s1+s2) > 0
+        p1c = "color:#b71c1c;font-weight:800" if t1w else "color:#222"
+        p2c = "color:#b71c1c;font-weight:800" if t2w else "color:#222"
+        bg  = "#f0fff0" if is_locked else "#fff"
+        bdr = "#a5d6a7" if is_locked else "#e0e0e0"
+        badge = "✅ 저장완료" if is_locked else ""
+        badge_html = f'<div style="font-size:0.65rem;color:#2e7d32;font-weight:700;text-align:right;padding:1px 6px;">{badge}</div>' if is_locked else ""
+        return f"""<div style="border:1px solid {bdr};border-left:4px solid {lg_color};
+border-radius:6px;overflow:hidden;background:{bg};margin-bottom:3px;">
+  <div style="display:flex;align-items:stretch;">
+    <div style="flex:3;padding:5px 2px 3px 7px;min-width:0;">
+      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t1a}</div>
+      <div style="font-size:0.78rem;font-weight:600;{p1c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t1b}</div>
+    </div>
+    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s1}</div>
+    <div style="flex:0 0 16px;display:flex;align-items:center;justify-content:center;font-size:0.58rem;color:#bbb;">vs</div>
+    <div style="flex:0 0 28px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#222;">{s2}</div>
+    <div style="flex:3;padding:5px 7px 3px 2px;text-align:right;min-width:0;">
+      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t2a}</div>
+      <div style="font-size:0.78rem;font-weight:600;{p2c};line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{t2b}</div>
+    </div>
+  </div>
+  <div style="background:#fafafa;font-size:0.62rem;color:#aaa;text-align:right;padding:1px 6px;">{mtype}</div>
+  {badge_html}
+</div>"""
+
+    # ── 라운드별 렌더링 ──────────────────────────────────────
     for rnd in rounds:
         rnd_matches = [(i, m) for i, m in enumerate(schedule) if m["round"] == rnd]
         if not rnd_matches: continue
@@ -905,7 +934,6 @@ if page == "📊 점수판":
             unsafe_allow_html=True
         )
 
-        # 리그별
         leagues_in_rnd = []
         seen_lg = set()
         for _, m in rnd_matches:
@@ -913,80 +941,90 @@ if page == "📊 점수판":
                 leagues_in_rnd.append(m["league"]); seen_lg.add(m["league"])
 
         for league in leagues_in_rnd:
-            lg_color  = "#2e7d32" if "A" in league else "#1565c0"
+            lg_color   = "#2e7d32" if "A" in league else "#1565c0"
             lg_matches = [(i, m) for i, m in rnd_matches if m["league"] == league]
 
             st.markdown(
                 f'<div style="color:{lg_color};font-size:0.75rem;font-weight:700;'
-                f'border-left:3px solid {lg_color};padding-left:6px;margin:4px 0;">'
+                f'border-left:3px solid {lg_color};padding-left:6px;margin:4px 0 2px;">'
                 f'{league}</div>', unsafe_allow_html=True
             )
 
             for idx, match in lg_matches:
-                sc       = scores.get(str(idx), {})
-                is_saved = bool(sc)
-                is_locked = st.session_state.get(f"locked_{idx}", is_saved)
+                sc        = scores.get(str(idx), {})
+                is_locked = st.session_state.get(f"locked_{idx}", bool(sc))
+                s1_cur    = sc.get("score1", 0)
+                s2_cur    = sc.get("score2", 0)
 
-                s1_cur = sc.get("score1", 0)
-                s2_cur = sc.get("score2", 0)
-
-                t1a = pname_short(match["team1"][0])
-                t1b = pname_short(match["team1"][1])
-                t2a = pname_short(match["team2"][0])
-                t2b = pname_short(match["team2"][1])
+                t1a   = pname_short(match["team1"][0])
+                t1b   = pname_short(match["team1"][1])
+                t2a   = pname_short(match["team2"][0])
+                t2b   = pname_short(match["team2"][1])
                 mtype = match["type"]
 
-                # ── 시각화 카드 ─────────────────────────────
+                # 카드
                 st.markdown(
-                    card_html(t1a, t1b, t2a, t2b, s1_cur, s2_cur, mtype, lg_color, is_locked),
+                    match_card_html(t1a, t1b, t2a, t2b, s1_cur, s2_cur,
+                                    mtype, lg_color, is_locked),
                     unsafe_allow_html=True
                 )
 
-                # ── 점수 입력 + 저장/수정 버튼 (Streamlit 위젯) ─
-                c1, c_btn, c2 = st.columns([5, 3, 5])
+                # 입력행 — st.form으로 감싸서 엔터/버튼 클릭 시 submit
+                with st.form(key=f"form_{idx}", clear_on_submit=False):
+                    # 한 줄 CSS 컨테이너
+                    st.markdown('<div class="inp-line">', unsafe_allow_html=True)
 
-                if is_locked:
-                    # 잠금 상태: 숫자만 표시, 수정 버튼
-                    c1.markdown(
-                        f'<div style="background:#eee;border-radius:5px;height:38px;'
-                        f'display:flex;align-items:center;justify-content:center;'
-                        f'font-size:1.1rem;font-weight:700;color:#555;">{s1_cur}</div>',
-                        unsafe_allow_html=True
-                    )
-                    c2.markdown(
-                        f'<div style="background:#eee;border-radius:5px;height:38px;'
-                        f'display:flex;align-items:center;justify-content:center;'
-                        f'font-size:1.1rem;font-weight:700;color:#555;">{s2_cur}</div>',
-                        unsafe_allow_html=True
-                    )
-                    if c_btn.button("✏️ 수정", key=f"edit_{idx}", use_container_width=True):
-                        st.session_state[f"locked_{idx}"] = False
-                        st.rerun()
-                else:
-                    # 편집 상태: number_input + 저장 버튼
-                    s1_new = c1.number_input(
-                        "팀1", min_value=0, max_value=6,
-                        value=s1_cur, key=f"ni1_{idx}",
-                        label_visibility="collapsed"
-                    )
-                    s2_new = c2.number_input(
-                        "팀2", min_value=0, max_value=6,
-                        value=s2_cur, key=f"ni2_{idx}",
-                        label_visibility="collapsed"
-                    )
-                    if c_btn.button("💾 저장", key=f"save_{idx}",
-                                    use_container_width=True, type="primary"):
-                        scores[str(idx)] = {"score1": int(s1_new), "score2": int(s2_new)}
-                        st.session_state["sb_scores"] = scores
-                        st.session_state[f"locked_{idx}"] = True
-                        shelf_save(
-                            selected_key,
-                            serialize_schedule(st.session_state["sb_schedule"]),
-                            scores,
+                    fa, fb, fc = st.columns([5, 3, 5])
+
+                    if is_locked:
+                        fa.markdown(
+                            f'<div style="background:#eee;border-radius:5px;height:36px;'
+                            f'display:flex;align-items:center;justify-content:center;'
+                            f'font-size:1rem;font-weight:700;color:#555;">{s1_cur}</div>',
+                            unsafe_allow_html=True
                         )
-                        st.rerun()
+                        fc.markdown(
+                            f'<div style="background:#eee;border-radius:5px;height:36px;'
+                            f'display:flex;align-items:center;justify-content:center;'
+                            f'font-size:1rem;font-weight:700;color:#555;">{s2_cur}</div>',
+                            unsafe_allow_html=True
+                        )
+                        submitted = fb.form_submit_button(
+                            "✏️ 수정", use_container_width=True
+                        )
+                        if submitted:
+                            st.session_state[f"locked_{idx}"] = False
+                            st.rerun()
+                    else:
+                        s1_new = fa.number_input(
+                            "팀1", min_value=0, max_value=6,
+                            value=s1_cur, key=f"ni1_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        s2_new = fc.number_input(
+                            "팀2", min_value=0, max_value=6,
+                            value=s2_cur, key=f"ni2_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        submitted = fb.form_submit_button(
+                            "💾 저장", use_container_width=True,
+                            type="primary"
+                        )
+                        if submitted:
+                            scores[str(idx)] = {
+                                "score1": int(s1_new),
+                                "score2": int(s2_new)
+                            }
+                            st.session_state["sb_scores"] = scores
+                            st.session_state[f"locked_{idx}"] = True
+                            shelf_save(
+                                selected_key,
+                                serialize_schedule(st.session_state["sb_schedule"]),
+                                scores,
+                            )
+                            st.rerun()
 
-                st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
 
     # ── 전체 초기화 ─────────────────────────────────────────
     st.markdown("---")
