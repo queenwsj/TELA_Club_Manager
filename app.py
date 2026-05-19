@@ -1255,61 +1255,102 @@ elif page == "🎲 랜덤페어":
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 대진표 생성 ──────────────────────────────────────────
-    if generate_btn and pw_ok:
 
-        # league_players 구성
-        league_players = {}
-        if custom_input is None:
-            # 코드 자동 생성
-            for i, lg in enumerate(active_leagues):
-                pfx = active_prefixes[i]
-                cnt = league_counts[lg]
-                players = (
-                    [f"{pfx}M{j+1:02d}" for j in range(cnt["m"])] +
-                    [f"{pfx}W{j+1:02d}" for j in range(cnt["w"])]
-                )
-                league_players[lg] = players
+    # ── 대진표 생성 ──────────────────────────────────────────
+    # 재생성 트리거: 버튼 클릭 OR session_state의 regen 플래그
+    do_regen = st.session_state.pop("do_regen", False)
+
+    if (generate_btn and pw_ok) or do_regen:
+
+        # 재생성 시 저장된 파라미터 재사용
+        if do_regen:
+            p = st.session_state.get("last_gen_params", {})
+            league_players = p.get("league_players", {})
+            IS_FULLY_RANDOM_run = p.get("is_fully_random", IS_FULLY_RANDOM)
+            league_configs_run  = p.get("league_configs", league_configs)
+            use_seed_run        = p.get("use_seed", use_seed)
+            seed_val_run        = p.get("seed_val", seed_val)
+            rp_key_run          = p.get("rp_key", rp_key)
         else:
-            # 직접 입력
-            for i, lg in enumerate(active_leagues):
-                pfx = active_prefixes[i]
-                txt = custom_input.get(lg, "")
-                league_players[lg] = parse_custom_players(txt, pfx) if txt.strip() else []
+            # league_players 구성
+            league_players = {}
+            if custom_input is None:
+                for i, lg in enumerate(active_leagues):
+                    pfx = active_prefixes[i]
+                    cnt = league_counts[lg]
+                    players = (
+                        [f"{pfx}M{j+1:02d}" for j in range(cnt["m"])] +
+                        [f"{pfx}W{j+1:02d}" for j in range(cnt["w"])]
+                    )
+                    league_players[lg] = players
+            else:
+                for i, lg in enumerate(active_leagues):
+                    pfx = active_prefixes[i]
+                    txt = custom_input.get(lg, "")
+                    league_players[lg] = parse_custom_players(txt, pfx) if txt.strip() else []
 
-        # 유효성 검사
-        errors = []
-        for lg, pl in league_players.items():
-            if 0 < len(pl) < 4:
-                errors.append(f"{lg} 인원이 4명 미만입니다 ({len(pl)}명).")
-        if not any(len(pl) >= 4 for pl in league_players.values()):
-            errors.append("최소 한 리그에 4명 이상 입력해주세요.")
-        if errors:
-            for e in errors: st.error(e)
-            st.stop()
+            IS_FULLY_RANDOM_run = IS_FULLY_RANDOM
+            league_configs_run  = league_configs
+            use_seed_run        = use_seed
+            seed_val_run        = seed_val
+            rp_key_run          = rp_key
 
-        if use_seed and seed_val is not None:
-            random.seed(int(seed_val))
+            # 파라미터 저장 (재생성 시 재사용)
+            st.session_state["last_gen_params"] = {
+                "league_players":  league_players,
+                "is_fully_random": IS_FULLY_RANDOM,
+                "league_configs":  league_configs,
+                "use_seed":        use_seed,
+                "seed_val":        seed_val,
+                "rp_key":          rp_key,
+            }
 
-        spinner_msg = "완전 랜덤 대진표 생성 중..." if IS_FULLY_RANDOM else "조건부 대진표 생성 중..."
+        # 유효성 검사 (최초 생성 시에만)
+        if not do_regen:
+            errors = []
+            for lg, pl in league_players.items():
+                if 0 < len(pl) < 4:
+                    errors.append(f"{lg} 인원이 4명 미만입니다 ({len(pl)}명).")
+            if not any(len(pl) >= 4 for pl in league_players.values()):
+                errors.append("최소 한 리그에 4명 이상 입력해주세요.")
+            if errors:
+                for e in errors: st.error(e)
+                st.stop()
+
+        # 시드 고정 (시드 사용 시 재생성해도 동일 결과)
+        if use_seed_run and seed_val_run is not None:
+            random.seed(int(seed_val_run))
+
+        spinner_msg = "완전 랜덤 대진표 생성 중..." if IS_FULLY_RANDOM_run else "조건부 대진표 생성 중..."
         with st.spinner(spinner_msg):
-            if IS_FULLY_RANDOM:
+            if IS_FULLY_RANDOM_run:
                 schedule, stats = generate_schedule_fully_random(league_players)
             else:
-                schedule, stats = generate_schedule_from_leagues(league_players, league_configs)
+                schedule, stats = generate_schedule_from_leagues(league_players, league_configs_run)
 
         if not schedule:
             st.warning("경기를 생성할 수 없습니다."); st.stop()
 
         st.session_state.update({
             "schedule": schedule, "stats": stats, "scores": {},
-            "rp_schedule": schedule, "rp_key": rp_key,
+            "rp_schedule": schedule, "rp_key": rp_key_run,
             "sb_schedule": schedule, "sb_scores": {}, "sb_key": "",
         })
-        shelf_save(rp_key, serialize_schedule(schedule), {})
-        mode_label = "완전 랜덤" if IS_FULLY_RANDOM else "조건부 랜덤"
-        st.success(f"✅ [{mode_label} / {league_badge}] 대진표가 **{rp_key}** 키로 저장되었습니다.")
+        shelf_save(rp_key_run, serialize_schedule(schedule), {})
+        mode_label   = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
+        active_lgs   = list(league_players.keys())
+        league_badge_run = " · ".join(active_lgs)
+        st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
-        seed_label = f"시드 #{int(seed_val)}" if (use_seed and seed_val is not None) else "랜덤"
+        # ── 재생성 버튼 ──────────────────────────────────────
+        col_regen, col_space = st.columns([1, 4])
+        with col_regen:
+            if st.button("🔄 다시 생성", type="secondary", use_container_width=True,
+                         help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)"):
+                st.session_state["do_regen"] = True
+                st.rerun()
+
+        seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
 
         def dn(code): return display_name(code)
 
@@ -1327,14 +1368,12 @@ elif page == "🎲 랜덤페어":
 
         with tab1:
             st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
-            # 리그별 색상 동적 적용
-            lg_color_map = {lg: get_league_color(lg) for lg in active_leagues}
+            lg_color_map = {lg: get_league_color(lg) for lg in active_lgs}
             def hl_match(row):
                 bg = ""
                 for lg, color in lg_color_map.items():
                     if str(row.get("리그","")) == lg:
-                        # 색상 hex를 연한 배경색으로 변환 (opacity 효과)
-                        bg = f"{color}18"  # 18 = ~10% opacity in hex
+                        bg = f"{color}18"
                         break
                 if not bg: bg = "#f5f5f5"
                 return [f"background-color:{bg};color:black"]*len(row)
@@ -1343,11 +1382,112 @@ elif page == "🎲 랜덤페어":
             summary = df_matches["매치종류"].value_counts()
             st.caption(f"총 {len(df_matches)}경기 | "
                        +" | ".join(f"{k}: {v}경기" for k,v in summary.items()))
+
+            # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
+            import json as _json2
+
+            def build_kakao_text(schedule, mode_label, rp_key_run):
+                """라운드별 경기 목록을 카카오톡 붙여넣기용 텍스트로 변환"""
+                lines = [f"🎾 TELA 대진표 [{mode_label}]", f"📅 {rp_key_run}", ""]
+                rounds_seen = []
+                seen_r = set()
+                for m in schedule:
+                    if m["round"] not in seen_r:
+                        rounds_seen.append(m["round"]); seen_r.add(m["round"])
+
+                for rnd in rounds_seen:
+                    rnd_label = rnd.replace("(이벤트)", "") + (" ⭐" if "이벤트" in rnd else "")
+                    lines.append(f"▣ {rnd_label}")
+                    cur_league = None
+                    for m in schedule:
+                        if m["round"] != rnd: continue
+                        if m["league"] != cur_league:
+                            cur_league = m["league"]
+                            lines.append(f"  [{cur_league}]")
+                        t1a = display_name(m["team1"][0])
+                        t1b = display_name(m["team1"][1])
+                        t2a = display_name(m["team2"][0])
+                        t2b = display_name(m["team2"][1])
+                        mt  = m["type"]
+                        lines.append(f"  {t1a}/{t1b} vs {t2a}/{t2b}  ({mt})")
+                    lines.append("")
+                return "\n".join(lines)
+
+            kakao_text = build_kakao_text(schedule, mode_label, rp_key_run)
+            kakao_json = _json2.dumps(kakao_text, ensure_ascii=False)
+
+            kakao_html = f"""
+<div style="margin:10px 0;">
+  <button id="kakao-copy-btn" onclick="copyKakao()" style="
+    background:#FEE500;color:#3C1E1E;border:none;border-radius:8px;
+    padding:8px 18px;font-size:0.88rem;font-weight:700;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;
+    -webkit-tap-highlight-color:transparent;">
+    💬 카카오톡 복사
+  </button>
+  <span id="kakao-msg" style="margin-left:10px;font-size:0.8rem;color:#2e7d32;display:none;">✅ 복사됨!</span>
+</div>
+<script>
+function copyKakao() {{
+  const text = {kakao_json};
+  if (navigator.clipboard && window.isSecureContext) {{
+    navigator.clipboard.writeText(text).then(function() {{
+      showMsg();
+    }}).catch(function() {{ fallbackCopy(text); }});
+  }} else {{
+    fallbackCopy(text);
+  }}
+}}
+function fallbackCopy(text) {{
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  try {{ document.execCommand('copy'); showMsg(); }} catch(e) {{}}
+  document.body.removeChild(ta);
+}}
+function showMsg() {{
+  const m = document.getElementById('kakao-msg');
+  m.style.display = 'inline';
+  setTimeout(function() {{ m.style.display = 'none'; }}, 2500);
+}}
+</script>
+"""
+            st.components.v1.html(kakao_html, height=55)
+
+            # ── QR코드 (8번 기능) ──────────────────────────────
+            st.markdown("---")
+            st.markdown("**📱 앱 QR코드**")
+            st.caption("아래 QR코드를 스캔하면 이 앱에 접속할 수 있습니다.")
+
+            qr_html = """
+<div id="qrcode-wrap" style="display:inline-block;padding:8px;background:#fff;border-radius:8px;border:1px solid #ddd;">
+  <div id="qrcode"></div>
+</div>
+<p id="qr-url" style="font-size:0.7rem;color:#888;margin-top:4px;word-break:break-all;"></p>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function() {
+  // top 페이지 URL에서 쿼리스트링 제거한 앱 기본 URL 사용
+  var appUrl = window.top ? window.top.location.href.split('?')[0] : window.location.href.split('?')[0];
+  document.getElementById('qr-url').textContent = appUrl;
+  new QRCode(document.getElementById('qrcode'), {
+    text: appUrl,
+    width: 140,
+    height: 140,
+    colorDark: '#1a1a2e',
+    colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M
+  });
+})();
+</script>
+"""
+            st.components.v1.html(qr_html, height=200)
             st.info("💡 대진표 생성 후 사이드바에서 **📊 점수판**을 선택하면 점수를 입력할 수 있습니다.")
 
         with tab2:
             st.subheader("선수별 출전 현황")
-            # 리그 수에 따라 동적 팔레트 생성
             def hl_stats(row):
                 code = df_full.loc[row.name,"_코드"] if "_코드" in df_full.columns else ""
                 pfx  = code[:2] if len(code)>=2 else ""
@@ -1355,7 +1495,6 @@ elif page == "🎲 랜덤페어":
                 for i, pr in enumerate(active_prefixes):
                     if pfx.startswith(pr):
                         base_color = LEAGUE_COLORS[i]
-                        # M=진한, W=연한
                         bg = f"{base_color}22" if pfx[1:]=="W" else f"{base_color}15"
                         break
                 base_style = f"background-color:{bg};color:black" if bg else ""
@@ -1396,10 +1535,9 @@ elif page == "🎲 랜덤페어":
                     else:
                         st.success(f"✅ 혼성 균등 분배 (평균 {mean_m:.1f}회, σ={std_m:.2f})")
 
-                # 조건부: 각 리그별 쿼터 검증
-                if not IS_FULLY_RANDOM:
-                    for lg in active_leagues:
-                        cfg = league_configs.get(lg, {})
+                if not IS_FULLY_RANDOM_run:
+                    for lg in active_lgs:
+                        cfg = league_configs_run.get(lg, {})
                         if cfg.get("mixed_max") is None and cfg.get("dong_min") is None:
                             continue
                         lg_rows = df_full[df_full["리그"]==lg]
@@ -1419,8 +1557,7 @@ elif page == "🎲 랜덤페어":
                             })
                         st.dataframe(pd.DataFrame(quota_rows), use_container_width=False)
 
-                # 완전 랜덤: 남vs여 검증
-                if IS_FULLY_RANDOM:
+                if IS_FULLY_RANDOM_run:
                     gvg_count = sum(
                         1 for d in schedule
                         if _is_gender_vs_gender(d["team1"], d["team2"])
@@ -1441,9 +1578,9 @@ elif page == "🎲 랜덤페어":
             df_display.to_excel(writer, sheet_name="출전현황", index=False)
             for sn in ["대진표","출전현황"]:
                 writer.sheets[sn].set_column("A:Z", 14)
-        excel_tag  = f"_시드{int(seed_val)}" if (use_seed and seed_val is not None) else "_랜덤"
-        mode_tag   = "_완전랜덤" if IS_FULLY_RANDOM else "_조건부"
-        league_tag = f"_{num_leagues}리그"
+        excel_tag  = f"_시드{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "_랜덤"
+        mode_tag   = "_완전랜덤" if IS_FULLY_RANDOM_run else "_조건부"
+        league_tag = f"_{len(active_lgs)}리그"
         st.sidebar.markdown("---")
         st.sidebar.download_button(
             label="📥 엑셀 다운로드", data=buf.getvalue(),
@@ -1456,15 +1593,17 @@ elif page == "🎲 랜덤페어":
         if not generate_btn:
             st.info("👈 사이드바에서 리그·페어링 방식·인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
             with st.expander("📖 사용 방법 및 규칙 안내"):
-                st.markdown(f"""
-                ### v4.00 신기능
+                st.markdown("""
+                ### v4.00 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
-                | **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순 자동 부여) |
+                | **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
                 | **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
                 | **리그별 우선순위** | 조건부 시 리그마다 동성우선/혼복우선 개별 설정 |
-                | **리그별 쿼터** | 조건부 시 리그마다 혼성 최대·동성 최소 개별 설정 |
+                | **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
+                | **카카오톡 복사** | 대진표를 카카오톡용 텍스트로 한 번에 복사 |
+                | **QR코드** | 앱 URL QR코드로 회원 공유 |
 
                 ### 공통 출전 규칙
                 - 최소 3경기 보장 → 이벤트 라운드(4R)로 보충
