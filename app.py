@@ -602,21 +602,84 @@ def best_pairing_fully_random(players4, gs, rs):
         if s < best_s: best_s, best = s, (t1, t2)
     return best
 
+def _build_jabbok_minimized_groups(pool):
+    """
+    잡복(남3+여1, 남1+여3) 최소화 그룹 구성.
+    우선순위:
+      1순위: 남2+여2 (혼복 가능 그룹)
+      2순위: 남4 또는 여4 (동성 그룹)
+      3순위: 불가피한 잡복 (나머지)
+    반환: groups (list of list), leftover (list)
+    """
+    men   = [p for p in pool if get_gender(p) == "M"]
+    women = [p for p in pool if get_gender(p) == "W"]
+    other = [p for p in pool if get_gender(p) == "U"]
+    random.shuffle(men); random.shuffle(women); random.shuffle(other)
+
+    groups = []
+
+    # 1순위: 남2+여2 그룹 최대한 구성
+    while len(men) >= 2 and len(women) >= 2:
+        groups.append(men[:2] + women[:2])
+        men = men[2:]; women = women[2:]
+
+    # 2순위: 남4 동성 그룹
+    while len(men) >= 4:
+        groups.append(men[:4])
+        men = men[4:]
+
+    # 2순위: 여4 동성 그룹
+    while len(women) >= 4:
+        groups.append(women[:4])
+        women = women[4:]
+
+    # 나머지(잡복 불가피) → leftover로 반환
+    leftover = men + women + other
+    return groups, leftover
+
+
 def _make_fully_random_round(players, game_counts, gs, rs):
+    """
+    완전 랜덤 1라운드 생성 (잡복 최소화 버전).
+    그룹 구성: 남2+여2 우선 → 남4/여4 → 불가피 잡복
+    페어링: 팀 내에서 무작위 (남팀 vs 여팀 대결만 제한)
+    """
     if len(players) < 4: return []
+
+    # 경기 수 적은 순 정렬 후 사용할 인원만 추출
     pool = sorted(players, key=lambda p: (game_counts.get(base_name(p), 0), random.random()))
     n_groups = len(pool) // 4
     if n_groups == 0: return []
-    working = pool[:n_groups*4]
-    random.shuffle(working)
-    groups = [working[i*4:(i+1)*4] for i in range(n_groups)]
+    working = pool[:n_groups * 4]
+
+    # 잡복 최소화 그룹 구성
+    groups, leftover = _build_jabbok_minimized_groups(working)
+
+    # leftover가 4명 이상이면 그냥 순서대로 묶음 (완전 랜덤 fallback)
+    random.shuffle(leftover)
+    while len(leftover) >= 4:
+        groups.append(leftover[:4])
+        leftover = leftover[4:]
+
+    # 그룹 수가 n_groups보다 적으면 부족분 보충 (엣지 케이스)
+    # → 발생 시 leftover를 기존 그룹에 합쳐 재구성
+    if len(groups) < n_groups and leftover:
+        for p in leftover:
+            if groups:
+                groups[-1].append(p)
+
     matches = []
     for grp in groups:
-        t1, t2 = best_pairing_fully_random(grp, gs, rs)
+        if len(grp) < 4: continue
+        # 4명 초과 시 앞 4명만 사용 (엣지케이스 방어)
+        grp4 = grp[:4]
+        random.shuffle(grp4)
+        t1, t2 = best_pairing_fully_random(grp4, gs, rs)
         commit_pairing(t1, t2, gs, rs)
         mt = classify_match([base_name(p) for p in list(t1)+list(t2)])
         matches.append({"team1": t1, "team2": t2, "type": mt})
     return matches
+
 
 def _build_event_round_fully_random(players, game_counts, min_games=3, max_games=4):
     all_groups = []
@@ -626,14 +689,25 @@ def _build_event_round_fully_random(players, game_counts, min_games=3, max_games
         if not need: break
         avail = [p for p in players if p not in need
                  and local_counts.get(base_name(p), 0) < max_games]
-        pool = list(need)
-        random.shuffle(pool)
-        avail_s = list(avail); random.shuffle(avail_s)
-        while len(pool) % 4 != 0:
-            if not avail_s: pool = pool[:(len(pool)//4)*4]; break
-            pool.append(avail_s.pop(0))
-        if len(pool) < 4: break
-        groups = [pool[i*4:(i+1)*4] for i in range(len(pool)//4)]
+
+        # 잡복 최소화 구성 시도
+        pool_need = list(need)
+        avail_s   = list(avail); random.shuffle(avail_s)
+
+        # 4의 배수 맞추기
+        while len(pool_need) % 4 != 0:
+            if not avail_s: pool_need = pool_need[:(len(pool_need)//4)*4]; break
+            pool_need.append(avail_s.pop(0))
+
+        if len(pool_need) < 4: break
+
+        # 잡복 최소화 그룹 구성
+        groups, leftover = _build_jabbok_minimized_groups(pool_need)
+        random.shuffle(leftover)
+        while len(leftover) >= 4:
+            groups.append(leftover[:4])
+            leftover = leftover[4:]
+
         if not groups: break
         for g in groups:
             tagged = []
