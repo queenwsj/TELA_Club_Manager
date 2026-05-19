@@ -605,10 +605,12 @@ def best_pairing_fully_random(players4, gs, rs):
 def _build_jabbok_minimized_groups(pool):
     """
     잡복(남3+여1, 남1+여3) 최소화 그룹 구성.
-    우선순위:
-      1순위: 남2+여2 (혼복 가능 그룹)
-      2순위: 남4 또는 여4 (동성 그룹)
-      3순위: 불가피한 잡복 (나머지)
+    혼복(남2+여2)과 동성(남복+여복)은 동등한 우선순위로,
+    인원 비율에 따라 |혼복수 - 동성수| 최소화 + 잡복 최소화.
+
+    스코어 함수:
+      score = 잡복수 × 1000 + |혼복 - (남복+여복)| × 10 - (혼복+동성) × 1
+      → 잡복 최소 우선, 그 다음 혼복/동성 균등, 마지막으로 총 경기수 최대화
     반환: groups (list of list), leftover (list)
     """
     men   = [p for p in pool if get_gender(p) == "M"]
@@ -616,25 +618,67 @@ def _build_jabbok_minimized_groups(pool):
     other = [p for p in pool if get_gender(p) == "U"]
     random.shuffle(men); random.shuffle(women); random.shuffle(other)
 
+    M, W = len(men), len(women)
+    N = (M + W + len(other)) // 4
+
+    # 최적 혼복/동성 수 계산
+    best_mixed  = 0
+    best_dong_m = 0
+    best_dong_w = 0
+    best_score  = float("inf")
+    best_candidates = []
+
+    for mixed in range(min(M // 2, W // 2) + 1):
+        rem_m = M - mixed * 2
+        rem_w = W - mixed * 2
+        if rem_m < 0 or rem_w < 0: continue
+        dong_m    = rem_m // 4
+        dong_w    = rem_w // 4
+        jab_m     = rem_m % 4
+        jab_w     = rem_w % 4
+        jab_grps  = (jab_m + jab_w) // 4
+        total     = mixed + dong_m + dong_w + jab_grps
+        if total != N: continue
+
+        dong_total = dong_m + dong_w
+        score = (jab_grps * 1000
+                 + abs(mixed - dong_total) * 10
+                 - (mixed + dong_total))   # 총 비잡복 경기 많을수록 유리
+        if score < best_score:
+            best_score  = score
+            best_mixed  = mixed
+            best_dong_m = dong_m
+            best_dong_w = dong_w
+            best_candidates = [(mixed, dong_m, dong_w)]
+        elif score == best_score:
+            best_candidates.append((mixed, dong_m, dong_w))
+
+    # 동점 후보 중 랜덤 선택 → 혼복/동성 비율이 매번 다양하게 나옴
+    if best_candidates:
+        best_mixed, best_dong_m, best_dong_w = random.choice(best_candidates)
+
     groups = []
+    m_pool = list(men)
+    w_pool = list(women)
 
-    # 1순위: 남2+여2 그룹 최대한 구성
-    while len(men) >= 2 and len(women) >= 2:
-        groups.append(men[:2] + women[:2])
-        men = men[2:]; women = women[2:]
+    # 혼복 그룹 (남2+여2)
+    for _ in range(best_mixed):
+        if len(m_pool) >= 2 and len(w_pool) >= 2:
+            groups.append(m_pool[:2] + w_pool[:2])
+            m_pool = m_pool[2:]; w_pool = w_pool[2:]
 
-    # 2순위: 남4 동성 그룹
-    while len(men) >= 4:
-        groups.append(men[:4])
-        men = men[4:]
+    # 남복 그룹 (남4)
+    for _ in range(best_dong_m):
+        if len(m_pool) >= 4:
+            groups.append(m_pool[:4]); m_pool = m_pool[4:]
 
-    # 2순위: 여4 동성 그룹
-    while len(women) >= 4:
-        groups.append(women[:4])
-        women = women[4:]
+    # 여복 그룹 (여4)
+    for _ in range(best_dong_w):
+        if len(w_pool) >= 4:
+            groups.append(w_pool[:4]); w_pool = w_pool[4:]
 
-    # 나머지(잡복 불가피) → leftover로 반환
-    leftover = men + women + other
+    # 나머지(잡복 불가피) → leftover
+    leftover = m_pool + w_pool + other
     return groups, leftover
 
 
