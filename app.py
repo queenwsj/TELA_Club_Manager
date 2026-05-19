@@ -1257,21 +1257,27 @@ elif page == "🎲 랜덤페어":
     # ── 대진표 생성 ──────────────────────────────────────────
 
     # ── 대진표 생성 ──────────────────────────────────────────
-    # 재생성 트리거: 버튼 클릭 OR session_state의 regen 플래그
-    do_regen = st.session_state.pop("do_regen", False)
+    # do_regen: pop 대신 get으로 읽고, 실제 실행 후에만 삭제
+    do_regen = st.session_state.get("do_regen", False)
+    has_saved_params = bool(st.session_state.get("last_gen_params"))
 
-    if (generate_btn and pw_ok) or do_regen:
+    if (generate_btn and pw_ok) or (do_regen and has_saved_params):
 
-        # 재생성 시 저장된 파라미터 재사용
-        if do_regen:
-            p = st.session_state.get("last_gen_params", {})
-            league_players = p.get("league_players", {})
-            IS_FULLY_RANDOM_run = p.get("is_fully_random", IS_FULLY_RANDOM)
-            league_configs_run  = p.get("league_configs", league_configs)
-            use_seed_run        = p.get("use_seed", use_seed)
-            seed_val_run        = p.get("seed_val", seed_val)
-            rp_key_run          = p.get("rp_key", rp_key)
+        # ── 재생성: 저장된 파라미터 그대로 사용 ─────────────
+        if do_regen and has_saved_params:
+            st.session_state["do_regen"] = False   # 소비 처리
+            p = st.session_state["last_gen_params"]
+            league_players      = p["league_players"]
+            IS_FULLY_RANDOM_run = p["is_fully_random"]
+            league_configs_run  = p["league_configs"]
+            use_seed_run        = p["use_seed"]
+            seed_val_run        = p["seed_val"]
+            rp_key_run          = p["rp_key"]
+
+        # ── 최초 생성: 사이드바 값으로 파라미터 구성 ────────
         else:
+            st.session_state["do_regen"] = False
+
             # league_players 구성
             league_players = {}
             if custom_input is None:
@@ -1295,18 +1301,7 @@ elif page == "🎲 랜덤페어":
             seed_val_run        = seed_val
             rp_key_run          = rp_key
 
-            # 파라미터 저장 (재생성 시 재사용)
-            st.session_state["last_gen_params"] = {
-                "league_players":  league_players,
-                "is_fully_random": IS_FULLY_RANDOM,
-                "league_configs":  league_configs,
-                "use_seed":        use_seed,
-                "seed_val":        seed_val,
-                "rp_key":          rp_key,
-            }
-
-        # 유효성 검사 (최초 생성 시에만)
-        if not do_regen:
+            # 유효성 검사
             errors = []
             for lg, pl in league_players.items():
                 if 0 < len(pl) < 4:
@@ -1316,6 +1311,16 @@ elif page == "🎲 랜덤페어":
             if errors:
                 for e in errors: st.error(e)
                 st.stop()
+
+            # 파라미터 저장 (재생성 시 재사용)
+            st.session_state["last_gen_params"] = {
+                "league_players":  league_players,
+                "is_fully_random": IS_FULLY_RANDOM,
+                "league_configs":  league_configs,
+                "use_seed":        use_seed,
+                "seed_val":        seed_val,
+                "rp_key":          rp_key,
+            }
 
         # 시드 고정 (시드 사용 시 재생성해도 동일 결과)
         if use_seed_run and seed_val_run is not None:
@@ -1343,12 +1348,14 @@ elif page == "🎲 랜덤페어":
         st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
         # ── 재생성 버튼 ──────────────────────────────────────
+        def _set_regen():
+            st.session_state["do_regen"] = True
+
         col_regen, col_space = st.columns([1, 4])
         with col_regen:
-            if st.button("🔄 다시 생성", type="secondary", use_container_width=True,
-                         help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)"):
-                st.session_state["do_regen"] = True
-                st.rerun()
+            st.button("🔄 다시 생성", type="secondary", use_container_width=True,
+                      on_click=_set_regen,
+                      help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)")
 
         seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
 
