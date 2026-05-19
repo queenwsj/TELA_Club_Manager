@@ -1507,6 +1507,12 @@ elif page == "🎲 랜덤페어":
             summary = df_matches["매치종류"].value_counts()
             st.caption(f"총 {len(df_matches)}경기 | "
                        +" | ".join(f"{k}: {v}경기" for k,v in summary.items()))
+            # 총 참가 인원수
+            total_players = sum(len(pl) for pl in league_players.values())
+            per_league = " · ".join(
+                f"{lg} {len(pl)}명" for lg, pl in league_players.items() if pl
+            )
+            st.caption(f"👥 총 {total_players}명  ({per_league})")
 
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
             import json as _json2
