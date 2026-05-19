@@ -1,13 +1,11 @@
 """
-TELA CLUB Random Match Generator v2.06
+TELA CLUB Random Match Generator v3.01
 ======================================
-변경사항:
-  - 사이드바 메뉴: 점수판 → 랜덤페어 순서
-  - 점수판: shelve 기반 날짜별 영구저장 (새로고침 유지)
-  - 점수판: 확정 버튼으로 명시적 저장
-  - 점수판: 날짜 수기 입력
-  - 점수판: 모바일에서도 좌우 컬럼 강제 유지 (CSS flex)
-  - 랜덤페어: 관리자 비밀번호 — 일치해야 대진표 생성 가능
+변경사항 (v3.01):
+  - 랜덤페어 방식 선택 섹션 추가 (랜덤페어 ↔ 입력방식 사이)
+    · 조건부 랜덤페어: 기존 로직 (A리그 동성우선 / B리그 혼복우선 / 쿼터 적용)
+    · 완전 랜덤페어: 완전 무작위 (단, 남자팀 vs 여자팀 대결 불가)
+  - generate_schedule_fully_random() 함수 추가 (섹션 9-B)
 """
 
 import streamlit as st
@@ -31,7 +29,7 @@ SAVE_DIR  = os.path.join(os.path.dirname(__file__), ".tela_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
 SHELF_PATH = os.path.join(SAVE_DIR, "scoreboard")
 
-ADMIN_PASSWORD = "tela1234"   # ← 관리자 비밀번호 (여기서 변경 가능)
+ADMIN_PASSWORD = "1223"   # ← 관리자 비밀번호 (여기서 변경 가능)
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict):
@@ -497,7 +495,7 @@ def update_stats(stats, team1, team2, match_type, round_name, league):
 
 
 # ============================================================
-# 섹션 9: 리그 스케줄 생성
+# 섹션 9-A: 조건부 랜덤 - 리그 스케줄 생성 (기존)
 # ============================================================
 
 def generate_schedule_from_leagues(league_players, num_rounds=3):
@@ -535,6 +533,171 @@ def generate_schedule_from_leagues(league_players, num_rounds=3):
                 if is_mixed_match(mt): mixed_counts[p]+=1
             update_stats(all_stats,t1,t2,mt,"4R(이벤트)",league_name)
             all_results.append({"round":"4R(이벤트)","league":league_name,"team1":t1,"team2":t2,"type":note})
+
+    return all_results, all_stats
+
+
+# ============================================================
+# 섹션 9-B: 완전 랜덤 - 리그 스케줄 생성 (신규)
+# ============================================================
+#
+# 규칙:
+#   1. 완전 무작위 셔플로 4명씩 그룹 구성
+#   2. 유일한 제약: 팀1이 전원 남자 AND 팀2가 전원 여자 (또는 반대) 조합 → 불가
+#      → 즉, 남자팀 vs 여자팀 대결은 허용 안 함
+#      → 혼복, 남복vs남복, 여복vs여복, 잡복 모두 허용
+#   3. 최소 3경기 / 최대 4경기 (이벤트 라운드 동일 적용)
+#   4. 이미 같은 팀이나 상대를 만난 경우 페널티 부여 (베스트 페어링 그대로 활용)
+# ============================================================
+
+def _is_gender_vs_gender(t1, t2) -> bool:
+    """
+    팀1 전원 남자 & 팀2 전원 여자, 또는 그 반대인지 검사.
+    해당하면 True (= 금지 조합).
+    """
+    g1 = {get_gender(p) for p in t1}
+    g2 = {get_gender(p) for p in t2}
+    # 팀1이 순수 남자팀 & 팀2가 순수 여자팀
+    if g1 == {"M"} and g2 == {"W"}: return True
+    # 팀1이 순수 여자팀 & 팀2가 순수 남자팀
+    if g1 == {"W"} and g2 == {"M"}: return True
+    return False
+
+
+def best_pairing_fully_random(players4, gs, rs):
+    """
+    완전 랜덤용 페어링.
+    - 3가지 조합 중 남자팀 vs 여자팀 조합은 제외
+    - 나머지 중 페널티 최소 조합 선택
+    - 유효 조합이 없으면 (모두 금지) 페널티 무시하고 랜덤 반환
+    """
+    a, b, c, d = players4
+    all_pairs = [((a,b),(c,d)), ((a,c),(b,d)), ((a,d),(b,c))]
+    random.shuffle(all_pairs)
+
+    # 남자팀 vs 여자팀 조합 필터링
+    valid_pairs = [(t1,t2) for t1,t2 in all_pairs if not _is_gender_vs_gender(t1,t2)]
+
+    # 유효 조합이 없는 경우 (예: 남2 + 여2인데 모든 조합이 성별 대결) → 예외적으로 모두 허용
+    cands = valid_pairs if valid_pairs else all_pairs
+
+    best, best_s = None, float("inf")
+    for t1, t2 in cands:
+        s = score_pairing(t1, t2, gs, rs)
+        if s < best_s: best_s, best = s, (t1, t2)
+    return best
+
+
+def _make_fully_random_round(players, game_counts, gs, rs, league_name):
+    """
+    완전 랜덤 1라운드 생성.
+    선수를 완전 무작위로 섞어 4명씩 그룹화 → 페어링.
+    """
+    if len(players) < 4: return []
+
+    # 경기 수 적은 순으로 정렬 후 랜덤 셔플 (균등 출전 보장)
+    pool = sorted(players, key=lambda p: (game_counts.get(base_name(p), 0), random.random()))
+    n_groups = len(pool) // 4
+    if n_groups == 0: return []
+
+    # 완전 무작위 그룹 구성
+    working = pool[:n_groups*4]
+    random.shuffle(working)
+    groups = [working[i*4:(i+1)*4] for i in range(n_groups)]
+
+    matches = []
+    for grp in groups:
+        t1, t2 = best_pairing_fully_random(grp, gs, rs)
+        commit_pairing(t1, t2, gs, rs)
+        mt = classify_match([base_name(p) for p in list(t1)+list(t2)])
+        matches.append({"team1": t1, "team2": t2, "type": mt})
+    return matches
+
+
+def _build_event_round_fully_random(players, game_counts, min_games=3, max_games=4):
+    """
+    완전 랜덤용 이벤트 라운드.
+    3경기 미달 선수를 완전 무작위로 보충.
+    """
+    all_groups = []
+    local_counts = dict(game_counts)
+    gs = MatchState()
+
+    for _ in range(20):
+        need = [p for p in players if local_counts.get(base_name(p), 0) < min_games]
+        if not need: break
+        avail = [p for p in players if p not in need and local_counts.get(base_name(p), 0) < max_games]
+
+        pool = list(need)
+        random.shuffle(pool)
+
+        # 4의 배수로 맞추기 위해 avail에서 보충
+        avail_shuffled = list(avail)
+        random.shuffle(avail_shuffled)
+        while len(pool) % 4 != 0:
+            if not avail_shuffled: pool = pool[:(len(pool)//4)*4]; break
+            pool.append(avail_shuffled.pop(0))
+
+        if len(pool) < 4: break
+
+        groups = [pool[i*4:(i+1)*4] for i in range(len(pool)//4)]
+        if not groups: break
+
+        for g in groups:
+            tagged = []
+            for p in g:
+                pn = base_name(p)
+                tagged.append(pn+"(중복)" if local_counts.get(pn, 0) >= min_games else pn)
+                local_counts[pn] = local_counts.get(pn, 0) + 1
+            all_groups.append((g, tagged))
+
+    return all_groups, gs
+
+
+def generate_schedule_fully_random(league_players, num_rounds=3):
+    """
+    완전 랜덤 방식으로 스케줄 생성.
+    A/B 리그 구분 없이 동일한 완전 무작위 로직 적용.
+    유일한 제약: 남자팀 vs 여자팀 대결 불가.
+    """
+    all_results = []
+    all_stats   = {}
+
+    for league_name, players in league_players.items():
+        if len(players) < 4: continue
+        game_counts = {p: 0 for p in players}
+        gs = MatchState()
+
+        # 정규 라운드 1R ~ 3R
+        for r in range(1, num_rounds + 1):
+            rname = f"{r}R"
+            rs = MatchState()
+            matches = _make_fully_random_round(players, game_counts, gs, rs, league_name)
+            for m in matches:
+                t1, t2, mt = m["team1"], m["team2"], m["type"]
+                for p_raw in list(t1) + list(t2):
+                    p = base_name(p_raw)
+                    game_counts[p] = game_counts.get(p, 0) + 1
+                update_stats(all_stats, t1, t2, mt, rname, league_name)
+                all_results.append({"round": rname, "league": league_name,
+                                     "team1": t1, "team2": t2, "type": mt})
+
+        # 이벤트 라운드 (4R) - 3경기 미달자 보충
+        event_gs = MatchState()
+        event_groups, _ = _build_event_round_fully_random(players, game_counts)
+        for raw_g, tagged_g in event_groups:
+            random.shuffle(tagged_g)
+            t1, t2 = best_pairing_fully_random(tagged_g, gs, event_gs)
+            commit_pairing(t1, t2, gs, event_gs)
+            mt = classify_match([base_name(p) for p in list(t1)+list(t2)])
+            has_dup = any("(중복)" in p for p in list(t1)+list(t2))
+            note = mt + ("(중복)" if has_dup else "")
+            for p_raw in list(t1) + list(t2):
+                p = base_name(p_raw)
+                game_counts[p] = game_counts.get(p, 0) + 1
+            update_stats(all_stats, t1, t2, mt, "4R(이벤트)", league_name)
+            all_results.append({"round": "4R(이벤트)", "league": league_name,
+                                  "team1": t1, "team2": t2, "type": note})
 
     return all_results, all_stats
 
@@ -634,11 +797,10 @@ def compute_scoreboard_stats(schedule, scores):
 
 
 # ============================================================
-# 섹션 13: schedule 직렬화 헬퍼 (shelve는 tuple을 list로 저장)
+# 섹션 13: schedule 직렬화 헬퍼
 # ============================================================
 
 def serialize_schedule(schedule):
-    """tuple → list 변환 (shelve 저장용)"""
     result = []
     for m in schedule:
         result.append({
@@ -651,7 +813,6 @@ def serialize_schedule(schedule):
     return result
 
 def deserialize_schedule(schedule):
-    """list → tuple 변환 (로드 후 복원)"""
     result = []
     for m in schedule:
         result.append({
@@ -673,96 +834,32 @@ st.set_page_config(page_title="TELA Tennis Match", page_icon="🎾", layout="wid
 # ── 전역 CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* 사이드바 폭 */
 [data-testid="stSidebar"] { min-width:220px; max-width:260px; }
 
-/* ── 점수판 카드 레이아웃 ────────────────────────────────── */
-/* 모바일/데스크탑 모두 flex row 강제 */
-.sb-grid {
-    display: flex;
-    flex-direction: row;
-    gap: 10px;
-    overflow-x: auto;
-    padding-bottom: 8px;
-}
-.sb-col {
-    flex: 1 1 220px;
-    min-width: 200px;
-}
+.sb-grid { display:flex; flex-direction:row; gap:10px; overflow-x:auto; padding-bottom:8px; }
+.sb-col  { flex:1 1 220px; min-width:200px; }
 .rnd-header {
-    background: #1a1a2e;
-    color: white;
-    font-weight: 700;
-    font-size: 0.95rem;
-    text-align: center;
-    padding: 7px 0;
-    border-radius: 6px 6px 0 0;
-    letter-spacing: 1px;
-    margin-bottom: 4px;
+    background:#1a1a2e; color:white; font-weight:700; font-size:0.95rem;
+    text-align:center; padding:7px 0; border-radius:6px 6px 0 0;
+    letter-spacing:1px; margin-bottom:4px;
 }
-.lg-label {
-    font-size: 0.78rem;
-    font-weight: 700;
-    padding: 2px 0 4px 4px;
-    margin: 8px 0 3px 0;
-}
-.match-card {
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    margin-bottom: 4px;
-    overflow: hidden;
-    background: #fff;
-}
-.match-body {
-    display: flex;
-    align-items: stretch;
-}
-.team-left {
-    flex: 3;
-    padding: 5px 5px 3px 8px;
-}
-.team-right {
-    flex: 3;
-    padding: 5px 8px 3px 5px;
-    text-align: right;
-}
-.score-box {
-    flex: 0 0 30px;
-    background: #f0f0f0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1rem;
-    font-weight: 800;
-    color: #222;
-}
-.vs-box {
-    flex: 0 0 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.65rem;
-    color: #aaa;
-}
-.player-name {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #222;
-    line-height: 1.3;
-}
-.player-win { color: #b71c1c !important; }
-.match-footer {
-    background: #fafafa;
-    font-size: 0.68rem;
-    color: #999;
-    text-align: right;
-    padding: 2px 8px;
-}
+.lg-label { font-size:0.78rem; font-weight:700; padding:2px 0 4px 4px; margin:8px 0 3px 0; }
+.match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
+.match-body { display:flex; align-items:stretch; }
+.team-left  { flex:3; padding:5px 5px 3px 8px; }
+.team-right { flex:3; padding:5px 8px 3px 5px; text-align:right; }
+.score-box  { flex:0 0 30px; background:#f0f0f0; display:flex; align-items:center;
+              justify-content:center; font-size:1rem; font-weight:800; color:#222; }
+.vs-box     { flex:0 0 20px; display:flex; align-items:center;
+              justify-content:center; font-size:0.65rem; color:#aaa; }
+.player-name { font-size:0.8rem; font-weight:600; color:#222; line-height:1.3; }
+.player-win  { color:#b71c1c !important; }
+.match-footer { background:#fafafa; font-size:0.68rem; color:#999; text-align:right; padding:2px 8px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ── 사이드바 네비게이션 ──────────────────────────────────────
-st.sidebar.markdown("## 🎾 TELA CLUB")
+st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
@@ -782,9 +879,8 @@ if page == "📊 점수판":
 
     st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
 
-    # ── 날짜 + 일련번호 입력 ────────────────────────────────
-    today_str   = date.today().strftime("%Y-%m-%d")
-    saved_keys  = shelf_list_dates()  # "날짜_번호" 형식
+    today_str  = date.today().strftime("%Y-%m-%d")
+    saved_keys = shelf_list_dates()
 
     sb_mode = st.radio("모드", ["새 점수판 (날짜+번호 입력)", "저장된 점수판 불러오기"],
                        index=0, horizontal=True, label_visibility="collapsed")
@@ -801,7 +897,6 @@ if page == "📊 점수판":
 
     st.caption(f"현재 키: **{selected_key}**")
 
-    # ── 데이터 로드 / 세션 동기화 ───────────────────────────
     if st.session_state.get("sb_key") != selected_key:
         st.session_state["sb_key"] = selected_key
         loaded = shelf_load(selected_key)
@@ -809,7 +904,6 @@ if page == "📊 점수판":
             st.session_state["sb_schedule"] = deserialize_schedule(loaded["schedule"])
             st.session_state["sb_scores"]   = loaded["scores"]
         else:
-            # 랜덤페어에서 생성된 대진표가 있으면 사용
             rp_sched = st.session_state.get("rp_schedule")
             rp_key   = st.session_state.get("rp_key", "")
             if rp_sched and rp_key == selected_key:
@@ -833,7 +927,6 @@ if page == "📊 점수판":
         if m["round"] not in seen_r:
             rounds.append(m["round"]); seen_r.add(m["round"])
 
-    # ── 날짜 표시 ───────────────────────────────────────────
     parts = selected_key.split("_")
     disp_date = parts[0] if parts else selected_key
     disp_num  = parts[1] if len(parts) > 1 else ""
@@ -843,31 +936,7 @@ if page == "📊 점수판":
         unsafe_allow_html=True
     )
 
-    # ════════════════════════════════════════════════════════
-    # 전략: 전체 점수판을 단일 HTML 컴포넌트로 렌더링
-    # 저장/수정 버튼 → hidden st.button으로 트리거
-    # st.columns 완전 제거 → 모바일 한 줄 보장
-    # ════════════════════════════════════════════════════════
-
-    def pname_short(code):
-        raw = base_name(code)
-        if is_custom_code(raw):
-            g = "(남)" if raw[1].upper()=="M" else "(여)"
-            return raw[2:] + g
-        return raw
-
-    # ── 저장/수정 트리거: hidden Streamlit 버튼 방식 ─────────
-    # HTML 컴포넌트 안의 JS는 postMessage를 쓸 수 없으므로
-    # URL query_params 대신 st.session_state에 직접 쓰는
-    # hidden number_input 트릭 사용
-    #
-    # 실제 저장은 HTML 내 버튼 클릭 시 _save_trigger를 세팅하고
-    # Streamlit이 다음 rerun에서 처리
-    #
-    # ★ 핵심: HTML에서 저장 버튼 클릭 → URL ?act=save&idx=N&s1=X&s2=Y
-    #          Streamlit query_params로 수신 → shelve 저장
-    #          (iframe이 아닌 전체 페이지 URL 변경이므로 동작)
-    qp = st.query_params
+    qp  = st.query_params
     act = qp.get("act", None)
     if act is not None:
         try:
@@ -890,8 +959,14 @@ if page == "📊 점수판":
         st.query_params.clear()
         st.rerun()
 
-    # ── 전체 점수판 HTML 빌드 ─────────────────────────────────
     import json as _json
+
+    def pname_short(code):
+        raw = base_name(code)
+        if is_custom_code(raw):
+            g = "(남)" if raw[1].upper()=="M" else "(여)"
+            return raw[2:] + g
+        return raw
 
     def build_full_html(schedule, rounds, scores, session_state):
         matches_data = []
@@ -899,17 +974,17 @@ if page == "📊 점수판":
             sc        = scores.get(str(idx), {})
             is_locked = session_state.get(f"locked_{idx}", bool(sc))
             matches_data.append({
-                "idx":      idx,
-                "round":    match["round"],
-                "league":   match["league"],
-                "t1a":      pname_short(match["team1"][0]),
-                "t1b":      pname_short(match["team1"][1]),
-                "t2a":      pname_short(match["team2"][0]),
-                "t2b":      pname_short(match["team2"][1]),
-                "type":     match["type"],
-                "s1":       sc.get("score1", 0),
-                "s2":       sc.get("score2", 0),
-                "locked":   is_locked,
+                "idx":    idx,
+                "round":  match["round"],
+                "league": match["league"],
+                "t1a":    pname_short(match["team1"][0]),
+                "t1b":    pname_short(match["team1"][1]),
+                "t2a":    pname_short(match["team2"][0]),
+                "t2b":    pname_short(match["team2"][1]),
+                "type":   match["type"],
+                "s1":     sc.get("score1", 0),
+                "s2":     sc.get("score2", 0),
+                "locked": is_locked,
             })
 
         mj = _json.dumps(matches_data, ensure_ascii=False)
@@ -942,86 +1017,42 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
 .pn{{font-size:0.75rem;font-weight:600;line-height:1.35;
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}
 .pw{{color:#b71c1c!important;font-weight:800!important;}}
-
-/* ── 입력행: 항상 한 줄 ── */
-.inp-row{{
-  display:flex;
-  flex-direction:row;
-  align-items:center;
-  gap:3px;
-  padding:3px 3px 4px;
-  width:100%;
-}}
-.inp-box{{
-  flex:1;
-  display:flex;
-  flex-direction:row;
-  align-items:center;
-  border:1px solid #ccc;
-  border-radius:5px;
-  overflow:hidden;
-  background:#f8f8f8;
-  height:34px;
-  min-width:0;
-}}
+.inp-row{{display:flex;flex-direction:row;align-items:center;gap:3px;
+           padding:3px 3px 4px;width:100%;}}
+.inp-box{{flex:1;display:flex;flex-direction:row;align-items:center;
+           border:1px solid #ccc;border-radius:5px;overflow:hidden;
+           background:#f8f8f8;height:34px;min-width:0;}}
 .inp-box.lk{{background:#ebebeb;border-color:#ddd;}}
-.ibtn{{
-  width:28px;height:34px;border:none;
-  background:#e5e5e5;font-size:1rem;font-weight:700;
-  color:#333;cursor:pointer;flex-shrink:0;
-  -webkit-tap-highlight-color:transparent;
-  touch-action:manipulation;
-  display:flex;align-items:center;justify-content:center;
-}}
+.ibtn{{width:28px;height:34px;border:none;background:#e5e5e5;font-size:1rem;
+        font-weight:700;color:#333;cursor:pointer;flex-shrink:0;
+        -webkit-tap-highlight-color:transparent;touch-action:manipulation;
+        display:flex;align-items:center;justify-content:center;}}
 .ibtn:active{{background:#ccc;}}
-.inum{{
-  flex:1;min-width:0;text-align:center;
-  font-size:0.95rem;font-weight:700;
-  border:none;background:transparent;
-  -moz-appearance:textfield;
-}}
-.inum::-webkit-inner-spin-button,
-.inum::-webkit-outer-spin-button{{-webkit-appearance:none;}}
+.inum{{flex:1;min-width:0;text-align:center;font-size:0.95rem;font-weight:700;
+        border:none;background:transparent;-moz-appearance:textfield;}}
+.inum::-webkit-inner-spin-button,.inum::-webkit-outer-spin-button{{-webkit-appearance:none;}}
 .inum:disabled{{color:#444;}}
-.sbtn{{
-  flex:0 0 52px;height:34px;
-  background:#e53935;color:#fff;border:none;
-  border-radius:5px;font-size:0.78rem;font-weight:700;
-  cursor:pointer;white-space:nowrap;
-  -webkit-tap-highlight-color:transparent;
-  touch-action:manipulation;
-}}
+.sbtn{{flex:0 0 52px;height:34px;background:#e53935;color:#fff;border:none;
+        border-radius:5px;font-size:0.78rem;font-weight:700;cursor:pointer;
+        white-space:nowrap;-webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
 .sbtn:active{{background:#b71c1c;}}
-.ebtn{{
-  flex:0 0 52px;height:34px;
-  background:#1565c0;color:#fff;border:none;
-  border-radius:5px;font-size:0.78rem;font-weight:700;
-  cursor:pointer;white-space:nowrap;
-  -webkit-tap-highlight-color:transparent;
-  touch-action:manipulation;
-}}
+.ebtn{{flex:0 0 52px;height:34px;background:#1565c0;color:#fff;border:none;
+        border-radius:5px;font-size:0.78rem;font-weight:700;cursor:pointer;
+        white-space:nowrap;-webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
 .ebtn:active{{background:#0d47a1;}}
-.scr-disp{{
-  flex:1;height:34px;background:#ebebeb;
-  display:flex;align-items:center;justify-content:center;
-  font-size:0.95rem;font-weight:700;color:#444;
-  border-radius:5px;border:1px solid #ddd;
-}}
+.scr-disp{{flex:1;height:34px;background:#ebebeb;display:flex;align-items:center;
+            justify-content:center;font-size:0.95rem;font-weight:700;color:#444;
+            border-radius:5px;border:1px solid #ddd;}}
 </style></head><body>
 <div id="root"></div>
 <script>
 (function(){{
-  const matches = {mj};
-  const rounds  = {rj};
-  const MAX=6, MIN=0;
-
-  // 로컬 점수 상태
-  const scores  = {{}};
-  const locked  = {{}};
-  matches.forEach(m=>{{
-    scores[m.idx] = {{s1:m.s1, s2:m.s2}};
-    locked[m.idx] = m.locked;
-  }});
+  const matches={mj};
+  const rounds={rj};
+  const MAX=6,MIN=0;
+  const scores={{}};
+  const locked={{}};
+  matches.forEach(m=>{{scores[m.idx]={{s1:m.s1,s2:m.s2}};locked[m.idx]=m.locked;}});
 
   function pWin(a,b){{return (a+b)>0&&a>b;}}
 
@@ -1033,109 +1064,79 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
       if(!ms.length)return;
       const lbl=rnd.replace('(이벤트)','')+(rnd.includes('이벤트')?' ⭐':'');
       const h=document.createElement('div');
-      h.className='rnd-hdr'; h.textContent=lbl;
-      root.appendChild(h);
+      h.className='rnd-hdr';h.textContent=lbl;root.appendChild(h);
       const lgs=[...new Set(ms.map(m=>m.league))];
       lgs.forEach(lg=>{{
         const lc=lg.includes('A')?'#2e7d32':'#1565c0';
         const ld=document.createElement('div');
         ld.className='lg-lbl';
         ld.style.cssText=`color:${{lc}};border-left:3px solid ${{lc}};padding-left:6px;`;
-        ld.textContent=lg;
-        root.appendChild(ld);
-        ms.filter(m=>m.league===lg).forEach(m=>{{
-          root.appendChild(buildMatch(m,lc));
-        }});
+        ld.textContent=lg;root.appendChild(ld);
+        ms.filter(m=>m.league===lg).forEach(m=>{{root.appendChild(buildMatch(m,lc));}});
       }});
     }});
   }}
 
   function buildMatch(m,lc){{
-    const w=document.createElement('div');
-    w.id='w'+m.idx;
-    redraw(m,lc,w);
-    return w;
+    const w=document.createElement('div');w.id='w'+m.idx;redraw(m,lc,w);return w;
   }}
 
   function redraw(m,lc,w){{
-    const sc=scores[m.idx];
-    const lk=locked[m.idx];
-    const t1w=pWin(sc.s1,sc.s2), t2w=pWin(sc.s2,sc.s1);
-    const p1=t1w?'pw':'', p2=t2w?'pw':'';
+    const sc=scores[m.idx];const lk=locked[m.idx];
+    const t1w=pWin(sc.s1,sc.s2),t2w=pWin(sc.s2,sc.s1);
+    const p1=t1w?'pw':'',p2=t2w?'pw':'';
     w.innerHTML=`
 <div class="mc${{lk?' lk':''}}" style="border-left:4px solid ${{lc}}">
   <div class="mc-body">
-    <div class="mc-tl">
-      <div class="pn ${{p1}}">${{m.t1a}}</div>
-      <div class="pn ${{p1}}">${{m.t1b}}</div>
-    </div>
-    <div class="mc-sc">${{sc.s1}}</div>
-    <div class="mc-vs">vs</div>
-    <div class="mc-sc">${{sc.s2}}</div>
-    <div class="mc-tr">
-      <div class="pn ${{p2}}">${{m.t2a}}</div>
-      <div class="pn ${{p2}}">${{m.t2b}}</div>
-    </div>
+    <div class="mc-tl"><div class="pn ${{p1}}">${{m.t1a}}</div><div class="pn ${{p1}}">${{m.t1b}}</div></div>
+    <div class="mc-sc">${{sc.s1}}</div><div class="mc-vs">vs</div><div class="mc-sc">${{sc.s2}}</div>
+    <div class="mc-tr"><div class="pn ${{p2}}">${{m.t2a}}</div><div class="pn ${{p2}}">${{m.t2b}}</div></div>
   </div>
   <div class="mc-ft">${{m.type}}</div>
   ${{lk?'<div class="mc-bj">✅ 저장완료</div>':''}}
 </div>
 <div class="inp-row">
   ${{lk
-    ? `<div class="scr-disp">${{sc.s1}}</div>
-       <button class="ebtn" onclick="doEdit(${{m.idx}})">✏️ 수정</button>
-       <div class="scr-disp">${{sc.s2}}</div>`
-    : `<div class="inp-box">
-         <button class="ibtn" onclick="adj(${{m.idx}},1,-1)">−</button>
-         <input class="inum" id="i1_${{m.idx}}" type="number"
-                value="${{sc.s1}}" min="${{MIN}}" max="${{MAX}}"
-                oninput="onInp(${{m.idx}},1,this.value)">
-         <button class="ibtn" onclick="adj(${{m.idx}},1,1)">+</button>
-       </div>
-       <button class="sbtn" onclick="doSave(${{m.idx}})">💾 저장</button>
-       <div class="inp-box">
-         <button class="ibtn" onclick="adj(${{m.idx}},2,-1)">−</button>
-         <input class="inum" id="i2_${{m.idx}}" type="number"
-                value="${{sc.s2}}" min="${{MIN}}" max="${{MAX}}"
-                oninput="onInp(${{m.idx}},2,this.value)">
-         <button class="ibtn" onclick="adj(${{m.idx}},2,1)">+</button>
-       </div>`
+    ?`<div class="scr-disp">${{sc.s1}}</div>
+      <button class="ebtn" onclick="doEdit(${{m.idx}})">✏️ 수정</button>
+      <div class="scr-disp">${{sc.s2}}</div>`
+    :`<div class="inp-box">
+        <button class="ibtn" onclick="adj(${{m.idx}},1,-1)">−</button>
+        <input class="inum" id="i1_${{m.idx}}" type="number" value="${{sc.s1}}" min="${{MIN}}" max="${{MAX}}"
+               oninput="onInp(${{m.idx}},1,this.value)">
+        <button class="ibtn" onclick="adj(${{m.idx}},1,1)">+</button>
+      </div>
+      <button class="sbtn" onclick="doSave(${{m.idx}})">💾 저장</button>
+      <div class="inp-box">
+        <button class="ibtn" onclick="adj(${{m.idx}},2,-1)">−</button>
+        <input class="inum" id="i2_${{m.idx}}" type="number" value="${{sc.s2}}" min="${{MIN}}" max="${{MAX}}"
+               oninput="onInp(${{m.idx}},2,this.value)">
+        <button class="ibtn" onclick="adj(${{m.idx}},2,1)">+</button>
+      </div>`
   }}
 </div>`;
   }}
 
   window.adj=function(idx,t,d){{
     const el=document.getElementById((t===1?'i1_':'i2_')+idx);
-    let v=parseInt(el.value||'0')+d;
-    if(v<MIN)v=MIN; if(v>MAX)v=MAX;
-    el.value=v;
-    scores[idx][t===1?'s1':'s2']=v;
+    let v=parseInt(el.value||'0')+d;if(v<MIN)v=MIN;if(v>MAX)v=MAX;
+    el.value=v;scores[idx][t===1?'s1':'s2']=v;
   }};
-
   window.onInp=function(idx,t,val){{
-    let v=parseInt(val)||0;
-    if(v<MIN)v=MIN; if(v>MAX)v=MAX;
-    scores[idx][t===1?'s1':'s2']=v;
+    let v=parseInt(val)||0;if(v<MIN)v=MIN;if(v>MAX)v=MAX;scores[idx][t===1?'s1':'s2']=v;
   }};
-
-  // 저장: top-level URL 변경 → Streamlit query_params 수신
   window.doSave=function(idx){{
-    const s1=scores[idx].s1, s2=scores[idx].s2;
-    // 로컬 즉시 잠금 (UX 반응성)
+    const s1=scores[idx].s1,s2=scores[idx].s2;
     locked[idx]=true;
     const w=document.getElementById('w'+idx);
     const m=matches.find(x=>x.idx===idx);
     const lc=m.league.includes('A')?'#2e7d32':'#1565c0';
     redraw(m,lc,w);
-    // top 페이지 URL 변경으로 Streamlit 트리거
     const url=new URL(window.top.location.href);
-    url.searchParams.set('act','save');
-    url.searchParams.set('idx',idx);
-    url.searchParams.set('s1',s1);
-    url.searchParams.set('s2',s2);
+    url.searchParams.set('act','save');url.searchParams.set('idx',idx);
+    url.searchParams.set('s1',s1);url.searchParams.set('s2',s2);
     window.top.location.href=url.toString();
   }};
-
   window.doEdit=function(idx){{
     locked[idx]=false;
     const w=document.getElementById('w'+idx);
@@ -1143,11 +1144,9 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
     const lc=m.league.includes('A')?'#2e7d32':'#1565c0';
     redraw(m,lc,w);
     const url=new URL(window.top.location.href);
-    url.searchParams.set('act','edit');
-    url.searchParams.set('idx',idx);
+    url.searchParams.set('act','edit');url.searchParams.set('idx',idx);
     window.top.location.href=url.toString();
   }};
-
   render();
 }})();
 </script>
@@ -1155,19 +1154,11 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
 
     sb_html = build_full_html(schedule, rounds, scores, st.session_state)
     n = len(schedule)
-    # 높이 정밀 계산:
-    # - 경기 카드: 약 68px (카드 본문 + 배지)
-    # - 입력행: 42px
-    # - 경기당 합계: ~112px
-    # - 라운드 헤더: 40px × 라운드 수
-    # - 리그 헤더: 24px × 리그 수 (A+B = 최대 2개/라운드)
-    # - 여유분: 60px
     n_rounds = len(rounds)
     n_leagues = len(set(m["league"] for m in schedule))
     est = (n * 112) + (n_rounds * 40) + (n_rounds * n_leagues * 24) + 60
     st.components.v1.html(sb_html, height=est, scrolling=False)
 
-    # ── 전체 초기화 ─────────────────────────────────────────
     st.markdown("---")
     if st.button("🔄 점수 전체 초기화", type="secondary"):
         for i in range(len(schedule)):
@@ -1177,7 +1168,6 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
         st.session_state["sb_scores"] = {}
         st.rerun()
 
-    # ── 통계 ────────────────────────────────────────────────
     st.markdown("### 📈 선수별 통계")
     df_sb = compute_scoreboard_stats(schedule, st.session_state.get("sb_scores", {}))
     if df_sb.empty:
@@ -1209,13 +1199,35 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
 # ============================================================
 
 elif page == "🎲 랜덤페어":
-    st.title("🎾 TELA CLUB Random Match Generator v2.06")
-    st.markdown(
-        "**A리그:** 동성복 → 혼복 → 잡복 &nbsp;|&nbsp; "
-        "**B리그:** 혼복(≤2회) → 동성복(≥1회) → 잡복 &nbsp;|&nbsp; "
-        "**최소 3경기 보장 / 최대 4경기 제한**"
-    )
 
+    # ── 사이드바: [1] 페어링 방식 선택 (NEW) ────────────────
+    # ★ 이 섹션이 랜덤페어 선택 직후 / 입력방식 전에 위치
+    st.sidebar.markdown("### 🎯 페어링 방식")
+    pairing_mode = st.sidebar.radio(
+        "페어링 방식 선택",
+        ["🔵 조건부 랜덤페어", "🔴 완전 랜덤페어"],
+        index=0,
+        label_visibility="collapsed",
+    )
+    IS_FULLY_RANDOM = (pairing_mode == "🔴 완전 랜덤페어")
+
+    # 방식 설명 표시
+    if IS_FULLY_RANDOM:
+        st.sidebar.info(
+            "**완전 랜덤페어**\n\n"
+            "완전 무작위 대진 생성\n\n"
+            "✅ 유일한 제약: 남자팀 vs 여자팀 대결 불가\n\n"
+            "리그 우선순위·쿼터 미적용"
+        )
+    else:
+        st.sidebar.info(
+            "**조건부 랜덤페어**\n\n"
+            "A리그: 동성복 → 혼복 → 잡복\n\n"
+            "B리그: 혼복(≤2회) → 동성복(≥1회) → 잡복"
+        )
+    st.sidebar.markdown("---")
+
+    # ── 사이드바: [2] 입력 방식 ─────────────────────────────
     input_mode = st.sidebar.radio("입력 방식", ["코드 자동 생성 (AM01/AW01...)", "직접 이름 입력"], index=0)
     st.sidebar.markdown("---")
 
@@ -1241,7 +1253,7 @@ elif page == "🎲 랜덤페어":
     if use_seed:
         seed_val = st.sidebar.number_input("시드 번호", min_value=0, max_value=9999, value=42, step=1)
 
-    # ── 날짜 + 일련번호 (점수판 연동 키) ──────────────────
+    # ── 날짜 + 일련번호 ──────────────────────────────────────
     st.sidebar.markdown("---")
     st.sidebar.markdown("📅 **날짜 & 일련번호**")
     rp_date = st.sidebar.text_input("날짜 (YYYY-MM-DD)",
@@ -1251,11 +1263,10 @@ elif page == "🎲 랜덤페어":
     rp_key  = f"{rp_date}_{rp_num}"
     st.sidebar.caption(f"저장 키: {rp_key}")
 
-    # ── 관리자 비밀번호 ────────────────────────────────────
+    # ── 관리자 비밀번호 ──────────────────────────────────────
     st.sidebar.markdown("---")
     st.sidebar.markdown("🔐 **관리자 확인**")
     admin_pw = st.sidebar.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
-
     pw_ok = (admin_pw == ADMIN_PASSWORD)
 
     generate_btn = st.sidebar.button(
@@ -1270,6 +1281,20 @@ elif page == "🎲 랜덤페어":
     elif not admin_pw:
         st.sidebar.caption("비밀번호를 입력해야 생성할 수 있습니다.")
 
+    # ── 메인 타이틀 ─────────────────────────────────────────
+    mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
+    st.title(f"🎾 TELA CLUB Random Match Generator v3.01  [{mode_badge}]")
+
+    if IS_FULLY_RANDOM:
+        st.markdown("**완전 랜덤페어**: 무작위 대진 &nbsp;|&nbsp; ⚠️ 남자팀 vs 여자팀 대결만 제한 &nbsp;|&nbsp; **최소 3경기 / 최대 4경기**")
+    else:
+        st.markdown(
+            "**A리그:** 동성복 → 혼복 → 잡복 &nbsp;|&nbsp; "
+            "**B리그:** 혼복(≤2회) → 동성복(≥1회) → 잡복 &nbsp;|&nbsp; "
+            "**최소 3경기 보장 / 최대 4경기 제한**"
+        )
+
+    # ── 대진표 생성 처리 ─────────────────────────────────────
     if generate_btn and pw_ok:
         if custom_input is not None:
             league_players = {
@@ -1284,8 +1309,8 @@ elif page == "🎲 랜덤페어":
 
         errors = []
         for lg, pl in league_players.items():
-            if 0<len(pl)<4: errors.append(f"{lg} 인원이 4명 미만입니다.")
-        if not any(len(pl)>=4 for pl in league_players.values()):
+            if 0 < len(pl) < 4: errors.append(f"{lg} 인원이 4명 미만입니다.")
+        if not any(len(pl) >= 4 for pl in league_players.values()):
             errors.append("최소 한 리그에 4명 이상 입력해주세요.")
 
         if errors:
@@ -1295,25 +1320,30 @@ elif page == "🎲 랜덤페어":
         if use_seed and seed_val is not None:
             random.seed(int(seed_val))
 
-        with st.spinner("대진표 생성 중..."):
-            schedule, stats = generate_schedule_from_leagues(league_players)
+        spinner_msg = "완전 랜덤 대진표 생성 중..." if IS_FULLY_RANDOM else "조건부 대진표 생성 중..."
+        with st.spinner(spinner_msg):
+            if IS_FULLY_RANDOM:
+                # ★ 완전 랜덤 함수 호출
+                schedule, stats = generate_schedule_fully_random(league_players)
+            else:
+                # ★ 기존 조건부 함수 호출
+                schedule, stats = generate_schedule_from_leagues(league_players)
 
         if not schedule:
             st.warning("경기를 생성할 수 없습니다."); st.stop()
 
-        # session_state 저장 (점수판에서 활용)
         st.session_state["schedule"]    = schedule
         st.session_state["stats"]       = stats
         st.session_state["scores"]      = {}
-        # 점수판 연동: rp_key로 자동 저장
         st.session_state["rp_schedule"] = schedule
         st.session_state["rp_key"]      = rp_key
         st.session_state["sb_schedule"] = schedule
         st.session_state["sb_scores"]   = {}
-        st.session_state["sb_key"]      = ""   # 날짜 동기화 리셋
-        # shelve에 대진표 저장 (점수판에서 바로 불러올 수 있게)
+        st.session_state["sb_key"]      = ""
         shelf_save(rp_key, serialize_schedule(schedule), {})
-        st.success(f"✅ 대진표가 **{rp_key}** 키로 저장되었습니다. 점수판에서 같은 키를 입력하면 불러올 수 있습니다.")
+
+        mode_label = "완전 랜덤" if IS_FULLY_RANDOM else "조건부 랜덤"
+        st.success(f"✅ [{mode_label}] 대진표가 **{rp_key}** 키로 저장되었습니다.")
 
         seed_label = f"시드 #{int(seed_val)}" if (use_seed and seed_val is not None) else "시드 없음(랜덤)"
 
@@ -1332,7 +1362,7 @@ elif page == "🎲 랜덤페어":
         tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
 
         with tab1:
-            st.subheader(f"경기 대진표 · {seed_label}")
+            st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
             def hl_match(row):
                 bg = "#E8F5E9" if "A리그" in str(row.get("리그","")) else "#E3F2FD"
                 return [f"background-color:{bg};color:black"]*len(row)
@@ -1374,15 +1404,29 @@ elif page == "🎲 랜덤페어":
                     std_m=df_full["혼성합계"].std(); mean_m=df_full["혼성합계"].mean()
                     if std_m>1.5: warns.append(f"⚠️ 혼성 편차 큼 (평균 {mean_m:.1f}회, σ={std_m:.2f})")
                     else: st.success(f"✅ 혼성 균등 분배 (평균 {mean_m:.1f}회, σ={std_m:.2f})")
-                b_rows = df_full[df_full["리그"]=="B리그"]
-                if not b_rows.empty:
-                    st.markdown("**B리그 쿼터 현황** (혼성≤2회, 동성≥1회)")
-                    quota_rows = []
-                    for _, row in b_rows.iterrows():
-                        dong=row["남복"]+row["여복"]; mc=row["혼성합계"]
-                        quota_rows.append({"이름":row["이름"],"혼성":mc,"동성":dong,
-                                           "혼성쿼터":"✅" if mc<=2 else "❌","동성쿼터":"✅" if dong>=1 else "⚠️"})
-                    st.dataframe(pd.DataFrame(quota_rows), use_container_width=False)
+                # 조건부 랜덤일 때만 B리그 쿼터 검증
+                if not IS_FULLY_RANDOM:
+                    b_rows = df_full[df_full["리그"]=="B리그"]
+                    if not b_rows.empty:
+                        st.markdown("**B리그 쿼터 현황** (혼성≤2회, 동성≥1회)")
+                        quota_rows = []
+                        for _, row in b_rows.iterrows():
+                            dong=row["남복"]+row["여복"]; mc=row["혼성합계"]
+                            quota_rows.append({"이름":row["이름"],"혼성":mc,"동성":dong,
+                                               "혼성쿼터":"✅" if mc<=2 else "❌","동성쿼터":"✅" if dong>=1 else "⚠️"})
+                        st.dataframe(pd.DataFrame(quota_rows), use_container_width=False)
+                # 완전 랜덤일 때 남vs여 대결 검증
+                if IS_FULLY_RANDOM:
+                    gvg_count = 0
+                    for d in schedule:
+                        g1 = {get_gender(p) for p in d["team1"]}
+                        g2 = {get_gender(p) for p in d["team2"]}
+                        if (g1=={"M"} and g2=={"W"}) or (g1=={"W"} and g2=={"M"}):
+                            gvg_count += 1
+                    if gvg_count > 0:
+                        issues.append(f"❌ 남자팀 vs 여자팀 대결 {gvg_count}건 발생 (재생성 권장)")
+                    else:
+                        st.success("✅ 남자팀 vs 여자팀 대결 없음")
             for i in issues: st.error(i)
             for w in warns:  st.warning(w)
             if not issues and not warns: st.info("🎾 모든 검증 통과!")
@@ -1393,32 +1437,33 @@ elif page == "🎲 랜덤페어":
             df_display.to_excel(writer, sheet_name="출전현황", index=False)
             for sn in ["대진표","출전현황"]: writer.sheets[sn].set_column("A:Z",14)
         excel_tag = f"_시드{int(seed_val)}" if (use_seed and seed_val is not None) else "_랜덤"
+        mode_tag  = "_완전랜덤" if IS_FULLY_RANDOM else "_조건부"
         st.sidebar.markdown("---")
         st.sidebar.download_button(
             label="📥 엑셀 다운로드", data=buf.getvalue(),
-            file_name=f"TELA_대진표{excel_tag}.xlsx",
+            file_name=f"TELA_대진표{mode_tag}{excel_tag}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
 
     else:
         if not generate_btn:
-            st.info("👈 사이드바에서 인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
+            st.info("👈 사이드바에서 페어링 방식과 인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### 입력 방식
+                ### 페어링 방식
                 | 방식 | 설명 |
                 |------|------|
-                | 코드 자동 생성 | 인원 수만 입력 (AM01, AW01, BM01 등) |
-                | 직접 이름 입력 | `이름 성별` 형식 (예: `홍길동 남`, `김영희 여`) |
+                | 🔵 조건부 랜덤페어 | 리그별 우선순위·쿼터 적용 (기존 방식) |
+                | 🔴 완전 랜덤페어 | 완전 무작위. 남자팀 vs 여자팀 대결만 제한 |
 
-                ### 매치 우선순위
+                ### 조건부 - 매치 우선순위
                 | 리그 | 1순위 | 2순위 | 3순위 |
                 |------|-------|-------|-------|
                 | A리그 | 동성복 (남복/여복) | 혼복 | 잡복 |
                 | B리그 | 혼복 | 동성복 | 잡복 |
 
-                ### 출전 규칙
+                ### 공통 출전 규칙
                 - **최소 3경기** 보장 → 이벤트 라운드(4R)로 보충
                 - **최대 4경기** 제한
                 - **관리자 비밀번호** 필요 → 사이드바 하단 입력
@@ -1426,6 +1471,6 @@ elif page == "🎲 랜덤페어":
                 ### 점수판
                 1. 대진표 생성 후 사이드바에서 **📊 점수판** 선택
                 2. 날짜 선택 또는 직접 입력
-                3. 각 경기 점수 입력 후 경기 카드 하단 **💾 저장** 버튼 클릭
+                3. 각 경기 점수 입력 후 **💾 저장** 버튼 클릭
                 4. 새로고침 후에도 날짜별로 저장 유지
                 """)
