@@ -1343,34 +1343,33 @@ elif page == "🎲 랜덤페어":
         custom_input  = None
         league_counts = None
 
+        # 사이드바에는 버튼만 표시 → 팝업에서 선택
+        st.sidebar.markdown("---")
+        if st.sidebar.button("👥 참가자 선택 열기", type="primary",
+                             use_container_width=True, key="open_member_popup"):
+            st.session_state["member_popup_open"] = True
+
+        # 현재 선택 현황 요약 표시
         for i, lg in enumerate(active_leagues):
-            lc = LEAGUE_COLORS[i]
+            pfx = active_prefixes[i]
+            lc  = LEAGUE_COLORS[i]
+            sel_keys = [k for k in st.session_state
+                        if k.startswith(f"chk_{lg}_") and st.session_state[k]]
             st.sidebar.markdown(
-                f'<span style="color:{lc};font-weight:700;">{lg} 참가자 선택</span>',
+                f'<span style="color:{lc};font-size:0.8rem;">{lg}: {len(sel_keys)}명 선택</span>',
                 unsafe_allow_html=True
             )
+
+        # 선택 결과 수집 (session_state의 chk_ 키 기반)
+        for i, lg in enumerate(active_leagues):
             pfx = active_prefixes[i]
             lg_members = all_members.get(lg, [])
-            if not lg_members:
-                st.sidebar.caption(f"등록된 회원 없음 → 아래 '회원 관리'에서 추가하세요")
-                member_selected[lg] = []
-            else:
-                # 전체 선택 토글
-                select_all = st.sidebar.checkbox(
-                    f"전체선택 ({lg})", value=True, key=f"selall_{lg}"
-                )
-                selected = []
-                for m in lg_members:
-                    g_label = "남" if m["gender"] == "M" else "여"
-                    checked = st.sidebar.checkbox(
-                        f"{m['name']} ({g_label})",
-                        value=select_all,
-                        key=f"sel_{lg}_{m['name']}"
-                    )
-                    if checked:
-                        code = f"{pfx}{m['gender']}{m['name']}"
-                        selected.append(code)
-                member_selected[lg] = selected
+            selected = []
+            for m in lg_members:
+                key = f"chk_{lg}_{m['name']}"
+                if st.session_state.get(key, True):
+                    selected.append(f"{pfx}{m['gender']}{m['name']}")
+            member_selected[lg] = selected
 
     # ── 코드 자동 생성 모드 ──────────────────────────────────
     elif input_mode == "코드 자동 생성 (AM01/AW01...)":
@@ -1404,6 +1403,62 @@ elif page == "🎲 랜덤페어":
                 height=100, key=f"txt_{lg}", label_visibility="collapsed"
             )
             custom_input[lg] = txt
+
+    # ══════════════════════════════════════════════════════════
+    # 참가자 선택 팝업 (dialog)
+    # ══════════════════════════════════════════════════════════
+    @st.dialog("👥 참가자 선택", width="large")
+    def _member_select_popup():
+        all_members_p = member_load_all()
+        tabs_p = st.tabs([f"{lg}" for lg in active_leagues])
+        for i, (tab_p, lg) in enumerate(zip(tabs_p, active_leagues)):
+            with tab_p:
+                pfx       = active_prefixes[i]
+                lc        = LEAGUE_COLORS[i]
+                lg_mem    = all_members_p.get(lg, [])
+                if not lg_mem:
+                    st.info(f"{lg}에 등록된 회원이 없습니다. 아래 '회원 관리'에서 추가하세요.")
+                    continue
+
+                # ── 전체선택/해제 버튼 ──────────────────────
+                col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
+                if col_sa.button(f"✅ 전체선택", key=f"popup_sa_{lg}"):
+                    for m in lg_mem:
+                        st.session_state[f"chk_{lg}_{m['name']}"] = True
+                    st.rerun()
+                if col_sd.button(f"⬜ 전체해제", key=f"popup_sd_{lg}"):
+                    for m in lg_mem:
+                        st.session_state[f"chk_{lg}_{m['name']}"] = False
+                    st.rerun()
+                sel_cnt = sum(1 for m in lg_mem
+                              if st.session_state.get(f"chk_{lg}_{m['name']}", True))
+                col_cnt.markdown(
+                    f'<div style="padding-top:6px;color:{lc};font-weight:700;">'
+                    f'{sel_cnt} / {len(lg_mem)}명 선택</div>',
+                    unsafe_allow_html=True
+                )
+
+                # ── 회원 체크박스 그리드 ────────────────────
+                cols_per_row = 4
+                rows = [lg_mem[j:j+cols_per_row] for j in range(0, len(lg_mem), cols_per_row)]
+                for row in rows:
+                    rcols = st.columns(cols_per_row)
+                    for k, m in enumerate(row):
+                        g_label = "남" if m["gender"]=="M" else "여"
+                        key = f"chk_{lg}_{m['name']}"
+                        if key not in st.session_state:
+                            st.session_state[key] = True
+                        rcols[k].checkbox(
+                            f"{m['name']} ({g_label})",
+                            key=key
+                        )
+
+        if st.button("✔️ 확인", type="primary", use_container_width=True):
+            st.session_state["member_popup_open"] = False
+            st.rerun()
+
+    if st.session_state.get("member_popup_open", False):
+        _member_select_popup()
 
     st.sidebar.markdown("---")
 
@@ -1911,65 +1966,115 @@ function showMsg() {{
                         st.error("불러오기 실패: 데이터를 찾을 수 없습니다.")
 
         # ═══════════════════════════════════════════════════════
-        # 회원 관리 (사전 등록)
+        # 회원 관리 (사전 등록 + 리그 이동)
         # ═══════════════════════════════════════════════════════
         st.markdown("---")
         with st.expander("👥 회원 관리 (사전 등록)", expanded=False):
             all_members = member_load_all()
 
-            mgmt_lg = st.selectbox(
-                "리그 선택", active_leagues, key="mgmt_lg"
-            )
-            lg_members = all_members.get(mgmt_lg, [])
+            mgmt_tabs = st.tabs([f"📋 {lg}" for lg in active_leagues])
 
-            # 현재 등록 회원 표시 + 삭제
-            if lg_members:
-                st.markdown(f"**{mgmt_lg} 등록 회원 ({len(lg_members)}명)**")
-                cols_h = st.columns([3, 2, 1])
-                cols_h[0].markdown("이름"); cols_h[1].markdown("성별"); cols_h[2].markdown("삭제")
-                for m in list(lg_members):
-                    g_label = "남" if m["gender"]=="M" else "여"
-                    cols = st.columns([3, 2, 1])
-                    cols[0].write(m["name"])
-                    cols[1].write(g_label)
-                    if cols[2].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
-                        member_remove(mgmt_lg, m["name"])
-                        st.rerun()
-            else:
-                st.info(f"{mgmt_lg}에 등록된 회원이 없습니다.")
+            for ti, (mgmt_tab, mgmt_lg) in enumerate(zip(mgmt_tabs, active_leagues)):
+                with mgmt_tab:
+                    lg_members = all_members.get(mgmt_lg, [])
+                    lc_mg = LEAGUE_COLORS[ti]
 
-            st.markdown("**신규 회원 추가**")
-            col_n, col_g, col_add = st.columns([3, 2, 1])
-            new_name   = col_n.text_input("이름", key="new_member_name", label_visibility="collapsed",
-                                           placeholder="이름 입력")
-            new_gender = col_g.selectbox("성별", ["남(M)", "여(W)"], key="new_member_gender",
-                                          label_visibility="collapsed")
-            if col_add.button("➕ 추가", key="add_member_btn"):
-                if new_name.strip():
-                    g_code = "M" if "남" in new_gender else "W"
-                    member_add(mgmt_lg, new_name.strip(), g_code)
-                    st.success(f"'{new_name}' 추가 완료")
-                    st.rerun()
-                else:
-                    st.warning("이름을 입력해주세요.")
+                    # ── 등록 회원 목록 + 삭제 + 리그 이동 ──────
+                    if lg_members:
+                        st.markdown(
+                            f'<div style="color:{lc_mg};font-weight:700;margin-bottom:6px;">'
+                            f'{mgmt_lg} 등록 회원 ({len(lg_members)}명)</div>',
+                            unsafe_allow_html=True
+                        )
+                        other_leagues = [lg for lg in active_leagues if lg != mgmt_lg]
+                        has_move = bool(other_leagues)
 
-            # 일괄 입력 (붙여넣기)
-            st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여)")
-            bulk_text = st.text_area("일괄 입력", placeholder="홍길동 남\n김영희 여\n이철수 남",
-                                      height=100, key="bulk_member_text",
-                                      label_visibility="collapsed")
-            if st.button("📋 일괄 등록", key="bulk_add_btn"):
-                added = 0
-                for line in bulk_text.strip().splitlines():
-                    parts = line.strip().split()
-                    if not parts: continue
-                    bname = parts[0]
-                    bgender = "W" if (len(parts)>=2 and parts[1] in ("여","W","F")) else "M"
-                    member_add(mgmt_lg, bname, bgender)
-                    added += 1
-                if added:
-                    st.success(f"{added}명 등록 완료")
-                    st.rerun()
+                        # 헤더
+                        if has_move:
+                            h_cols = st.columns([3, 1, 2, 1, 1])
+                            h_cols[0].markdown("**이름**"); h_cols[1].markdown("**성별**")
+                            h_cols[2].markdown("**이동 대상**"); h_cols[3].markdown("**이동**")
+                            h_cols[4].markdown("**삭제**")
+                        else:
+                            h_cols = st.columns([3, 1, 1])
+                            h_cols[0].markdown("**이름**"); h_cols[1].markdown("**성별**")
+                            h_cols[2].markdown("**삭제**")
+
+                        for m in list(lg_members):
+                            g_label = "남" if m["gender"]=="M" else "여"
+                            if has_move:
+                                row_cols = st.columns([3, 1, 2, 1, 1])
+                                row_cols[0].write(m["name"])
+                                row_cols[1].write(g_label)
+                                move_to = row_cols[2].selectbox(
+                                    "이동대상", other_leagues,
+                                    key=f"moveto_{mgmt_lg}_{m['name']}",
+                                    label_visibility="collapsed"
+                                )
+                                if row_cols[3].button(
+                                    "→", key=f"movebtn_{mgmt_lg}_{m['name']}",
+                                    help=f"{move_to}으로 이동"
+                                ):
+                                    member_remove(mgmt_lg, m["name"])
+                                    member_add(move_to, m["name"], m["gender"])
+                                    st.success(f"'{m['name']}' → {move_to} 이동 완료")
+                                    st.rerun()
+                                if row_cols[4].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
+                                    member_remove(mgmt_lg, m["name"])
+                                    st.rerun()
+                            else:
+                                row_cols = st.columns([3, 1, 1])
+                                row_cols[0].write(m["name"])
+                                row_cols[1].write(g_label)
+                                if row_cols[2].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
+                                    member_remove(mgmt_lg, m["name"])
+                                    st.rerun()
+                    else:
+                        st.info(f"{mgmt_lg}에 등록된 회원이 없습니다.")
+
+                    st.markdown("---")
+
+                    # ── 신규 회원 추가 ───────────────────────────
+                    st.markdown("**신규 회원 추가**")
+                    col_n, col_g, col_add = st.columns([3, 2, 1])
+                    new_name = col_n.text_input(
+                        "이름", key=f"new_name_{mgmt_lg}",
+                        label_visibility="collapsed", placeholder="이름 입력"
+                    )
+                    new_gender = col_g.selectbox(
+                        "성별", ["남(M)", "여(W)"],
+                        key=f"new_gender_{mgmt_lg}",
+                        label_visibility="collapsed"
+                    )
+                    if col_add.button("➕", key=f"add_btn_{mgmt_lg}",
+                                      help="회원 추가"):
+                        if new_name.strip():
+                            g_code = "M" if "남" in new_gender else "W"
+                            member_add(mgmt_lg, new_name.strip(), g_code)
+                            st.success(f"'{new_name}' 추가 완료")
+                            st.rerun()
+                        else:
+                            st.warning("이름을 입력해주세요.")
+
+                    # ── 일괄 입력 ────────────────────────────────
+                    st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여)")
+                    bulk_text = st.text_area(
+                        "일괄 입력", placeholder="홍길동 남\n김영희 여\n이철수 남",
+                        height=100, key=f"bulk_{mgmt_lg}",
+                        label_visibility="collapsed"
+                    )
+                    if st.button("📋 일괄 등록", key=f"bulk_btn_{mgmt_lg}"):
+                        added = 0
+                        for line in bulk_text.strip().splitlines():
+                            parts = line.strip().split()
+                            if not parts: continue
+                            bname = parts[0]
+                            bgender = "W" if (len(parts)>=2 and parts[1] in ("여","W","F")) else "M"
+                            member_add(mgmt_lg, bname, bgender)
+                            added += 1
+                        if added:
+                            st.success(f"{added}명 등록 완료")
+                            st.rerun()
 
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
