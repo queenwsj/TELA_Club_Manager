@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v4.02
+TELA CLUB Random Match Generator v5.00
 ======================================
 변경사항 (v4.01):
   [버그수정] 완전 랜덤페어 여복 미출현 버그 수정
@@ -1128,7 +1128,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA Tennis CLUB", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.00", page_icon="🎾", layout="wide")
 
 
 # ============================================================
@@ -1145,7 +1145,7 @@ RS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 RS_COLUMNS = [
-    "id", "category", "name", "cafe_id", "birth_year", "gender",
+    "id", "category", "league", "name", "cafe_id", "birth_year", "gender",
     "phone", "region", "join_date", "dormant_period", "leave_date",
     "email", "application", "memo", "updated_at",
     "deleted_at",   # 소프트 삭제: 삭제 시각. 비어있으면 정상 회원.
@@ -1304,23 +1304,54 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
         pass  # 로그 실패는 조용히 무시
 
 def load_df(include_deleted=False):
-    # expected_headers 없이 로드 → 시트에 컬럼 없어도 오류 없음
     records = get_sheet().get_all_records()
     if not records:
         df = pd.DataFrame(columns=RS_COLUMNS)
     else:
         df = pd.DataFrame(records)
-        # COLUMNS에 있지만 df에 없는 컬럼은 빈 문자열로 보정
         for col in RS_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
-        df = df[RS_COLUMNS]  # 컬럼 순서 통일
+        df = df[RS_COLUMNS]
     df["id"]         = pd.to_numeric(df["id"],         errors="coerce").fillna(0).astype(int)
     df["birth_year"] = pd.to_numeric(df["birth_year"], errors="coerce")
     df["deleted_at"] = df["deleted_at"].astype(str).str.strip()
     if not include_deleted:
         df = df[df["deleted_at"] == ""]
     return df
+
+def load_df_for_match() -> pd.DataFrame:
+    """
+    랜덤페어용 회원 데이터 로더.
+    - 탈퇴(deleted_at 있음, category=='탈퇴', leave_date 있음) 제외
+    - 반환: id, name, gender, category, league, dormant_period 포함 df
+    """
+    df = load_df(include_deleted=False)
+    if df.empty:
+        return df
+    # 탈퇴 카테고리 제외
+    df = df[df["category"] != "탈퇴"].copy()
+    # leave_date 있으면 제외
+    df = df[df["leave_date"].astype(str).str.strip() == ""].copy()
+    return df.reset_index(drop=True)
+
+def save_league_to_sheet(member_id: int, league_value: str):
+    """
+    구글 시트의 특정 회원(id 기준) league 컬럼을 업데이트.
+    league 컬럼이 없으면 자동 추가됨(get_sheet 마이그레이션으로 처리).
+    """
+    try:
+        sheet   = get_sheet()
+        all_ids = sheet.col_values(1)   # A열 = id
+        headers = sheet.row_values(1)
+        if "league" not in headers:
+            return  # 마이그레이션 전이면 스킵
+        league_col = headers.index("league") + 1   # 1-based
+        idx = all_ids.index(str(member_id))         # 0-based
+        sheet.update_cell(idx + 1, league_col, league_value)
+        st.cache_resource.clear()
+    except Exception:
+        pass  # 실패 시 조용히 무시
 
 def save_row(df, row, is_new, action_detail=""):
     sheet = get_sheet()
@@ -2659,8 +2690,8 @@ def render_roster_page():
     # ─────────────────────────────────────────────────────────
     #  회원 목록 테이블 (체크박스 항상 표시)
     # ─────────────────────────────────────────────────────────
-    CW  = [0.22, 0.28, 0.65, 0.82, 0.85, 0.46, 0.38, 0.95, 0.72, 0.75, 1.0, 0.72, 0.68, 1.1, 0.85]
-    HDR = ["☑","No.","구분","성명","카페ID","생년","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
+    CW  = [0.22, 0.28, 0.55, 0.65, 0.82, 0.85, 0.46, 0.38, 0.95, 0.72, 0.75, 1.0, 0.72, 0.68, 1.1, 0.85]
+    HDR = ["☑","No.","구분","리그","성명","카페ID","생년","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
     
     if view_df.empty:
         st.info("🎾 해당 조건의 회원이 없습니다.")
@@ -2727,13 +2758,32 @@ def render_roster_page():
     
             rc[col_offset+0].markdown(cell(idx+1,"#9ca3af"), unsafe_allow_html=True)
             rc[col_offset+1].markdown(f"<div style='padding:5px 0'>{badge(row.get('category',''))}</div>", unsafe_allow_html=True)
-            rc[col_offset+2].markdown(cell(row.get('name',''),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
-            rc[col_offset+3].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
-            rc[col_offset+4].markdown(cell(by_val), unsafe_allow_html=True)
-            rc[col_offset+5].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True)
-            rc[col_offset+6].markdown(cell(row.get('phone','') or '—'), unsafe_allow_html=True)
-            rc[col_offset+7].markdown(cell(row.get('region','') or '—',"#374151"), unsafe_allow_html=True)
-            rc[col_offset+8].markdown(cell(row.get('join_date','') or '—',"#6b7280"), unsafe_allow_html=True)
+            # ── 리그 셀 (인라인 수정 가능, 관리자만) ──
+            lg_val = str(row.get('league','') or '').strip()
+            if _is_admin:
+                league_options_cell = [""] + LEAGUE_NAMES
+                _cur_lg_idx = league_options_cell.index(lg_val) if lg_val in league_options_cell else 0
+                _sel_lg = rc[col_offset+2].selectbox(
+                    "리그", league_options_cell, index=_cur_lg_idx,
+                    key=f"lg_sel_{row_id}", label_visibility="collapsed"
+                )
+                if _sel_lg != lg_val:
+                    with st.spinner("리그 저장 중…"):
+                        save_league_to_sheet(row_id, _sel_lg)
+                    st.rerun()
+            else:
+                _lg_color = LEAGUE_COLORS[LEAGUE_NAMES.index(lg_val)] if lg_val in LEAGUE_NAMES else "#9ca3af"
+                rc[col_offset+2].markdown(
+                    f"<div style='padding:5px 0;{RS_FS};color:{_lg_color};font-weight:700'>{lg_val or '—'}</div>",
+                    unsafe_allow_html=True
+                )
+            rc[col_offset+3].markdown(cell(row.get('name',''),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
+            rc[col_offset+4].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
+            rc[col_offset+5].markdown(cell(by_val), unsafe_allow_html=True)
+            rc[col_offset+6].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True)
+            rc[col_offset+7].markdown(cell(row.get('phone','') or '—'), unsafe_allow_html=True)
+            rc[col_offset+8].markdown(cell(row.get('region','') or '—',"#374151"), unsafe_allow_html=True)
+            rc[col_offset+9].markdown(cell(row.get('join_date','') or '—',"#6b7280"), unsafe_allow_html=True)
     
             # 휴면 기간 요약
             dorm_raw = str(row.get('dormant_period','') or '').strip()
@@ -2750,7 +2800,7 @@ def render_roster_page():
                     dorm_disp = f"{last['start']}~{last['end']} 외 {dorm_cnt-1}건"
             else:
                 dorm_disp = "—"
-            rc[col_offset+9].markdown(
+            rc[col_offset+10].markdown(
                 f"<div style='padding:7px 0;{RS_FS};color:#ca8a04' title='{dorm_raw}'>{dorm_disp}</div>",
                 unsafe_allow_html=True)
     
@@ -3230,58 +3280,58 @@ elif page == "🎲 랜덤페어":
     # ── [3] 입력 방식 ────────────────────────────────────────
     input_mode = st.sidebar.radio(
         "입력 방식",
-        ["👥 회원 선택", "코드 자동 생성 (AM01/AW01...)", "직접 이름 입력"],
+        ["👥 회원 선택 (명부 연동)", "코드 자동 생성 (AM01/AW01...)", "직접 이름 입력"],
         index=0
     )
     st.sidebar.markdown("---")
 
     # 인원 입력 — 리그 수에 따라 동적 생성
     custom_input   = {}
-    league_counts  = {}   # {league_name: {"m": int, "w": int}}
-    member_selected = {}  # {league_name: [player_code, ...]}
+    league_counts  = {}
+    member_selected = {}
 
-    # ── 회원 선택 모드 ───────────────────────────────────────
-    if input_mode == "👥 회원 선택":
-        all_members = member_load_all()
+    # ── 회원 선택 모드 (구글 시트 직접 연동) ────────────────
+    if input_mode == "👥 회원 선택 (명부 연동)":
         custom_input  = None
         league_counts = None
 
-        # 사이드바에는 버튼만 표시 → 팝업에서 선택
+        # 사이드바: 버튼만 표시
         st.sidebar.markdown("---")
         if st.sidebar.button("👥 참가자 선택 열기", type="primary",
                              use_container_width=True, key="open_member_popup"):
             st.session_state["member_popup_open"] = True
 
-        # 현재 선택 현황 요약 표시
+        # 현재 선택 현황 요약 (구글 시트 기반 캐시 데이터)
+        _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
         for i, lg in enumerate(active_leagues):
-            pfx      = active_prefixes[i]
-            lc       = LEAGUE_COLORS[i]
-            lg_mem_i = all_members.get(lg, [])
-            sel_names = {
-                m["name"] for m in lg_mem_i
-                if st.session_state.get(f"chk_{lg}_{m['name']}", True)
-            }
-            dormant_sel = sum(
-                1 for m in lg_mem_i
-                if m["name"] in sel_names and m.get("status") == "휴면"
+            lc = LEAGUE_COLORS[i]
+            lg_rows = _match_df_cache[_match_df_cache["league"] == lg] if not _match_df_cache.empty else pd.DataFrame()
+            sel_cnt = sum(
+                1 for _, r in lg_rows.iterrows()
+                if st.session_state.get(f"mchk_{lg}_{r['id']}", True)
             )
-            summary_str = f"{lg}: {len(sel_names)}명 선택"
-            if dormant_sel:
-                summary_str += f" (휴면 {dormant_sel}명 포함)"
+            dormant_cnt = sum(
+                1 for _, r in lg_rows.iterrows()
+                if st.session_state.get(f"mchk_{lg}_{r['id']}", True)
+                and r.get("category") == "휴면"
+            )
+            summary = f"{lg}: {sel_cnt}명 선택"
+            if dormant_cnt: summary += f" (휴면 {dormant_cnt}명 포함)"
             st.sidebar.markdown(
-                f'<span style="color:{lc};font-size:0.8rem;">{summary_str}</span>',
+                f'<span style="color:{lc};font-size:0.8rem;">{summary}</span>',
                 unsafe_allow_html=True
             )
 
-        # 선택 결과 수집 (session_state의 chk_ 키 기반)
+        # 선택 결과 수집
+        _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
         for i, lg in enumerate(active_leagues):
             pfx = active_prefixes[i]
-            lg_members = all_members.get(lg, [])
+            lg_rows = _match_df_cache[_match_df_cache["league"] == lg] if not _match_df_cache.empty else pd.DataFrame()
             selected = []
-            for m in lg_members:
-                key = f"chk_{lg}_{m['name']}"
-                if st.session_state.get(key, True):
-                    selected.append(f"{pfx}{m['gender']}{m['name']}")
+            for _, r in lg_rows.iterrows():
+                if st.session_state.get(f"mchk_{lg}_{r['id']}", True):
+                    g = "M" if str(r.get("gender","")).strip() in ("남","M") else "W"
+                    selected.append(f"{pfx}{g}{r['name']}")
             member_selected[lg] = selected
 
     # ── 코드 자동 생성 모드 ──────────────────────────────────
@@ -3318,53 +3368,86 @@ elif page == "🎲 랜덤페어":
             custom_input[lg] = txt
 
     # ══════════════════════════════════════════════════════════
-    # 참가자 선택 팝업 (dialog)
+    # 참가자 선택 팝업 — 구글 시트 회원명부 직접 연동
     # ══════════════════════════════════════════════════════════
-    @st.dialog("👥 참가자 선택", width="large")
+    @st.dialog("👥 참가자 선택 (회원명부 연동)", width="large")
     def _member_select_popup():
-        all_members_p = member_load_all()
+        # ── 구글 시트 로드 ───────────────────────────────────
+        with st.spinner("📡 회원명부 불러오는 중…"):
+            try:
+                match_df = load_df_for_match()
+                st.session_state["match_df_cache"] = match_df
+            except Exception as e:
+                st.error(f"회원명부 로드 실패: {e}")
+                return
+
+        if match_df.empty:
+            st.info("회원명부에 데이터가 없습니다.")
+            if st.button("닫기"): st.session_state["member_popup_open"] = False; st.rerun()
+            return
+
+        # 리그 미배정 회원 확인
+        unassigned_df = match_df[match_df["league"].astype(str).str.strip() == ""]
+        if not unassigned_df.empty:
+            st.warning(f"⚠️ 리그 미배정 회원 {len(unassigned_df)}명이 있습니다. 회원명부에서 리그를 배정해주세요.")
+
+        # 리그별 탭 (설정된 리그 기준)
         tabs_p = st.tabs([f"{lg}" for lg in active_leagues])
         for i, (tab_p, lg) in enumerate(zip(tabs_p, active_leagues)):
             with tab_p:
-                pfx       = active_prefixes[i]
-                lc        = LEAGUE_COLORS[i]
-                lg_mem    = all_members_p.get(lg, [])
-                if not lg_mem:
-                    st.info(f"{lg}에 등록된 회원이 없습니다. 아래 '회원 관리'에서 추가하세요.")
+                lc     = LEAGUE_COLORS[i]
+                lg_df  = match_df[match_df["league"].astype(str).str.strip() == lg].copy()
+
+                if lg_df.empty:
+                    st.info(f"{lg}에 배정된 회원이 없습니다. 회원명부에서 리그를 배정해주세요.")
                     continue
 
-                # ── 전체선택/해제 버튼 ──────────────────────
+                # 전체선택/해제
                 col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
-                if col_sa.button(f"✅ 전체선택", key=f"popup_sa_{lg}"):
-                    for m in lg_mem:
-                        st.session_state[f"chk_{lg}_{m['name']}"] = True
+                if col_sa.button("✅ 전체선택", key=f"popup_sa_{lg}"):
+                    for _, r in lg_df.iterrows():
+                        st.session_state[f"mchk_{lg}_{r['id']}"] = True
                     st.rerun()
-                if col_sd.button(f"⬜ 전체해제", key=f"popup_sd_{lg}"):
-                    for m in lg_mem:
-                        st.session_state[f"chk_{lg}_{m['name']}"] = False
+                if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}"):
+                    for _, r in lg_df.iterrows():
+                        st.session_state[f"mchk_{lg}_{r['id']}"] = False
                     st.rerun()
-                sel_cnt = sum(1 for m in lg_mem
-                              if st.session_state.get(f"chk_{lg}_{m['name']}", True))
+                sel_cnt = sum(1 for _, r in lg_df.iterrows()
+                              if st.session_state.get(f"mchk_{lg}_{r['id']}", True))
                 col_cnt.markdown(
                     f'<div style="padding-top:6px;color:{lc};font-weight:700;">'
-                    f'{sel_cnt} / {len(lg_mem)}명 선택</div>',
-                    unsafe_allow_html=True
+                    f'{sel_cnt} / {len(lg_df)}명 선택</div>', unsafe_allow_html=True
                 )
 
-                # ── 회원 체크박스 그리드 ────────────────────
+                # 회원 체크박스 그리드
                 cols_per_row = 4
-                rows = [lg_mem[j:j+cols_per_row] for j in range(0, len(lg_mem), cols_per_row)]
-                for row in rows:
+                rows_list = [lg_df.iloc[j:j+cols_per_row] for j in range(0, len(lg_df), cols_per_row)]
+                for row_chunk in rows_list:
                     rcols = st.columns(cols_per_row)
-                    for k, m in enumerate(row):
-                        g_label    = "남" if m["gender"]=="M" else "여"
-                        status     = m.get("status", "정상")
-                        status_tag = " 💤" if status == "휴면" else ""
-                        key = f"chk_{lg}_{m['name']}"
+                    for k, (_, r) in enumerate(row_chunk.iterrows()):
+                        g_label = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
+                        is_dormant = (r.get("category") == "휴면")
+                        # 휴면 상태 판별 (dormant_period 종료일 기준)
+                        if not is_dormant and str(r.get("dormant_period","")).strip():
+                            from datetime import date as _md
+                            _dorm_str = str(r.get("dormant_period","")).strip()
+                            if "~" in _dorm_str:
+                                _end = _dorm_str.split("~")[-1].strip()
+                                if not _end:
+                                    is_dormant = True
+                                else:
+                                    try:
+                                        from datetime import date as _d2
+                                        is_dormant = _d2.fromisoformat(_end[:10]) >= _d2.today()
+                                    except: pass
+                            else:
+                                is_dormant = True
+                        status_tag = " 💤" if is_dormant else ""
+                        key = f"mchk_{lg}_{r['id']}"
                         if key not in st.session_state:
                             st.session_state[key] = True
                         rcols[k].checkbox(
-                            f"{m['name']}{status_tag} ({g_label})",
+                            f"{r['name']}{status_tag} ({g_label})",
                             key=key
                         )
 
@@ -3410,7 +3493,7 @@ elif page == "🎲 랜덤페어":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title(f"🎾 TELA CLUB Random Match Generator v4.02")
+    st.title(f"🎾 TELA CLUB Random Match Generator v5.00")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 대진표 생성 ──────────────────────────────────────────
@@ -3439,7 +3522,7 @@ elif page == "🎲 랜덤페어":
 
             # league_players 구성
             league_players = {}
-            if input_mode == "👥 회원 선택":
+            if input_mode == "👥 회원 선택 (명부 연동)":
                 for lg in active_leagues:
                     league_players[lg] = member_selected.get(lg, [])
             elif custom_input is None:
@@ -4116,7 +4199,7 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v4.01 기능 안내
+                ### v5.00 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
