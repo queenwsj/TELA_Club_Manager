@@ -3350,6 +3350,7 @@ elif page == "🎲 랜덤페어":
         if st.sidebar.button("👥 참가자 선택 열기", type="primary",
                              use_container_width=True, key="open_member_popup"):
             st.session_state["member_popup_open"] = True
+            st.session_state["member_popup_just_opened"] = True  # 최초 진입 시 데이터 로드
 
         # 현재 선택 현황 요약 (구글 시트 기반 캐시 데이터)
         _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
@@ -3422,16 +3423,20 @@ elif page == "🎲 랜덤페어":
     # ══════════════════════════════════════════════════════════
     @st.dialog("👥 참가자 선택 (회원명부 연동)", width="large")
     def _member_select_popup():
-        # ── 구글 시트 로드 ───────────────────────────────────
-        with st.spinner("📡 회원명부 불러오는 중…"):
-            try:
-                match_df = load_df_for_match()
-                st.session_state["match_df_cache"] = match_df
-            except Exception as e:
-                st.error(f"회원명부 로드 실패: {e}")
-                return
+        # ── 데이터는 팝업 최초 열릴 때만 로드 (체크박스 rerun 시 재로드 방지) ──
+        if "match_df_cache" not in st.session_state or st.session_state.get("member_popup_just_opened"):
+            with st.spinner("📡 회원명부 불러오는 중…"):
+                try:
+                    match_df = load_df_for_match()
+                    st.session_state["match_df_cache"] = match_df
+                    st.session_state["member_popup_just_opened"] = False
+                except Exception as e:
+                    st.error(f"회원명부 로드 실패: {e}")
+                    return
+        else:
+            match_df = st.session_state["match_df_cache"]
 
-        if match_df.empty:
+        if match_df is None or (hasattr(match_df, 'empty') and match_df.empty):
             st.info("회원명부에 데이터가 없습니다.")
             if st.button("닫기"): st.session_state["member_popup_open"] = False; st.rerun()
             return
@@ -3445,8 +3450,8 @@ elif page == "🎲 랜덤페어":
         tabs_p = st.tabs([f"{lg}" for lg in active_leagues])
         for i, (tab_p, lg) in enumerate(zip(tabs_p, active_leagues)):
             with tab_p:
-                lc     = LEAGUE_COLORS[i]
-                lg_df  = match_df[match_df["league"].astype(str).str.strip() == lg].copy()
+                lc    = LEAGUE_COLORS[i]
+                lg_df = match_df[match_df["league"].astype(str).str.strip() == lg].copy()
 
                 if lg_df.empty:
                     st.info(f"{lg}에 배정된 회원이 없습니다. 회원명부에서 리그를 배정해주세요.")
@@ -3470,16 +3475,15 @@ elif page == "🎲 랜덤페어":
                 )
 
                 # 회원 체크박스 그리드
-                cols_per_row = 4
+                cols_per_row = 3
                 rows_list = [lg_df.iloc[j:j+cols_per_row] for j in range(0, len(lg_df), cols_per_row)]
                 for row_chunk in rows_list:
                     rcols = st.columns(cols_per_row)
                     for k, (_, r) in enumerate(row_chunk.iterrows()):
-                        g_label = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
+                        g_label    = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
+                        # 휴면 판별: category 또는 dormant_period 기준
                         is_dormant = (r.get("category") == "휴면")
-                        # 휴면 상태 판별 (dormant_period 종료일 기준)
                         if not is_dormant and str(r.get("dormant_period","")).strip():
-                            from datetime import date as _md
                             _dorm_str = str(r.get("dormant_period","")).strip()
                             if "~" in _dorm_str:
                                 _end = _dorm_str.split("~")[-1].strip()
@@ -3487,12 +3491,11 @@ elif page == "🎲 랜덤페어":
                                     is_dormant = True
                                 else:
                                     try:
-                                        from datetime import date as _d2
-                                        is_dormant = _d2.fromisoformat(_end[:10]) >= _d2.today()
+                                        is_dormant = date.fromisoformat(_end[:10]) >= date.today()
                                     except: pass
                             else:
                                 is_dormant = True
-                        status_tag = ""  # 상태 표시 제거
+                        status_tag = " 💤" if is_dormant else " ✅"
                         key = f"mchk_{lg}_{r['id']}"
                         if key not in st.session_state:
                             st.session_state[key] = True
@@ -4019,10 +4022,15 @@ function showMsg() {{
         st.markdown("---")
         with st.expander("🏷️ 회원 리그 설정 (구글 시트 직접 연동)", expanded=False):
             st.caption("체크박스로 회원을 선택하고 이동 대상 리그를 선택 후 일괄 저장하세요.")
+
+            _ref_col, _ = st.columns([1, 4])
+            if _ref_col.button("🔄 최신 데이터 로드", key="lg_refresh_btn"):
+                st.cache_data.clear()
+                st.rerun()
+
             try:
                 with st.spinner("회원 명부 불러오는 중…"):
-                    st.cache_data.clear()
-                    _lg_df = load_df_for_match()
+                    _lg_df = load_df_for_match()   # TTL 캐시 사용 (429 방지)
             except Exception as _e:
                 st.error(f"구글 시트 연결 오류: {_e}")
                 _lg_df = pd.DataFrame()
