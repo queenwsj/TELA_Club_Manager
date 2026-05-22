@@ -1896,7 +1896,7 @@ def dialog_confirm_delete(target):
 
 
 @st.dialog("회원 정보", width="large")
-def dialog_form(existing=None):
+def dialog_form(df, existing=None):
     title = "✏️ 회원 정보 수정" if existing else "➕ 새 회원 등록"
     st.markdown(f"#### {title}")
 
@@ -2492,7 +2492,7 @@ def render_roster_page():
         st.session_state.open_dialog = None
     
     if od == "add":
-        dialog_form(existing=None)
+        dialog_form(df, existing=None)
     
     elif od == "detail" and et:
         # 읽기 전용 상세 보기 — 비밀번호 불필요
@@ -2510,7 +2510,7 @@ def render_roster_page():
             rows = df[df["id"] == et["id"]]
             if not rows.empty:
                 existing_row = rows.iloc[0].to_dict()
-        dialog_form(existing=existing_row)
+        dialog_form(df, existing=existing_row)
     
     elif od == "confirm_delete" and et:
         dialog_confirm_delete(et)
