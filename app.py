@@ -40,7 +40,28 @@ SAVE_DIR   = os.path.join(os.path.dirname(__file__), ".tela_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
 SHELF_PATH  = os.path.join(SAVE_DIR, "scoreboard")
 MEMBER_PATH = os.path.join(SAVE_DIR, "members")
-USER_PATH   = os.path.join(SAVE_DIR, "users")    # 앱 로그인 계정 DB
+USER_PATH   = os.path.join(SAVE_DIR, "users")
+GUEST_PATH  = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
+
+def guest_load() -> list:
+    """게스트 목록 로드. [{name, gender, league, code}, ...]"""
+    with shelve.open(GUEST_PATH) as db:
+        return list(db.get("guests", []))
+
+def guest_save(guests: list):
+    with shelve.open(GUEST_PATH) as db:
+        db["guests"] = guests
+
+def guest_add(name: str, gender: str, league: str, code: str):
+    guests = guest_load()
+    if not any(g["name"] == name and g["league"] == league for g in guests):
+        guests.append({"name": name, "gender": gender, "league": league, "code": code})
+        guest_save(guests)
+
+def guest_remove(name: str, league: str):
+    guests = guest_load()
+    guests = [g for g in guests if not (g["name"] == name and g["league"] == league)]
+    guest_save(guests)
 
 
 # ── 앱 로그인 계정 관리 ───────────────────────────────────────
@@ -320,7 +341,14 @@ def display_name(code: str) -> str:
     raw = base_name(code)
     if is_custom_code(raw):
         g = "남" if raw[1].upper() == "M" else "여" if raw[1].upper() == "W" else ""
-        shown = f"{raw[2:]}({g})" if g else raw[2:]
+        name_part = raw[2:]
+        # 게스트 태그 처리
+        is_guest = name_part.startswith("★")
+        if is_guest:
+            name_part = name_part[1:]  # ★ 제거
+            shown = f"{name_part}(게스트/{g})" if g else f"{name_part}(게스트)"
+        else:
+            shown = f"{name_part}({g})" if g else name_part
     else:
         shown = raw
     return shown + ("(중복)" if dup else "")
@@ -3452,6 +3480,7 @@ elif page == "🎲 랜덤페어":
             with tab_p:
                 lc    = LEAGUE_COLORS[i]
                 lg_df = match_df[match_df["league"].astype(str).str.strip() == lg].copy()
+                lg_df = lg_df.sort_values("name").reset_index(drop=True)
 
                 if lg_df.empty:
                     st.info(f"{lg}에 배정된 회원이 없습니다. 회원명부에서 리그를 배정해주세요.")
@@ -3510,6 +3539,46 @@ elif page == "🎲 랜덤페어":
 
     if st.session_state.get("member_popup_open", False):
         _member_select_popup()
+
+    st.sidebar.markdown("---")
+
+    # ── [3-G] 게스트 관리 (회원명부 미반영, 직접 삭제까지 유지) ─
+    st.sidebar.markdown("### 👤 게스트")
+    st.sidebar.caption("회원명부 미반영 · 직접 삭제 전까지 유지")
+
+    # 게스트 추가 입력
+    _gc1, _gc2, _gc3 = st.sidebar.columns([2, 1, 1])
+    _g_lg   = _gc1.selectbox("리그", active_leagues, key="guest_lg",
+                              label_visibility="collapsed")
+    _g_name = _gc2.text_input("이름", key="guest_name", placeholder="이름",
+                               label_visibility="collapsed")
+    _g_sex  = _gc3.selectbox("성별", ["남", "여"], key="guest_sex",
+                              label_visibility="collapsed")
+    if st.sidebar.button("➕ 게스트 추가", key="add_guest_btn", use_container_width=True):
+        if _g_name.strip():
+            _g_code = "M" if _g_sex == "남" else "W"
+            _pfx_g  = active_prefixes[active_leagues.index(_g_lg)]
+            _gcode  = f"{_pfx_g}{_g_code}★{_g_name.strip()}"
+            guest_add(_g_name.strip(), _g_code, _g_lg, _gcode)
+            st.rerun()
+        else:
+            st.sidebar.warning("이름을 입력해주세요.")
+
+    # 현재 게스트 목록 표시 + 삭제
+    _all_guests = guest_load()
+    if _all_guests:
+        for _gm in list(_all_guests):
+            _lc_g = LEAGUE_COLORS[active_leagues.index(_gm["league"])] if _gm["league"] in active_leagues else "#555"
+            _gl_c1, _gl_c2 = st.sidebar.columns([4, 1])
+            _gl_c1.markdown(
+                f'<span style="color:{_lc_g};font-size:0.8rem;">🏷 {_gm["league"]} · {_gm["name"]}</span>',
+                unsafe_allow_html=True
+            )
+            if _gl_c2.button("🗑", key=f"del_guest_{_gm['league']}_{_gm['name']}"):
+                guest_remove(_gm["name"], _gm["league"])
+                st.rerun()
+    else:
+        st.sidebar.caption("등록된 게스트 없음")
 
     st.sidebar.markdown("---")
 
@@ -3592,6 +3661,13 @@ elif page == "🎲 랜덤페어":
                     pfx = active_prefixes[i]
                     txt = custom_input.get(lg, "")
                     league_players[lg] = parse_custom_players(txt, pfx) if txt.strip() else []
+
+            # ── 게스트 추가 (회원명부 미반영, shelve 영구 저장) ─
+            for _gm in guest_load():
+                _glg = _gm["league"]
+                if _glg not in league_players:
+                    league_players[_glg] = []
+                league_players[_glg].append(_gm["code"])
 
             IS_FULLY_RANDOM_run = IS_FULLY_RANDOM
             league_configs_run  = league_configs
@@ -4059,6 +4135,9 @@ function showMsg() {{
                             st.info("이 리그에 배정된 회원이 없습니다.")
                             continue
 
+                        # 이름순 정렬
+                        _tab_df = _tab_df.sort_values("name").reset_index(drop=True)
+
                         # ── 이동 대상 리그 + 일괄 저장 (상시 표시) ──
                         _all_lgs   = active_leagues + (["미배정"] if _lg_val != "" else [])
                         _other_lgs = [lg for lg in active_leagues if lg != _lg_val] + (["미배정"] if _lg_val != "" else [])
@@ -4129,9 +4208,31 @@ function showMsg() {{
                             if _chk_key not in st.session_state:
                                 st.session_state[_chk_key] = False
 
+                            # 휴면 판별
+                            _is_dorm = (_row.get("category") == "휴면")
+                            if not _is_dorm and str(_row.get("dormant_period","")).strip():
+                                _dp = str(_row.get("dormant_period","")).strip()
+                                if "~" in _dp:
+                                    _dp_end = _dp.split("~")[-1].strip()
+                                    if not _dp_end:
+                                        _is_dorm = True
+                                    else:
+                                        try: _is_dorm = date.fromisoformat(_dp_end[:10]) >= date.today()
+                                        except: pass
+                                else:
+                                    _is_dorm = True
+                            _status_badge = (
+                                '<span style="background:#FF8F00;color:#fff;border-radius:4px;'
+                                'padding:1px 5px;font-size:0.68rem;font-weight:700;margin-left:4px;">💤휴면</span>'
+                                if _is_dorm else
+                                '<span style="background:#2e7d32;color:#fff;border-radius:4px;'
+                                'padding:1px 5px;font-size:0.68rem;font-weight:700;margin-left:4px;">✅정상</span>'
+                            )
+                            _name_html = f'{_row["name"]}{_status_badge}'
+
                             _rc = st.columns([0.5, 3, 1, 2, 1])
                             _rc[0].checkbox("", key=_chk_key, label_visibility="collapsed")
-                            _rc[1].write(_row["name"])
+                            _rc[1].markdown(_name_html, unsafe_allow_html=True)
                             _rc[2].write(_g)
 
                             # 개별 이동 대상 selectbox
