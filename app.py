@@ -108,13 +108,36 @@ def sync_from_sheet(target_league: str) -> dict:
                updated_at(O) deleted_at(P)
 
     상태 판별:
-      - deleted_at 값 있음  → 탈퇴 (완전 제외)
-      - leave_date 값 있음  → 탈퇴 (완전 제외)
-      - dormant_period 값 있음 → 휴면 (status="휴면")
-      - 그 외               → 정상 (status="정상")
+      - deleted_at 값 있음         → 탈퇴 (완전 제외)
+      - leave_date 값 있음         → 탈퇴 (완전 제외)
+      - dormant_period 비어있음    → 정상
+      - dormant_period 종료일이 오늘 이전 → 정상 (휴면 종료)
+      - dormant_period 종료일이 오늘 이후 → 휴면
+      - dormant_period 종료일 없음  → 휴면 (진행 중)
 
     반환: {"imported": int, "skipped": int, "added": int}
     """
+    from datetime import date as _date
+    today = _date.today()
+
+    def _parse_dormant(dormant_str: str) -> str:
+        """dormant_period 문자열 → '정상' 또는 '휴면'"""
+        s = dormant_str.strip()
+        if not s:
+            return "정상"
+        # '2024-01-01~2024-06-30' 또는 '2024-01-01~' 형태
+        if "~" in s:
+            end_part = s.split("~", 1)[1].strip()
+            if end_part:
+                try:
+                    end_date = _date.fromisoformat(end_part[:10])
+                    return "정상" if end_date < today else "휴면"
+                except ValueError:
+                    pass
+            return "휴면"   # 종료일 없으면 진행 중
+        # 날짜 하나만 있을 때 (시작일로 간주 → 휴면 진행 중)
+        return "휴면"
+
     gc   = _get_gspread_client()
     sh   = gc.open_by_key(SHEET_ID)
     ws   = sh.sheet1
@@ -131,11 +154,9 @@ def sync_from_sheet(target_league: str) -> dict:
 
         if not name:
             skipped += 1; continue
-        # 탈퇴 회원 완전 제외
         if deleted_at or leave_date:
             skipped += 1; continue
 
-        # 성별 정규화
         if gender_raw in ("남", "M", "MALE", "1"):
             gender = "M"
         elif gender_raw in ("여", "F", "W", "FEMALE", "2"):
@@ -143,16 +164,14 @@ def sync_from_sheet(target_league: str) -> dict:
         else:
             gender = "M"
 
-        # 상태
-        status = "휴면" if dormant else "정상"
-
+        status = _parse_dormant(dormant)
         new_members.append({"name": name, "gender": gender, "status": status})
         imported += 1
 
-    # 기존 shelve 데이터에 머지
-    # - 이미 등록된 회원은 status만 최신으로 갱신, 추가는 안 함
+    # 기존 shelve 머지 — status는 시트 기준으로 갱신, 수동 override는 유지 안 함
+    # (재가져오기 시 항상 시트가 최신 source of truth)
     data = member_load_all()
-    existing_by_name: dict[str, tuple[str, int]] = {}  # name → (league, idx)
+    existing_by_name: dict = {}
     for lg, members in data.items():
         for idx, m in enumerate(members):
             existing_by_name[m["name"]] = (lg, idx)
@@ -160,11 +179,9 @@ def sync_from_sheet(target_league: str) -> dict:
     added = 0
     for m in new_members:
         if m["name"] in existing_by_name:
-            # 기존 회원 status 갱신
             lg, idx = existing_by_name[m["name"]]
             data[lg][idx]["status"] = m["status"]
         else:
-            # 신규 회원 추가
             bucket = target_league if target_league else UNASSIGNED_KEY
             if bucket not in data:
                 data[bucket] = []
@@ -2148,49 +2165,87 @@ function showMsg() {{
 
                         # 헤더
                         if has_move:
-                            h_cols = st.columns([3, 1, 2, 1, 1])
+                            h_cols = st.columns([3, 1, 1, 2, 1, 1])
                             h_cols[0].markdown("**이름**"); h_cols[1].markdown("**성별**")
-                            h_cols[2].markdown("**이동 대상**"); h_cols[3].markdown("**이동**")
-                            h_cols[4].markdown("**삭제**")
+                            h_cols[2].markdown("**상태**")
+                            h_cols[3].markdown("**이동 대상**"); h_cols[4].markdown("**이동**")
+                            h_cols[5].markdown("**삭제**")
                         else:
-                            h_cols = st.columns([3, 1, 1])
+                            h_cols = st.columns([3, 1, 1, 1])
                             h_cols[0].markdown("**이름**"); h_cols[1].markdown("**성별**")
-                            h_cols[2].markdown("**삭제**")
+                            h_cols[2].markdown("**상태**"); h_cols[3].markdown("**삭제**")
 
                         for m in list(lg_members):
                             g_label = "남" if m["gender"]=="M" else "여"
                             status  = m.get("status", "정상")
                             if status == "휴면":
-                                badge = '<span style="background:#FF8F00;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">휴면</span>'
+                                badge = '<span style="background:#FF8F00;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">💤휴면</span>'
                             else:
-                                badge = '<span style="background:#2e7d32;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">정상</span>'
+                                badge = '<span style="background:#2e7d32;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">✅정상</span>'
                             name_html = f'{badge}{m["name"]}'
 
                             if has_move:
-                                row_cols = st.columns([3, 1, 2, 1, 1])
+                                row_cols = st.columns([3, 1, 1, 2, 1, 1])
                                 row_cols[0].markdown(name_html, unsafe_allow_html=True)
                                 row_cols[1].write(g_label)
-                                move_to = row_cols[2].selectbox(
+                                # 상태 토글 버튼
+                                toggle_label = "→정상" if status == "휴면" else "→휴면"
+                                if row_cols[2].button(
+                                    toggle_label,
+                                    key=f"tog_{mgmt_lg}_{m['name']}",
+                                    help="상태 변경"
+                                ):
+                                    data_edit = member_load_all()
+                                    for idx2, mm in enumerate(data_edit.get(mgmt_lg, [])):
+                                        if mm["name"] == m["name"]:
+                                            data_edit[mgmt_lg][idx2]["status"] = (
+                                                "정상" if status == "휴면" else "휴면"
+                                            )
+                                            break
+                                    member_save_all(data_edit)
+                                    st.rerun()
+                                move_to = row_cols[3].selectbox(
                                     "이동대상", other_leagues,
                                     key=f"moveto_{mgmt_lg}_{m['name']}",
                                     label_visibility="collapsed"
                                 )
-                                if row_cols[3].button(
+                                if row_cols[4].button(
                                     "→", key=f"movebtn_{mgmt_lg}_{m['name']}",
                                     help=f"{move_to}으로 이동"
                                 ):
                                     member_remove(mgmt_lg, m["name"])
                                     member_add(move_to, m["name"], m["gender"])
+                                    # status 유지
+                                    data_mv = member_load_all()
+                                    for mm in data_mv.get(move_to, []):
+                                        if mm["name"] == m["name"]:
+                                            mm["status"] = status; break
+                                    member_save_all(data_mv)
                                     st.success(f"'{m['name']}' → {move_to} 이동 완료")
                                     st.rerun()
-                                if row_cols[4].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
+                                if row_cols[5].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
                                     member_remove(mgmt_lg, m["name"])
                                     st.rerun()
                             else:
-                                row_cols = st.columns([3, 1, 1])
+                                row_cols = st.columns([3, 1, 1, 1])
                                 row_cols[0].markdown(name_html, unsafe_allow_html=True)
                                 row_cols[1].write(g_label)
-                                if row_cols[2].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
+                                toggle_label = "→정상" if status == "휴면" else "→휴면"
+                                if row_cols[2].button(
+                                    toggle_label,
+                                    key=f"tog_{mgmt_lg}_{m['name']}",
+                                    help="상태 변경"
+                                ):
+                                    data_edit = member_load_all()
+                                    for idx2, mm in enumerate(data_edit.get(mgmt_lg, [])):
+                                        if mm["name"] == m["name"]:
+                                            data_edit[mgmt_lg][idx2]["status"] = (
+                                                "정상" if status == "휴면" else "휴면"
+                                            )
+                                            break
+                                    member_save_all(data_edit)
+                                    st.rerun()
+                                if row_cols[3].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
                                     member_remove(mgmt_lg, m["name"])
                                     st.rerun()
                     else:
@@ -2200,28 +2255,44 @@ function showMsg() {{
 
                     # ── 신규 회원 추가 ───────────────────────────
                     st.markdown("**신규 회원 추가**")
-                    col_n, col_g, col_add = st.columns([3, 2, 1])
+                    col_n, col_g, col_s, col_add = st.columns([3, 1, 1, 1])
                     new_name = col_n.text_input(
                         "이름", key=f"new_name_{mgmt_lg}",
                         label_visibility="collapsed", placeholder="이름 입력"
                     )
                     new_gender = col_g.selectbox(
-                        "성별", ["남(M)", "여(W)"],
+                        "성별", ["남", "여"],
                         key=f"new_gender_{mgmt_lg}",
                         label_visibility="collapsed"
                     )
-                    if col_add.button("➕", key=f"add_btn_{mgmt_lg}",
-                                      help="회원 추가"):
+                    new_status = col_s.selectbox(
+                        "상태", ["정상", "휴면"],
+                        key=f"new_status_{mgmt_lg}",
+                        label_visibility="collapsed"
+                    )
+                    if col_add.button("➕", key=f"add_btn_{mgmt_lg}", help="회원 추가"):
                         if new_name.strip():
-                            g_code = "M" if "남" in new_gender else "W"
-                            member_add(mgmt_lg, new_name.strip(), g_code)
-                            st.success(f"'{new_name}' 추가 완료")
-                            st.rerun()
+                            g_code = "M" if new_gender == "남" else "W"
+                            data_add = member_load_all()
+                            if mgmt_lg not in data_add:
+                                data_add[mgmt_lg] = []
+                            if not any(mm["name"] == new_name.strip()
+                                       for members in data_add.values() for mm in members):
+                                data_add[mgmt_lg].append({
+                                    "name": new_name.strip(),
+                                    "gender": g_code,
+                                    "status": new_status,
+                                })
+                                member_save_all(data_add)
+                                st.success(f"'{new_name}' ({new_status}) 추가 완료")
+                                st.rerun()
+                            else:
+                                st.warning(f"'{new_name}'은 이미 등록된 이름입니다.")
                         else:
                             st.warning("이름을 입력해주세요.")
 
-                    # ── 일괄 입력 ────────────────────────────────
-                    st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여)")
+                    # ── 일괄 추가 ────────────────────────────────
+                    st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여, 상태 기본=정상)")
                     bulk_text = st.text_area(
                         "일괄 입력", placeholder="홍길동 남\n김영희 여\n이철수 남",
                         height=100, key=f"bulk_{mgmt_lg}",
@@ -2229,14 +2300,25 @@ function showMsg() {{
                     )
                     if st.button("📋 일괄 등록", key=f"bulk_btn_{mgmt_lg}"):
                         added = 0
+                        data_bulk = member_load_all()
+                        existing_names_bulk = {
+                            mm["name"] for members in data_bulk.values() for mm in members
+                        }
+                        if mgmt_lg not in data_bulk:
+                            data_bulk[mgmt_lg] = []
                         for line in bulk_text.strip().splitlines():
                             parts = line.strip().split()
                             if not parts: continue
-                            bname = parts[0]
+                            bname   = parts[0]
                             bgender = "W" if (len(parts)>=2 and parts[1] in ("여","W","F")) else "M"
-                            member_add(mgmt_lg, bname, bgender)
-                            added += 1
+                            if bname not in existing_names_bulk:
+                                data_bulk[mgmt_lg].append({
+                                    "name": bname, "gender": bgender, "status": "정상"
+                                })
+                                existing_names_bulk.add(bname)
+                                added += 1
                         if added:
+                            member_save_all(data_bulk)
                             st.success(f"{added}명 등록 완료")
                             st.rerun()
 
