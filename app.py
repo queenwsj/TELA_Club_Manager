@@ -1303,8 +1303,17 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     except Exception:
         pass  # 로그 실패는 조용히 무시
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_records_cached() -> list:
+    """
+    구글 시트 전체 레코드를 60초 TTL로 캐싱.
+    API 429 (분당 읽기 한도 초과) 방지용.
+    저장/수정 후에는 st.cache_data.clear()로 즉시 무효화.
+    """
+    return get_sheet().get_all_records()
+
 def load_df(include_deleted=False):
-    records = get_sheet().get_all_records()
+    records = _load_records_cached()
     if not records:
         df = pd.DataFrame(columns=RS_COLUMNS)
     else:
@@ -1349,7 +1358,7 @@ def save_league_to_sheet(member_id: int, league_value: str):
         league_col = headers.index("league") + 1   # 1-based
         idx = all_ids.index(str(member_id))         # 0-based
         sheet.update_cell(idx + 1, league_col, league_value)
-        st.cache_resource.clear()
+        st.cache_resource.clear(); st.cache_data.clear()
     except Exception:
         pass  # 실패 시 조용히 무시
 
@@ -1659,7 +1668,7 @@ def dialog_delete(target):
             soft_delete_row(target["id"], target["name"])
         st.session_state.open_dialog   = None
         st.session_state.edit_target   = None
-        st.cache_resource.clear()
+        st.cache_resource.clear(); st.cache_data.clear()
         st.rerun()
     if cn.button("취소", use_container_width=True):
         st.session_state.open_dialog   = None
@@ -2173,7 +2182,7 @@ def dialog_form(existing=None):
             _cleanup_dormant_session()
             st.session_state.open_dialog    = None
             st.session_state.edit_target    = None
-            st.cache_resource.clear()
+            st.cache_resource.clear(); st.cache_data.clear()
             st.rerun()
 
 # ─────────────────────────────────────────────────────────
@@ -2517,7 +2526,7 @@ def render_roster_page():
                     del_dt = datetime.strptime(str(trow["deleted_at"])[:19], "%Y-%m-%d %H:%M:%S")
                     if (today_dt - del_dt).days >= TRASH_DAYS:
                         hard_delete_row(trow["id"], trow["name"])
-                        st.cache_resource.clear()
+                        st.cache_resource.clear(); st.cache_data.clear()
                 except Exception:
                     pass
             # 재로드 후 표시
@@ -2546,11 +2555,11 @@ def render_roster_page():
                     rcol1, rcol2 = st.columns(2)
                     if rcol1.button("↩️ 복구", key=f"restore_{trow['id']}", use_container_width=True):
                         restore_row(trow["id"], trow["name"])
-                        st.cache_resource.clear()
+                        st.cache_resource.clear(); st.cache_data.clear()
                         st.rerun()
                     if rcol2.button("💀 영구삭제", key=f"hardel_{trow['id']}", use_container_width=True):
                         hard_delete_row(trow["id"], trow["name"])
-                        st.cache_resource.clear()
+                        st.cache_resource.clear(); st.cache_data.clear()
                         st.rerun()
         st.markdown("---")
     
@@ -2650,7 +2659,7 @@ def render_roster_page():
                             if k in st.session_state:
                                 del st.session_state[k]
                         st.session_state.bulk_selected = set()
-                        st.cache_resource.clear()
+                        st.cache_resource.clear(); st.cache_data.clear()
                         st.rerun()
                     elif not st.session_state.admin_authed:
                         st.warning("관리자 인증이 필요합니다.")
@@ -2909,10 +2918,6 @@ st.sidebar.markdown("---")
 # ============================================================
 
 if page == "📊 점수판":
-
-    if not is_logged_in():
-        st.warning("🔐 점수판은 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
-        st.stop()
 
     st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
 
