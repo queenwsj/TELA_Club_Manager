@@ -3485,7 +3485,7 @@ elif page == "🎲 랜덤페어":
     if _total_sel == 0:
         st.sidebar.caption("⚠️ 참가자를 선택해주세요")
 
-    # member_selected 수집 — 다중 안전장치 + 강력 디버그
+    # member_selected 수집 — 영구 저장소(selected_members/selected_guests) 기반
     member_selected = {}
     _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
     if not _match_df_cache.empty and "league" in _match_df_cache.columns:
@@ -3493,24 +3493,20 @@ elif page == "🎲 랜덤페어":
         _match_df_cache["league"] = _match_df_cache["league"].astype(str).str.strip()
         st.session_state["match_df_cache"] = _match_df_cache
 
-    # 디버그용 정보 수집
+    _sel_store  = st.session_state.get("selected_members", {})
+    _gsel_store = st.session_state.get("selected_guests",  {})
+
+    # 디버그 정보
     _dbg = {
         "cache_empty": _match_df_cache.empty,
-        "cache_size": len(_match_df_cache) if not _match_df_cache.empty else 0,
+        "cache_size":  len(_match_df_cache) if not _match_df_cache.empty else 0,
         "unique_leagues_in_cache": [],
         "active_leagues": active_leagues,
-        "mchk_keys_true": [],
-        "mchk_keys_total": 0,
+        "store_size":  len(_sel_store),
+        "store_true":  [k for k, v in _sel_store.items() if v][:5],
     }
     if not _match_df_cache.empty:
         _dbg["unique_leagues_in_cache"] = sorted(set(_match_df_cache["league"].astype(str)))
-
-    # 모든 mchk_ 키 스캔
-    for k, v in st.session_state.items():
-        if isinstance(k, str) and k.startswith("mchk_"):
-            _dbg["mchk_keys_total"] += 1
-            if v:
-                _dbg["mchk_keys_true"].append(k)
 
     for i, lg in enumerate(active_leagues):
         pfx = active_prefixes[i]
@@ -3518,16 +3514,13 @@ elif page == "🎲 랜덤페어":
         if not _match_df_cache.empty:
             lg_rows = _match_df_cache[_match_df_cache["league"] == lg]
             for _, r in lg_rows.iterrows():
-                # int / str 둘 다 시도
-                rid = r['id']
-                key_int = f"mchk_{lg}_{int(rid)}"
-                key_str = f"mchk_{lg}_{rid}"
-                if st.session_state.get(key_int, False) or st.session_state.get(key_str, False):
+                rid = int(r['id'])
+                if _sel_store.get(f"{lg}_{rid}", False):
                     g = "M" if str(r.get("gender","")).strip() in ("남","M") else "W"
                     selected.append(f"{pfx}{g}{r['name']}")
         for gm in guest_load():
             if gm["league"] == lg:
-                if st.session_state.get(f"gchk_{lg}_{gm['name']}", False):
+                if _gsel_store.get(f"{lg}_{gm['name']}", False):
                     selected.append(gm["code"])
         member_selected[lg] = selected
 
@@ -3592,23 +3585,38 @@ elif page == "🎲 랜덤페어":
                 normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
                 dormant_df = lg_df[lg_df.apply(_is_dorm, axis=1)]
 
-                # 선택 현황 카운트
+                # 선택 현황 카운트 (영구 저장소 기준)
+                _sel_store_view = st.session_state.get("selected_members", {})
+                _gsel_store_view = st.session_state.get("selected_guests", {})
                 sel_cnt   = sum(1 for _, r in lg_df.iterrows()
-                                if st.session_state.get(f"mchk_{lg}_{r['id']}", False))
+                                if _sel_store_view.get(f"{lg}_{int(r['id'])}", False))
                 g_sel_cnt = sum(1 for gm in _guests_lg
-                                if st.session_state.get(f"gchk_{lg}_{gm['name']}", False))
+                                if _gsel_store_view.get(f"{lg}_{gm['name']}", False))
                 total_sel = sel_cnt + g_sel_cnt
 
                 col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
                 if col_sa.button("✅ 전체선택", key=f"popup_sa_{lg}"):
+                    _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in normal_df.iterrows():
-                        st.session_state[f"mchk_{lg}_{r['id']}"] = True
+                        _sel_store[f"{lg}_{int(r['id'])}"] = True
+                    _gsel_store = st.session_state.setdefault("selected_guests", {})
+                    for gm in _guests_lg:
+                        _gsel_store[f"{lg}_{gm['name']}"] = True
+                    # 위젯 키도 동기화
+                    for _, r in normal_df.iterrows():
+                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = True
                     for gm in _guests_lg:
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = True
                     st.rerun()
                 if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}"):
+                    _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in lg_df.iterrows():
-                        st.session_state[f"mchk_{lg}_{r['id']}"] = False
+                        _sel_store[f"{lg}_{int(r['id'])}"] = False
+                    _gsel_store = st.session_state.setdefault("selected_guests", {})
+                    for gm in _guests_lg:
+                        _gsel_store[f"{lg}_{gm['name']}"] = False
+                    for _, r in lg_df.iterrows():
+                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = False
                     for gm in _guests_lg:
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = False
                     st.rerun()
@@ -3626,11 +3634,16 @@ elif page == "🎲 랜덤페어":
                         rcols = st.columns(cols_per_row)
                         for k, (_, r) in enumerate(row_chunk.iterrows()):
                             g_label = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
-                            key = f"mchk_{lg}_{r['id']}"
-                            # 기본값 False (미체크 상태 유지)
-                            if key not in st.session_state:
-                                st.session_state[key] = False
-                            rcols[k].checkbox(f"{r['name']} ({g_label})", key=key)
+                            rid     = int(r['id'])
+                            wkey    = f"mchk_{lg}_{rid}"
+                            store_k = f"{lg}_{rid}"
+                            # 영구 저장소에서 기본값 가져오기
+                            _sel_store = st.session_state.setdefault("selected_members", {})
+                            if wkey not in st.session_state:
+                                st.session_state[wkey] = _sel_store.get(store_k, False)
+                            checked = rcols[k].checkbox(f"{r['name']} ({g_label})", key=wkey)
+                            # 위젯 값을 영구 저장소에 반영
+                            _sel_store[store_k] = checked
 
                 # ── 게스트 체크박스 ──────────────────────────
                 if _guests_lg:
@@ -3643,13 +3656,16 @@ elif page == "🎲 랜덤페어":
                     for gi in range(0, len(_guests_lg), gcols_per_row):
                         gcols = st.columns(gcols_per_row)
                         for gk, gm in enumerate(_guests_lg[gi:gi+gcols_per_row]):
-                            g_gender = "남" if gm["gender"] == "M" else "여"
-                            gkey = f"gchk_{lg}_{gm['name']}"
+                            g_gender   = "남" if gm["gender"] == "M" else "여"
+                            gkey       = f"gchk_{lg}_{gm['name']}"
+                            g_store_k  = f"{lg}_{gm['name']}"
+                            _gsel_store = st.session_state.setdefault("selected_guests", {})
                             if gkey not in st.session_state:
-                                st.session_state[gkey] = False
-                            gcols[gk].checkbox(
+                                st.session_state[gkey] = _gsel_store.get(g_store_k, False)
+                            g_checked = gcols[gk].checkbox(
                                 f"⭐ {gm['name']} ({g_gender})", key=gkey
                             )
+                            _gsel_store[g_store_k] = g_checked
 
                 # ── 휴면 회원 (하단, 체크박스 없음) ──────────
                 if not dormant_df.empty:
@@ -3684,31 +3700,17 @@ elif page == "🎲 랜덤페어":
     rp_key  = f"{rp_date}_{rp_num}"
     st.sidebar.caption(f"저장키: {rp_key}")
 
-    # ── [5] 비밀번호 + 생성 버튼 ──────────────────────────────
-    # 비밀번호 엔터 → on_change 콜백으로 generate 트리거
+    # ── [5] 대진표 생성 ────────────────────────────────────────
     st.sidebar.markdown("---")
-    def _on_pw_enter():
-        if st.session_state.get("sidebar_pw", "") == ADMIN_PASSWORD:
-            st.session_state["_do_generate"] = True
-
-    admin_pw = st.sidebar.text_input(
-        "🔐 비밀번호", type="password", placeholder="입력 후 엔터",
-        key="sidebar_pw", on_change=_on_pw_enter
-    )
-    pw_ok = (admin_pw == ADMIN_PASSWORD)
+    _admin_ok = is_admin()
+    pw_ok = _admin_ok   # 호환성 유지
+    if not _admin_ok:
+        st.sidebar.warning("🔒 대진표 생성은 관리자만 가능합니다.")
 
     generate_btn = st.sidebar.button(
-        "🎾 대진표 생성", type="primary", use_container_width=True, disabled=not pw_ok
+        "🎾 대진표 생성", type="primary", use_container_width=True,
+        disabled=not _admin_ok
     )
-    # 엔터로 트리거된 경우 generate_btn처럼 처리 + 팝업 닫기
-    if st.session_state.pop("_do_generate", False):
-        generate_btn = True
-        st.session_state["member_popup_open"] = False
-
-    if admin_pw and not pw_ok:
-        st.sidebar.error("❌ 비밀번호가 틀렸습니다.")
-    elif not admin_pw:
-        st.sidebar.caption("비밀번호 입력 후 엔터 또는 버튼 클릭")
 
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
@@ -3725,23 +3727,18 @@ elif page == "🎲 랜덤페어":
                                       value=42, step=1, key="seed_val_main",
                                       label_visibility="collapsed")
 
-    # ── 🔍 디버그 패널 (문제 진단용 - 강제 펼침) ──────────────
-    with st.expander("🔍 진단 정보 (4명 미만 오류 디버깅)", expanded=True):
+    # ── 🔍 디버그 패널 ───────────────────────────────────────
+    with st.expander("🔍 진단 정보 (4명 미만 오류 디버깅)", expanded=False):
         _dbg = st.session_state.get("_debug_member_select", {})
-        st.write("**팝업 캐시 상태**")
         st.write(f"- 캐시 비어있음: `{_dbg.get('cache_empty', '?')}`")
         st.write(f"- 캐시 총 회원수: `{_dbg.get('cache_size', 0)}`")
-        st.write(f"- 캐시 내 리그값들: `{_dbg.get('unique_leagues_in_cache', [])}`")
-        st.write(f"- 활성 리그(active_leagues): `{_dbg.get('active_leagues', [])}`")
-        st.write("**체크박스 상태**")
-        st.write(f"- 전체 mchk_ 키 개수: `{_dbg.get('mchk_keys_total', 0)}`")
-        st.write(f"- True인 키 개수: `{len(_dbg.get('mchk_keys_true', []))}`")
-        st.write(f"- True인 키 (처음 5개): `{_dbg.get('mchk_keys_true', [])[:5]}`")
-        st.write("**리그별 선택 인원 (member_selected)**")
+        st.write(f"- 캐시 내 리그값: `{_dbg.get('unique_leagues_in_cache', [])}`")
+        st.write(f"- 활성 리그: `{_dbg.get('active_leagues', [])}`")
+        st.write(f"- 영구 저장소 크기: `{_dbg.get('store_size', 0)}`")
+        st.write(f"- 영구 저장소 True 키 (처음 5개): `{_dbg.get('store_true', [])}`")
         for lg in active_leagues:
             cnt = len(member_selected.get(lg, []))
-            sample = member_selected.get(lg, [])[:3]
-            st.write(f"- {lg}: **{cnt}명** → {sample}")
+            st.write(f"- {lg}: **{cnt}명** → {member_selected.get(lg, [])[:3]}")
 
     # ── 대진표 생성 ──────────────────────────────────────────
 
