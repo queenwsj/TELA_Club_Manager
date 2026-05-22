@@ -1260,31 +1260,38 @@ if st.session_state.admin_authed and st.session_state.auth_time:
 
 # ── Google Sheets ─────────────────────────────────────────
 @st.cache_resource
-def get_sheet():
+def _get_gsheet_connection():
+    """구글 시트 연결 객체만 캐싱 (API 호출 없음)."""
     creds  = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=RS_SCOPES)
     client = gspread.authorize(creds)
     wb     = client.open_by_key(st.secrets["SHEET_ID"])
-    sheet  = wb.sheet1
-    # 헤더가 없으면 전체 삽입
-    if sheet.row_count == 0 or sheet.cell(1,1).value != "id":
-        sheet.insert_row(RS_COLUMNS, 1)
-        return sheet
-    # ── 컬럼 마이그레이션: 기존 시트에 없는 컬럼 자동 추가 ──
-    existing_headers = sheet.row_values(1)
-    missing = [c for c in RS_COLUMNS if c not in existing_headers]
-    if missing:
-        for col_name in missing:
-            next_col = len(existing_headers) + 1
-            sheet.update_cell(1, next_col, col_name)
-            existing_headers.append(col_name)
+    return wb
+
+def get_sheet():
+    """sheet1 반환. 컬럼 마이그레이션은 최초 1회만 실행."""
+    wb    = _get_gsheet_connection()
+    sheet = wb.sheet1
+    # 마이그레이션은 세션당 1회만 (session_state 플래그)
+    if not st.session_state.get("_sheet_migrated"):
+        try:
+            existing_headers = sheet.row_values(1)
+            if not existing_headers or existing_headers[0] != "id":
+                sheet.insert_row(RS_COLUMNS, 1)
+            else:
+                missing = [c for c in RS_COLUMNS if c not in existing_headers]
+                for col_name in missing:
+                    next_col = len(existing_headers) + 1
+                    sheet.update_cell(1, next_col, col_name)
+                    existing_headers.append(col_name)
+        except Exception:
+            pass
+        st.session_state["_sheet_migrated"] = True
     return sheet
 
 @st.cache_resource
 def get_audit_sheet():
     """변경 이력 시트 (audit_log 탭). 없으면 자동 생성."""
-    creds  = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=RS_SCOPES)
-    client = gspread.authorize(creds)
-    wb     = client.open_by_key(st.secrets["SHEET_ID"])
+    wb = _get_gsheet_connection()
     try:
         asheet = wb.worksheet("audit_log")
     except gspread.exceptions.WorksheetNotFound:
@@ -1301,16 +1308,17 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
             value_input_option="USER_ENTERED"
         )
     except Exception:
-        pass  # 로그 실패는 조용히 무시
+        pass
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def _load_records_cached() -> list:
     """
-    구글 시트 전체 레코드를 60초 TTL로 캐싱.
-    API 429 (분당 읽기 한도 초과) 방지용.
-    저장/수정 후에는 st.cache_data.clear()로 즉시 무효화.
+    구글 시트 전체 레코드를 120초 TTL로 캐싱.
+    API 429 방지용. 저장/수정 후 st.cache_data.clear()로 즉시 무효화.
     """
-    return get_sheet().get_all_records()
+    wb    = _get_gsheet_connection()
+    sheet = wb.sheet1
+    return sheet.get_all_records()
 
 def load_df(include_deleted=False):
     records = _load_records_cached()
@@ -1345,25 +1353,22 @@ def load_df_for_match() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def save_league_to_sheet(member_id: int, league_value: str):
-    """
-    구글 시트의 특정 회원(id 기준) league 컬럼을 업데이트.
-    league 컬럼이 없으면 자동 추가됨(get_sheet 마이그레이션으로 처리).
-    """
+    """구글 시트의 특정 회원 league 컬럼 업데이트."""
     try:
-        sheet   = get_sheet()
-        all_ids = sheet.col_values(1)   # A열 = id
-        headers = sheet.row_values(1)
+        sheet      = _get_gsheet_connection().sheet1
+        all_ids    = sheet.col_values(1)
+        headers    = sheet.row_values(1)
         if "league" not in headers:
-            return  # 마이그레이션 전이면 스킵
-        league_col = headers.index("league") + 1   # 1-based
-        idx = all_ids.index(str(member_id))         # 0-based
+            return
+        league_col = headers.index("league") + 1
+        idx        = all_ids.index(str(member_id))
         sheet.update_cell(idx + 1, league_col, league_value)
-        st.cache_resource.clear(); st.cache_data.clear()
+        st.cache_data.clear()
     except Exception:
-        pass  # 실패 시 조용히 무시
+        pass
 
 def save_row(df, row, is_new, action_detail=""):
-    sheet = get_sheet()
+    sheet = _get_gsheet_connection().sheet1
     row["updated_at"] = datetime.today().strftime("%Y-%m-%d %H:%M")
     if "deleted_at" not in row:
         row["deleted_at"] = ""
@@ -1384,7 +1389,7 @@ def save_row(df, row, is_new, action_detail=""):
 
 def soft_delete_row(mid, member_name):
     """소프트 삭제: deleted_at 컬럼에 현재 시각을 기록. 행은 보존됨."""
-    sheet   = get_sheet()
+    sheet   = _get_gsheet_connection().sheet1
     all_ids = sheet.col_values(1)
     if not all_ids or all_ids[0] != "id":
         raise RuntimeError("시트 헤더가 손상되었습니다.")
@@ -1403,7 +1408,7 @@ def soft_delete_row(mid, member_name):
 
 def hard_delete_row(mid, member_name):
     """영구 삭제: 시트에서 행 자체를 제거."""
-    sheet   = get_sheet()
+    sheet   = _get_gsheet_connection().sheet1
     all_ids = sheet.col_values(1)
     if not all_ids or all_ids[0] != "id":
         raise RuntimeError("시트 헤더가 손상되었습니다.")
@@ -1418,7 +1423,7 @@ def hard_delete_row(mid, member_name):
 
 def restore_row(mid, member_name):
     """소프트 삭제 취소: deleted_at을 비워서 복구."""
-    sheet   = get_sheet()
+    sheet   = _get_gsheet_connection().sheet1
     all_ids = sheet.col_values(1)
     try:
         idx = all_ids.index(str(mid))
@@ -1668,7 +1673,7 @@ def dialog_delete(target):
             soft_delete_row(target["id"], target["name"])
         st.session_state.open_dialog   = None
         st.session_state.edit_target   = None
-        st.cache_resource.clear(); st.cache_data.clear()
+        st.cache_data.clear()
         st.rerun()
     if cn.button("취소", use_container_width=True):
         st.session_state.open_dialog   = None
@@ -2182,7 +2187,7 @@ def dialog_form(existing=None):
             _cleanup_dormant_session()
             st.session_state.open_dialog    = None
             st.session_state.edit_target    = None
-            st.cache_resource.clear(); st.cache_data.clear()
+            st.cache_data.clear()
             st.rerun()
 
 # ─────────────────────────────────────────────────────────
@@ -2526,7 +2531,7 @@ def render_roster_page():
                     del_dt = datetime.strptime(str(trow["deleted_at"])[:19], "%Y-%m-%d %H:%M:%S")
                     if (today_dt - del_dt).days >= TRASH_DAYS:
                         hard_delete_row(trow["id"], trow["name"])
-                        st.cache_resource.clear(); st.cache_data.clear()
+                        st.cache_data.clear()
                 except Exception:
                     pass
             # 재로드 후 표시
@@ -2555,11 +2560,11 @@ def render_roster_page():
                     rcol1, rcol2 = st.columns(2)
                     if rcol1.button("↩️ 복구", key=f"restore_{trow['id']}", use_container_width=True):
                         restore_row(trow["id"], trow["name"])
-                        st.cache_resource.clear(); st.cache_data.clear()
+                        st.cache_data.clear()
                         st.rerun()
                     if rcol2.button("💀 영구삭제", key=f"hardel_{trow['id']}", use_container_width=True):
                         hard_delete_row(trow["id"], trow["name"])
-                        st.cache_resource.clear(); st.cache_data.clear()
+                        st.cache_data.clear()
                         st.rerun()
         st.markdown("---")
     
@@ -2659,7 +2664,7 @@ def render_roster_page():
                             if k in st.session_state:
                                 del st.session_state[k]
                         st.session_state.bulk_selected = set()
-                        st.cache_resource.clear(); st.cache_data.clear()
+                        st.cache_data.clear()
                         st.rerun()
                     elif not st.session_state.admin_authed:
                         st.warning("관리자 인증이 필요합니다.")
