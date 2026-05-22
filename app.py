@@ -1353,19 +1353,46 @@ def load_df_for_match() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def save_league_to_sheet(member_id: int, league_value: str):
-    """구글 시트의 특정 회원 league 컬럼 업데이트."""
+    """구글 시트의 특정 회원(id 기준) league 컬럼 업데이트."""
+    sheet   = _get_gsheet_connection().sheet1
+    all_ids = sheet.col_values(1)
+    headers = sheet.row_values(1)
+    if "league" not in headers:
+        st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
+        return False
+    league_col = headers.index("league") + 1
     try:
-        sheet      = _get_gsheet_connection().sheet1
-        all_ids    = sheet.col_values(1)
-        headers    = sheet.row_values(1)
-        if "league" not in headers:
-            return
-        league_col = headers.index("league") + 1
-        idx        = all_ids.index(str(member_id))
-        sheet.update_cell(idx + 1, league_col, league_value)
-        st.cache_data.clear()
-    except Exception:
-        pass
+        idx = all_ids.index(str(member_id))
+    except ValueError:
+        st.error(f"시트에서 id={member_id}를 찾을 수 없습니다.")
+        return False
+    sheet.update_cell(idx + 1, league_col, league_value)
+    st.cache_data.clear()
+    return True
+
+def save_league_by_name(member_name: str, league_value: str) -> bool:
+    """구글 시트에서 이름으로 회원을 찾아 league 컬럼 업데이트."""
+    sheet   = _get_gsheet_connection().sheet1
+    headers = sheet.row_values(1)
+    if "league" not in headers:
+        st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
+        return False
+    if "name" not in headers:
+        st.error("구글 시트에 name 컬럼이 없습니다.")
+        return False
+    name_col   = headers.index("name") + 1
+    league_col = headers.index("league") + 1
+    # 이름 열 전체 읽기
+    all_names  = sheet.col_values(name_col)
+    # 헤더(1행) 제외하고 이름 검색
+    found_rows = [i+1 for i, n in enumerate(all_names) if i > 0 and n.strip() == member_name.strip()]
+    if not found_rows:
+        st.error(f"구글 시트에서 '{member_name}'을 찾을 수 없습니다.")
+        return False
+    # 첫 번째 매칭 행 업데이트
+    sheet.update_cell(found_rows[0], league_col, league_value)
+    st.cache_data.clear()
+    return True
 
 def save_row(df, row, is_new, action_detail=""):
     sheet = _get_gsheet_connection().sheet1
@@ -4113,17 +4140,16 @@ function showMsg() {{
                                 )
                                 if row_cols[4].button("→", key=f"movebtn_{mgmt_lg}_{m['name']}",
                                                       help=f"{move_to}으로 이동"):
+                                    # 1. shelve 업데이트
                                     member_remove(mgmt_lg, m["name"])
                                     member_add(move_to, m["name"], m["gender"])
-                                    # 구글 시트에도 리그 업데이트
-                                    try:
-                                        _mdf = load_df_for_match()
-                                        _row = _mdf[_mdf["name"] == m["name"]]
-                                        if not _row.empty:
-                                            save_league_to_sheet(int(_row.iloc[0]["id"]), move_to)
-                                    except Exception:
-                                        pass
-                                    st.success(f"'{m['name']}' → {move_to} 이동 완료")
+                                    # 2. 구글 시트에도 리그 업데이트 (이름 기반)
+                                    with st.spinner(f"'{m['name']}' → {move_to} 구글 시트 저장 중…"):
+                                        ok = save_league_by_name(m["name"], move_to)
+                                    if ok:
+                                        st.success(f"✅ '{m['name']}' → {move_to} 이동 완료 (시트 반영됨)")
+                                    else:
+                                        st.warning(f"⚠️ '{m['name']}' shelve 이동 완료 (시트 업데이트 실패 — 위 오류 확인)")
                                     st.rerun()
                                 if row_cols[5].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
                                     member_remove(mgmt_lg, m["name"])
