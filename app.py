@@ -107,43 +107,64 @@ def sync_from_sheet(target_league: str) -> dict:
                leave_date(K) email(L) application(M) memo(N)
                updated_at(O) deleted_at(P)
 
-    반환: {"imported": int, "skipped": int, "members": [{name, gender}, ...]}
+    상태 판별:
+      - deleted_at 값 있음  → 탈퇴 (완전 제외)
+      - leave_date 값 있음  → 탈퇴 (완전 제외)
+      - dormant_period 값 있음 → 휴면 (status="휴면")
+      - 그 외               → 정상 (status="정상")
+
+    반환: {"imported": int, "skipped": int, "added": int}
     """
-    gc     = _get_gspread_client()
-    sh     = gc.open_by_key(SHEET_ID)
-    ws     = sh.sheet1
-    rows   = ws.get_all_records()   # 헤더 행 자동 파싱
+    gc   = _get_gspread_client()
+    sh   = gc.open_by_key(SHEET_ID)
+    ws   = sh.sheet1
+    rows = ws.get_all_records()
 
     imported, skipped = 0, 0
     new_members = []
     for row in rows:
-        name       = str(row.get("name", "")).strip()
-        gender_raw = str(row.get("gender", "")).strip().upper()
-        deleted    = str(row.get("deleted_at", "")).strip()
+        name         = str(row.get("name",           "")).strip()
+        gender_raw   = str(row.get("gender",          "")).strip().upper()
+        deleted_at   = str(row.get("deleted_at",      "")).strip()
+        leave_date   = str(row.get("leave_date",      "")).strip()
+        dormant      = str(row.get("dormant_period",  "")).strip()
 
         if not name:
             skipped += 1; continue
-        if deleted:          # deleted_at 값 있으면 탈퇴 회원 → 스킵
+        # 탈퇴 회원 완전 제외
+        if deleted_at or leave_date:
             skipped += 1; continue
 
-        # 성별 정규화: 남/M/MALE → M,  여/F/W/FEMALE → W
+        # 성별 정규화
         if gender_raw in ("남", "M", "MALE", "1"):
             gender = "M"
         elif gender_raw in ("여", "F", "W", "FEMALE", "2"):
             gender = "W"
         else:
-            gender = "M"   # 불명확하면 남으로 기본
+            gender = "M"
 
-        new_members.append({"name": name, "gender": gender})
+        # 상태
+        status = "휴면" if dormant else "정상"
+
+        new_members.append({"name": name, "gender": gender, "status": status})
         imported += 1
 
-    # 기존 shelve 데이터에 머지 (중복 방지, 기존 리그 배정 유지)
+    # 기존 shelve 데이터에 머지
+    # - 이미 등록된 회원은 status만 최신으로 갱신, 추가는 안 함
     data = member_load_all()
-    existing_names = {m["name"] for members in data.values() for m in members}
+    existing_by_name: dict[str, tuple[str, int]] = {}  # name → (league, idx)
+    for lg, members in data.items():
+        for idx, m in enumerate(members):
+            existing_by_name[m["name"]] = (lg, idx)
 
     added = 0
     for m in new_members:
-        if m["name"] not in existing_names:
+        if m["name"] in existing_by_name:
+            # 기존 회원 status 갱신
+            lg, idx = existing_by_name[m["name"]]
+            data[lg][idx]["status"] = m["status"]
+        else:
+            # 신규 회원 추가
             bucket = target_league if target_league else UNASSIGNED_KEY
             if bucket not in data:
                 data[bucket] = []
@@ -1425,12 +1446,22 @@ elif page == "🎲 랜덤페어":
 
         # 현재 선택 현황 요약 표시
         for i, lg in enumerate(active_leagues):
-            pfx = active_prefixes[i]
-            lc  = LEAGUE_COLORS[i]
-            sel_keys = [k for k in st.session_state
-                        if k.startswith(f"chk_{lg}_") and st.session_state[k]]
+            pfx      = active_prefixes[i]
+            lc       = LEAGUE_COLORS[i]
+            lg_mem_i = all_members.get(lg, [])
+            sel_names = {
+                m["name"] for m in lg_mem_i
+                if st.session_state.get(f"chk_{lg}_{m['name']}", True)
+            }
+            dormant_sel = sum(
+                1 for m in lg_mem_i
+                if m["name"] in sel_names and m.get("status") == "휴면"
+            )
+            summary_str = f"{lg}: {len(sel_names)}명 선택"
+            if dormant_sel:
+                summary_str += f" (휴면 {dormant_sel}명 포함)"
             st.sidebar.markdown(
-                f'<span style="color:{lc};font-size:0.8rem;">{lg}: {len(sel_keys)}명 선택</span>',
+                f'<span style="color:{lc};font-size:0.8rem;">{summary_str}</span>',
                 unsafe_allow_html=True
             )
 
@@ -1518,12 +1549,14 @@ elif page == "🎲 랜덤페어":
                 for row in rows:
                     rcols = st.columns(cols_per_row)
                     for k, m in enumerate(row):
-                        g_label = "남" if m["gender"]=="M" else "여"
+                        g_label    = "남" if m["gender"]=="M" else "여"
+                        status     = m.get("status", "정상")
+                        status_tag = " 💤" if status == "휴면" else ""
                         key = f"chk_{lg}_{m['name']}"
                         if key not in st.session_state:
                             st.session_state[key] = True
                         rcols[k].checkbox(
-                            f"{m['name']} ({g_label})",
+                            f"{m['name']}{status_tag} ({g_label})",
                             key=key
                         )
 
@@ -2126,9 +2159,16 @@ function showMsg() {{
 
                         for m in list(lg_members):
                             g_label = "남" if m["gender"]=="M" else "여"
+                            status  = m.get("status", "정상")
+                            if status == "휴면":
+                                badge = '<span style="background:#FF8F00;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">휴면</span>'
+                            else:
+                                badge = '<span style="background:#2e7d32;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">정상</span>'
+                            name_html = f'{badge}{m["name"]}'
+
                             if has_move:
                                 row_cols = st.columns([3, 1, 2, 1, 1])
-                                row_cols[0].write(m["name"])
+                                row_cols[0].markdown(name_html, unsafe_allow_html=True)
                                 row_cols[1].write(g_label)
                                 move_to = row_cols[2].selectbox(
                                     "이동대상", other_leagues,
@@ -2148,7 +2188,7 @@ function showMsg() {{
                                     st.rerun()
                             else:
                                 row_cols = st.columns([3, 1, 1])
-                                row_cols[0].write(m["name"])
+                                row_cols[0].markdown(name_html, unsafe_allow_html=True)
                                 row_cols[1].write(g_label)
                                 if row_cols[2].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
                                     member_remove(mgmt_lg, m["name"])
