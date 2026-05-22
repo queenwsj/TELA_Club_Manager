@@ -1054,7 +1054,7 @@ def deserialize_schedule(schedule):
 # 섹션 14: Streamlit 앱
 # ============================================================
 
-import re as _re
+import re
 import gspread
 from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
@@ -1070,8 +1070,8 @@ st.set_page_config(page_title="TELA Tennis CLUB", page_icon="🎾", layout="wide
 # ─────────────────────────────────────────────────────────
 # 비밀번호: 우선 st.secrets에서 읽고, 없으면 기본값(개발용)
 # 운영 시 반드시 .streamlit/secrets.toml 또는 Streamlit Cloud Secrets에 등록:
-#   RS_ADMIN_PASSWORD = "원하는비번"
-RS_ADMIN_PASSWORD = st.secrets.get("RS_ADMIN_PASSWORD", "1223")
+#   ADMIN_PASSWORD = "원하는비번"  (Secrets에서 ADMIN_PASSWORD 키 사용)
+RS_ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "1223")
 RS_SCOPES = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
