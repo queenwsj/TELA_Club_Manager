@@ -4014,240 +4014,72 @@ function showMsg() {{
                         st.error("불러오기 실패: 데이터를 찾을 수 없습니다.")
 
         # ═══════════════════════════════════════════════════════
-        # 회원 관리 (사전 등록 + 리그 이동)
+        # ═══════════════════════════════════════════════════════
+        # 리그 설정 (구글 시트 직접 연동)
         # ═══════════════════════════════════════════════════════
         st.markdown("---")
-        with st.expander("👥 회원 관리 (사전 등록)", expanded=False):
-            all_members = member_load_all()
+        with st.expander("🏷️ 회원 리그 설정 (구글 시트 직접 연동)", expanded=False):
+            st.caption("회원명부(구글 시트)의 league 컬럼을 직접 수정합니다. 삭제 기능은 없습니다.")
+            try:
+                with st.spinner("회원 명부 불러오는 중…"):
+                    st.cache_data.clear()   # 최신 시트 데이터 보장
+                    _lg_df = load_df_for_match()
+            except Exception as _e:
+                st.error(f"구글 시트 연결 오류: {_e}")
+                _lg_df = pd.DataFrame()
 
-            # ── 구글 시트 가져오기 ───────────────────────────
-            st.markdown("#### 📥 구글 시트 회원 명부 가져오기")
-            gs_col1, gs_col2 = st.columns([2, 3])
-            gs_target = gs_col1.selectbox(
-                "가져올 리그",
-                [UNASSIGNED_KEY] + active_leagues,
-                key="gs_target_league",
-                help="시트에서 읽어온 신규 회원을 어느 리그에 넣을지 선택. '미배정' 선택 시 나중에 리그 이동 가능."
-            )
-            if gs_col2.button("🔄 구글 시트에서 가져오기", key="gs_import_btn",
-                               use_container_width=True):
-                try:
-                    with st.spinner("구글 시트 연결 중..."):
-                        result = sync_from_sheet(gs_target)
-                    st.success(
-                        f"✅ 완료! "
-                        f"시트 총 {result['imported']}명 확인 · "
-                        f"신규 추가 {result['added']}명 · "
-                        f"기존/탈퇴 제외 {result['skipped']}명"
-                    )
-                    st.rerun()
-                except Exception as e:
-                    err = str(e)
-                    if "gspread" in err.lower() or "module" in err.lower():
-                        st.error("❌ gspread 패키지 미설치. requirements.txt에 `gspread` 및 `google-auth` 추가 필요.")
-                    elif "CREDENTIALS" in err.upper() or "secret" in err.lower():
-                        st.error("❌ Streamlit Secrets에 gcp_service_account 설정이 없습니다. Settings → Secrets 확인.")
-                    else:
-                        st.error(f"❌ 오류: {err}")
+            if not _lg_df.empty:
+                # 리그별 탭
+                _lg_tabs = st.tabs([f"📋 {lg}" for lg in active_leagues] + ["📋 미배정"])
+                _lg_list = active_leagues + [""]   # ""= 미배정
 
-            # 미배정 버킷 회원 수 안내
-            unassigned = member_load_all().get(UNASSIGNED_KEY, [])
-            if unassigned:
-                st.warning(
-                    f"⚠️ **미배정 회원 {len(unassigned)}명** — "
-                    f"아래 '📋 {UNASSIGNED_KEY}' 탭에서 리그로 이동시켜 주세요."
-                )
+                for _ti, (_tab, _lg_val) in enumerate(zip(_lg_tabs, _lg_list)):
+                    with _tab:
+                        if _lg_val == "":
+                            _tab_df = _lg_df[_lg_df["league"].astype(str).str.strip() == ""].copy()
+                            _tab_label = "미배정"
+                        else:
+                            _tab_df = _lg_df[_lg_df["league"].astype(str).str.strip() == _lg_val].copy()
+                            _tab_label = _lg_val
 
-            st.markdown("---")
-
-            mgmt_tabs = st.tabs(
-                [f"📋 {UNASSIGNED_KEY}"] + [f"📋 {lg}" for lg in active_leagues]
-                if unassigned
-                else [f"📋 {lg}" for lg in active_leagues]
-            )
-            mgmt_league_list = (
-                [UNASSIGNED_KEY] + active_leagues if unassigned else active_leagues
-            )
-
-            for ti, (mgmt_tab, mgmt_lg) in enumerate(zip(mgmt_tabs, mgmt_league_list)):
-                with mgmt_tab:
-                    lg_members = all_members.get(mgmt_lg, [])
-                    lc_mg = LEAGUE_COLORS[ti % len(LEAGUE_COLORS)]
-
-                    if lg_members:
+                        lc_t = LEAGUE_COLORS[_ti % len(LEAGUE_COLORS)]
                         st.markdown(
-                            f'<div style="color:{lc_mg};font-weight:700;margin-bottom:6px;">'
-                            f'{mgmt_lg} 등록 회원 ({len(lg_members)}명)</div>',
+                            f'<div style="color:{lc_t};font-weight:700;margin-bottom:6px;">'
+                            f'{_tab_label} 회원 ({len(_tab_df)}명)</div>',
                             unsafe_allow_html=True
                         )
-                        other_leagues = (
-                            active_leagues if mgmt_lg == UNASSIGNED_KEY
-                            else [lg for lg in active_leagues if lg != mgmt_lg]
-                        )
-                        has_move = bool(other_leagues)
 
-                        # ── 일괄삭제 버튼 ──────────────────────────
-                        del_all_key = f"delall_confirm_{mgmt_lg}"
-                        dc1, dc2 = st.columns([2, 3])
-                        if dc1.button(f"🗑 전체 삭제 ({len(lg_members)}명)",
-                                      key=f"delall_{mgmt_lg}", help="이 리그 회원 전체 삭제"):
-                            st.session_state[del_all_key] = True
-                        if st.session_state.get(del_all_key):
-                            dc2.warning(f"정말 {mgmt_lg} 전체 {len(lg_members)}명을 삭제할까요?")
-                            cc1, cc2 = dc2.columns(2)
-                            if cc1.button("✅ 확인", key=f"delall_yes_{mgmt_lg}"):
-                                data_del = member_load_all()
-                                data_del[mgmt_lg] = []
-                                member_save_all(data_del)
-                                st.session_state.pop(del_all_key, None)
-                                st.rerun()
-                            if cc2.button("✕ 취소", key=f"delall_no_{mgmt_lg}"):
-                                st.session_state.pop(del_all_key, None)
-                                st.rerun()
+                        if _tab_df.empty:
+                            st.info(f"이 리그에 배정된 회원이 없습니다.")
+                            continue
 
-                        # ── 헤더 ────────────────────────────────────
-                        if has_move:
-                            h_cols = st.columns([0.3, 3, 1, 2, 1, 1])
-                            h_cols[0].markdown("**☑**")
-                            h_cols[1].markdown("**이름**"); h_cols[2].markdown("**성별**")
-                            h_cols[3].markdown("**이동 대상**"); h_cols[4].markdown("**이동**")
-                            h_cols[5].markdown("**삭제**")
-                        else:
-                            h_cols = st.columns([0.3, 3, 1, 1])
-                            h_cols[0].markdown("**☑**")
-                            h_cols[1].markdown("**이름**"); h_cols[2].markdown("**성별**")
-                            h_cols[3].markdown("**삭제**")
+                        # 헤더
+                        _hc = st.columns([3, 1, 2, 1])
+                        _hc[0].markdown("**이름**"); _hc[1].markdown("**성별**")
+                        _hc[2].markdown("**이동 대상 리그**"); _hc[3].markdown("**저장**")
 
-                        # 선택 상태 초기화
-                        sel_key = f"sel_members_{mgmt_lg}"
-                        if sel_key not in st.session_state:
-                            st.session_state[sel_key] = set()
-
-                        for m in list(lg_members):
-                            g_label  = "남" if m["gender"]=="M" else "여"
-                            chk_k    = f"msel_{mgmt_lg}_{m['name']}"
-                            is_checked = st.session_state.get(chk_k, False)
-
-                            if has_move:
-                                row_cols = st.columns([0.3, 3, 1, 2, 1, 1])
-                                row_cols[0].checkbox("", key=chk_k, label_visibility="collapsed")
-                                row_cols[1].write(m["name"])
-                                row_cols[2].write(g_label)
-                                move_to = row_cols[3].selectbox(
-                                    "이동대상", other_leagues,
-                                    key=f"moveto_{mgmt_lg}_{m['name']}",
-                                    label_visibility="collapsed"
-                                )
-                                if row_cols[4].button("→", key=f"movebtn_{mgmt_lg}_{m['name']}",
-                                                      help=f"{move_to}으로 이동"):
-                                    # 1. shelve 업데이트
-                                    member_remove(mgmt_lg, m["name"])
-                                    member_add(move_to, m["name"], m["gender"])
-                                    # 2. 구글 시트에도 리그 업데이트 (이름 기반)
-                                    with st.spinner(f"'{m['name']}' → {move_to} 구글 시트 저장 중…"):
-                                        ok = save_league_by_name(m["name"], move_to)
-                                    if ok:
-                                        st.success(f"✅ '{m['name']}' → {move_to} 이동 완료 (시트 반영됨)")
-                                    else:
-                                        st.warning(f"⚠️ '{m['name']}' shelve 이동 완료 (시트 업데이트 실패 — 위 오류 확인)")
+                        for _, _row in _tab_df.iterrows():
+                            _g = "남" if str(_row.get("gender","")).strip() in ("남","M") else "여"
+                            _rc = st.columns([3, 1, 2, 1])
+                            _rc[0].write(_row["name"])
+                            _rc[1].write(_g)
+                            _move_options = [_lg_val] + [lg for lg in active_leagues if lg != _lg_val] + ([""] if _lg_val != "" else [])
+                            _move_labels  = [_lg_val or "미배정"] + [lg for lg in active_leagues if lg != _lg_val] + (["미배정"] if _lg_val != "" else [])
+                            _sel_idx = _rc[2].selectbox(
+                                "리그", _move_labels,
+                                index=0,
+                                key=f"lgset_{_row['id']}",
+                                label_visibility="collapsed"
+                            )
+                            _sel_val = _move_options[_move_labels.index(_sel_idx)]
+                            if _rc[3].button("저장", key=f"lgsave_{_row['id']}"):
+                                with st.spinner("저장 중…"):
+                                    _ok = save_league_to_sheet(int(_row["id"]), _sel_val)
+                                if _ok:
+                                    st.success(f"✅ '{_row['name']}' → {_sel_val or '미배정'} 저장 완료")
                                     st.rerun()
-                                if row_cols[5].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
-                                    member_remove(mgmt_lg, m["name"])
-                                    st.rerun()
-                            else:
-                                row_cols = st.columns([0.3, 3, 1, 1])
-                                row_cols[0].checkbox("", key=chk_k, label_visibility="collapsed")
-                                row_cols[1].write(m["name"])
-                                row_cols[2].write(g_label)
-                                if row_cols[3].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
-                                    member_remove(mgmt_lg, m["name"])
-                                    st.rerun()
-
-                        # ── 선택 삭제 ───────────────────────────────
-                        selected_names = [
-                            m["name"] for m in lg_members
-                            if st.session_state.get(f"msel_{mgmt_lg}_{m['name']}", False)
-                        ]
-                        if selected_names:
-                            if st.button(f"🗑 선택 삭제 ({len(selected_names)}명)",
-                                         key=f"del_sel_{mgmt_lg}", type="secondary"):
-                                data_sel_del = member_load_all()
-                                data_sel_del[mgmt_lg] = [
-                                    mm for mm in data_sel_del.get(mgmt_lg, [])
-                                    if mm["name"] not in selected_names
-                                ]
-                                member_save_all(data_sel_del)
-                                # 체크박스 초기화
-                                for n in selected_names:
-                                    st.session_state.pop(f"msel_{mgmt_lg}_{n}", None)
-                                st.rerun()
-                    else:
-                        st.info(f"{mgmt_lg}에 등록된 회원이 없습니다.")
-
-                    st.markdown("---")
-
-                    # ── 신규 회원 추가 ───────────────────────────
-                    st.markdown("**신규 회원 추가**")
-                    col_n, col_g, col_add = st.columns([3, 1, 1])
-                    new_name = col_n.text_input(
-                        "이름", key=f"new_name_{mgmt_lg}",
-                        label_visibility="collapsed", placeholder="이름 입력"
-                    )
-                    new_gender = col_g.selectbox(
-                        "성별", ["남", "여"],
-                        key=f"new_gender_{mgmt_lg}",
-                        label_visibility="collapsed"
-                    )
-                    if col_add.button("➕", key=f"add_btn_{mgmt_lg}", help="회원 추가"):
-                        if new_name.strip():
-                            g_code = "M" if new_gender == "남" else "W"
-                            data_add = member_load_all()
-                            if mgmt_lg not in data_add:
-                                data_add[mgmt_lg] = []
-                            if not any(mm["name"] == new_name.strip()
-                                       for members in data_add.values() for mm in members):
-                                data_add[mgmt_lg].append({
-                                    "name": new_name.strip(),
-                                    "gender": g_code,
-                                })
-                                member_save_all(data_add)
-                                st.success(f"'{new_name}' 추가 완료")
-                                st.rerun()
-                            else:
-                                st.warning(f"'{new_name}'은 이미 등록된 이름입니다.")
-                        else:
-                            st.warning("이름을 입력해주세요.")
-
-                    # ── 일괄 추가 ────────────────────────────────
-                    st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여)")
-                    bulk_text = st.text_area(
-                        "일괄 입력", placeholder="홍길동 남\n김영희 여\n이철수 남",
-                        height=100, key=f"bulk_{mgmt_lg}",
-                        label_visibility="collapsed"
-                    )
-                    if st.button("📋 일괄 등록", key=f"bulk_btn_{mgmt_lg}"):
-                        added = 0
-                        data_bulk = member_load_all()
-                        existing_names_bulk = {
-                            mm["name"] for members in data_bulk.values() for mm in members
-                        }
-                        if mgmt_lg not in data_bulk:
-                            data_bulk[mgmt_lg] = []
-                        for line in bulk_text.strip().splitlines():
-                            parts = line.strip().split()
-                            if not parts: continue
-                            bname   = parts[0]
-                            bgender = "W" if (len(parts)>=2 and parts[1] in ("여","W","F")) else "M"
-                            if bname not in existing_names_bulk:
-                                data_bulk[mgmt_lg].append({
-                                    "name": bname, "gender": bgender
-                                })
-                                existing_names_bulk.add(bname)
-                                added += 1
-                        if added:
-                            member_save_all(data_bulk)
-                            st.success(f"{added}명 등록 완료")
-                            st.rerun()
+            else:
+                st.info("구글 시트에 회원 데이터가 없습니다.")
 
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
