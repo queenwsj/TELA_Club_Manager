@@ -359,7 +359,8 @@ def sync_from_sheet(target_league: str) -> dict:
     return {"imported": imported, "skipped": skipped, "added": added}
 
 
-ADMIN_PASSWORD = "1223"
+# [제거] ADMIN_PASSWORD: 어디서도 사용되지 않음.
+# 관리자 비밀번호는 RS_ADMIN_PASSWORD(섹션 R)로 별도 관리.
 
 # 리그 이름 풀 (최대 5개)
 LEAGUE_NAMES = ["A리그", "B리그", "C리그", "D리그", "E리그"]
@@ -585,7 +586,8 @@ def build_one_group(pool, mixed_counts, league_name, league_configs):
         if result is not None: group = result; break
     if group is None:
         group = [anchor] + sort_by_mixed_least(rest, mixed_counts)[:3]
-    if group is None or len(group) < 4: return None, pool[:]
+    # 위에서 fallback으로 group을 채웠으므로 len(group) < 4만 체크
+    if len(group) < 4: return None, pool[:]
     remaining = list(pool)
     for p in group:
         if p in remaining: remaining.remove(p)
@@ -751,6 +753,9 @@ def make_round_matches(players, game_counts, mixed_counts, gs, rs,
             if b is not None: interleaved.append(b)
         anchors = interleaved[:remaining_need]
         remaining_pool = [p for p in wpool if p not in anchors]
+        # 동성 강제 라운드(예: 마지막 라운드 dong_forced=True에서 동성 그룹이 아직 없는 경우)에서는
+        # A리그 설정(동성우선)으로 픽 시도. 다른 리그의 혼복우선 설정에 영향받지 않기 위함.
+        # ⚠️ 리그별 설정이 크게 다르면 의도와 다를 수 있으므로 검토 시 주의.
         anchor_lname = LEAGUE_NAMES[0] if dong_still_needed else league_name
 
         for anchor in anchors:
@@ -1593,7 +1598,7 @@ def cell(txt, color="#374151", extra=""):
 PHONE_RE = re.compile(r"^\d{2,4}-?\d{3,4}-?\d{4}$")
 EMAIL_RE = re.compile(r"^[\w\.\-+]+@[\w\.\-]+\.\w{2,}$")
 DATE_RE  = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-DORMANT_RANGE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}~(\d{4}-\d{2}-\d{2})?$")  # YYYY-MM-DD~ 또는 YYYY-MM-DD~YYYY-MM-DD
+# [제거] DORMANT_RANGE_RE: 정의만 되고 어디서도 사용되지 않음.
 
 def validate_phone(s):
     if not s: return True
@@ -1719,16 +1724,8 @@ def check_duplicate(df, name, phone, cafe_id, exclude_id=None):
 # ─────────────────────────────────────────────────────────
 # 생일자 / 휴면 알림 헬퍼
 # ─────────────────────────────────────────────────────────
-def get_birthday_members(df):
-    """이번 달 생일자 (birth_year 있는 회원 기준)"""
-    today = date.today()
-    result = []
-    for _, row in df.iterrows():
-        bday = str(row.get("birth_month_day","") or "").strip()
-        # birth_year 컬럼에서 month는 없으므로 — join_date를 쓰거나 메모에서 MM-DD를 파싱
-        # 현재 데이터 구조: birth_year만 있고 month/day 없음 → 입회일 기준 이번 달 신규
-        pass
-    return result
+# [제거] get_birthday_members: 데이터에 birth_month_day 컬럼이 존재하지 않아
+# 항상 빈 리스트만 반환하던 죽은 코드. 호출처도 없음.
 
 def get_this_month_birthdays(df):
     """이번 달 입회 기념일 회원 (입회월 기준)"""
@@ -2000,7 +1997,7 @@ def dialog_form(df, existing=None):
         by_v = ""
         if existing and existing.get("birth_year"):
             try: by_v = str(int(existing["birth_year"]))
-            except: pass
+            except (ValueError, TypeError): pass
         birth_year = st.text_input("생년 (YYYY)", value=by_v, placeholder="1990", max_chars=4)
     with c6:
         phone = st.text_input("연락처",
@@ -2015,7 +2012,7 @@ def dialog_form(df, existing=None):
         jd_val = None
         if existing and existing.get("join_date"):
             try: jd_val = datetime.strptime(str(existing["join_date"]),"%Y-%m-%d").date()
-            except: pass
+            except ValueError: pass
         join_date = st.date_input("입회일", value=jd_val or date.today())
     with c8:
         email = st.text_input("이메일",
@@ -2396,24 +2393,9 @@ def render_roster_page():
             return
 
         # ── 정렬: 운영진 상단 고정 → 정회원 이름순 → 휴면 하단 ──
-        def _sort_key(row):
-            cat = row.get("category","")
-            if cat in OFFICER_CATS_G:
-                order = 0
-                sub   = OFFICER_CATS_G.index(cat)
-            elif cat == "정회원":
-                order = 1
-                sub   = 0
-            else:  # 휴면
-                order = 2
-                sub   = 0
-            return (order, sub, str(row.get("name","")))
-
-        df_guest = df_guest.sort_values(
-            by=["category","name"],
-            key=lambda col: col.map(lambda v: _sort_key({"category": v, "name": ""}) if col.name == "category" else v)
-        )
-        # pandas sort_values key 한계로 직접 정렬
+        # [수정] 기존엔 _sort_key 함수를 정의해 sort_values를 먼저 호출한 뒤
+        # _sort 컬럼으로 다시 정렬했음. 첫 호출은 결과가 즉시 덮어써지므로
+        # 무의미했고 _sort_key 함수도 사용되지 않았음. _sort 컬럼 정렬만 남김.
         df_guest["_sort"] = df_guest.apply(lambda r: (
             0 if r["category"] in OFFICER_CATS_G else (1 if r["category"] == "정회원" else 2),
             OFFICER_CATS_G.index(r["category"]) if r["category"] in OFFICER_CATS_G else 0,
@@ -3035,16 +3017,19 @@ def render_roster_page():
                 f"<div style='padding:7px 0;{RS_FS};color:#ca8a04' title='{dorm_raw}'>{dorm_disp}</div>",
                 unsafe_allow_html=True)
     
-            rc[col_offset+10].markdown(cell(row.get('leave_date','') or '—',"#dc2626"), unsafe_allow_html=True)
-            rc[col_offset+11].markdown(
+            # [버그수정] 기존 코드는 col_offset+10에 휴면기간을 그린 직후 같은 인덱스에
+            # 탈퇴일을 다시 그려서 휴면기간이 덮어써졌고, 이후 컬럼이 1칸씩 밀려
+            # 관리 버튼이 표시되지 않았음. 인덱스를 +1씩 보정.
+            rc[col_offset+11].markdown(cell(row.get('leave_date','') or '—',"#dc2626"), unsafe_allow_html=True)
+            rc[col_offset+12].markdown(
                 f"<div style='padding:5px 0'><span style='{RS_FS};font-weight:700;color:{app_color}'>{app_val}</span></div>",
                 unsafe_allow_html=True)
-            rc[col_offset+12].markdown(
+            rc[col_offset+13].markdown(
                 f"<div style='padding:7px 0;{RS_FS};color:#4b5563' title='{memo_txt}'>{memo_disp}</div>",
                 unsafe_allow_html=True)
     
             # ── 관리 버튼: 열람 / 수정 ──
-            with rc[col_offset+13]:
+            with rc[col_offset+14]:
                 st.markdown(f"""
                 <style>
                 .st-key-detail_{row['id']} button {{
@@ -3240,7 +3225,13 @@ if page == "📊 점수판":
                 scores[str(pidx)] = {"score1": s1v, "score2": s2v}
                 st.session_state["sb_scores"] = scores
                 st.session_state[f"locked_{pidx}"] = True
-                shelf_save(selected_key, serialize_schedule(st.session_state["sb_schedule"]), scores)
+                # [버그수정] 기존 저장 데이터의 is_fully_random 모드 유지
+                # 기존엔 누락되어 항상 False로 덮어쓰여 모드 정보가 손실됨
+                _prev = shelf_load(selected_key) or {}
+                _ifr  = _prev.get("is_fully_random", False)
+                shelf_save(selected_key,
+                           serialize_schedule(st.session_state["sb_schedule"]),
+                           scores, _ifr)
             elif act == "edit" and pidx >= 0:
                 st.session_state[f"locked_{pidx}"] = False
         except Exception:
@@ -3672,7 +3663,7 @@ elif page == "🎲 랜덤페어":
                         _e = _dp.split("~")[-1].strip()
                         if not _e: return True
                         try: return date.fromisoformat(_e[:10]) >= date.today()
-                        except: pass
+                        except ValueError: pass
                     return True
 
                 normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
@@ -3888,8 +3879,6 @@ elif page == "🎲 랜덤페어":
         for lg in active_leagues:
             cnt = len(member_selected.get(lg, []))
             st.write(f"- {lg}: **{cnt}명** → {member_selected.get(lg, [])[:3]}")
-
-    # ── 대진표 생성 ──────────────────────────────────────────
 
     # ── 대진표 생성 ──────────────────────────────────────────
     # do_regen: pop 대신 get으로 읽고, 실제 실행 후에만 삭제
@@ -4451,7 +4440,7 @@ function showMsg() {{
                                         _is_dorm = True
                                     else:
                                         try: _is_dorm = date.fromisoformat(_dp_end[:10]) >= date.today()
-                                        except: pass
+                                        except ValueError: pass
                                 else:
                                     _is_dorm = True
                             _status_badge = (
