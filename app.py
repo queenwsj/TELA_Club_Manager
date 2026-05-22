@@ -3708,6 +3708,61 @@ elif page == "🎲 랜덤페어":
     rp_key  = f"{rp_date}_{rp_num}"
     st.sidebar.caption(f"저장키: {rp_key}")
 
+    # ── 저장된 대진표 불러오기 / 삭제 (사이드바) ──────────────
+    _saved_keys = shelf_list_dates()
+    if _saved_keys:
+        st.sidebar.markdown("---")
+        _sel_key = st.sidebar.selectbox(
+            "📂 저장된 대진표", _saved_keys, key="sb_load_key_sidebar"
+        )
+        _lb1, _lb2 = st.sidebar.columns([1, 1])
+
+        # 불러오기
+        if _lb1.button("📥 불러오기", key="sb_load_btn", use_container_width=True):
+            _loaded = shelf_load(_sel_key)
+            if _loaded:
+                _loaded_sched = deserialize_schedule(_loaded["schedule"])
+                _loaded_stats: Dict[str, PlayerStats] = {}
+                for _m in _loaded_sched:
+                    update_stats(_loaded_stats, _m["team1"], _m["team2"],
+                                 _m["type"].replace("(중복)",""), _m["round"], _m["league"])
+                st.session_state.update({
+                    "rp_schedule":     _loaded_sched,
+                    "stats":           _loaded_stats,
+                    "last_gen_params": {
+                        "league_players":  {},
+                        "is_fully_random": False,
+                        "league_configs":  {},
+                        "use_seed":        False,
+                        "seed_val":        None,
+                        "rp_key":          _sel_key,
+                    },
+                })
+                st.sidebar.success(f"✅ '{_sel_key}' 불러옴")
+                st.rerun()
+            else:
+                st.sidebar.error("불러오기 실패")
+
+        # 삭제 (2단계 확인)
+        if _lb2.button("🗑️ 삭제", key="sb_delete_btn", use_container_width=True):
+            st.session_state["_sb_confirm_del"] = _sel_key
+
+        if st.session_state.get("_sb_confirm_del") == _sel_key:
+            st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
+            _dc1, _dc2 = st.sidebar.columns([1, 1])
+            if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
+                shelf_delete(_sel_key)
+                st.session_state.pop("_sb_confirm_del", None)
+                if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
+                    st.session_state.pop("rp_schedule", None)
+                    st.session_state.pop("stats", None)
+                    st.session_state.pop("last_gen_params", None)
+                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨")
+                st.rerun()
+            if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
+                st.session_state.pop("_sb_confirm_del", None)
+                st.rerun()
+
     # ── [5] 대진표 생성 ────────────────────────────────────────
     st.sidebar.markdown("---")
     _admin_ok = is_admin()
@@ -4194,8 +4249,7 @@ function showMsg() {{
                 st.info("저장된 대진표가 없습니다.")
             else:
                 load_key = st.selectbox("날짜+일련번호 선택", saved_keys, key="load_key_rp")
-                _btn_col1, _btn_col2 = st.columns([1, 1])
-                if _btn_col1.button("📥 불러오기", key="load_btn_rp", type="primary", use_container_width=True):
+                if st.button("📥 불러오기", key="load_btn_rp", type="primary"):
                     loaded = shelf_load(load_key)
                     if loaded:
                         loaded_sched = deserialize_schedule(loaded["schedule"])
@@ -4220,27 +4274,6 @@ function showMsg() {{
                         st.rerun()
                     else:
                         st.error("불러오기 실패: 데이터를 찾을 수 없습니다.")
-
-                # 삭제 버튼 — 2단계 확인
-                if _btn_col2.button("🗑️ 삭제", key="delete_btn_rp", type="secondary", use_container_width=True):
-                    st.session_state["confirm_delete_rp"] = load_key
-
-                if st.session_state.get("confirm_delete_rp") == load_key:
-                    st.warning(f"⚠️ **'{load_key}'** 대진표를 정말 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.")
-                    _conf1, _conf2 = st.columns([1, 1])
-                    if _conf1.button("✅ 삭제 확인", key="delete_confirm_rp", type="primary", use_container_width=True):
-                        shelf_delete(load_key)
-                        st.session_state.pop("confirm_delete_rp", None)
-                        # 현재 로드된 대진표가 삭제된 키와 같으면 세션도 초기화
-                        if st.session_state.get("last_gen_params", {}).get("rp_key") == load_key:
-                            st.session_state.pop("rp_schedule", None)
-                            st.session_state.pop("stats", None)
-                            st.session_state.pop("last_gen_params", None)
-                        st.success(f"🗑️ '{load_key}' 대진표가 삭제되었습니다.")
-                        st.rerun()
-                    if _conf2.button("✕ 취소", key="delete_cancel_rp", use_container_width=True):
-                        st.session_state.pop("confirm_delete_rp", None)
-                        st.rerun()
 
         # ═══════════════════════════════════════════════════════
         # 리그 설정 (구글 시트 직접 연동)
