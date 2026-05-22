@@ -1173,10 +1173,11 @@ RS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 RS_COLUMNS = [
-    "id", "category", "league", "name", "cafe_id", "birth_year", "gender",
+    "id", "category", "name", "cafe_id", "birth_year", "gender",
     "phone", "region", "join_date", "dormant_period", "leave_date",
     "email", "application", "memo", "updated_at",
     "deleted_at",   # 소프트 삭제: 삭제 시각. 비어있으면 정상 회원.
+    "league",
 ]
 AUDIT_COLUMNS = ["timestamp", "action", "member_id", "member_name", "detail"]
 TRASH_DAYS    = 90   # 휴지통 보관 기간 (일)
