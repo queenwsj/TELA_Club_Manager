@@ -26,6 +26,12 @@ import random
 import io
 import shelve
 import os
+import json
+try:
+    import extra_streamlit_components as stx
+    COOKIES_AVAILABLE = True
+except ImportError:
+    COOKIES_AVAILABLE = False
 from dataclasses import dataclass, field
 from itertools import zip_longest
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
@@ -119,9 +125,70 @@ def user_change_pw(user_id: str, new_pw: str):
         data[user_id]["pw_hash"] = _hash_pw(new_pw)
         user_save_all(data)
 
+# ── 쿠키 기반 로그인 유지 헬퍼 ────────────────────────────────
+COOKIE_NAME = "telaclub_session"
+COOKIE_EXPIRE_DAYS = 30
+
+@st.cache_resource
+def _get_cookie_manager():
+    if not COOKIES_AVAILABLE:
+        return None
+    return stx.CookieManager(key="telaclub_cookie_mgr")
+
+def _cookie_save_user(user: dict):
+    """로그인 성공 시 쿠키에 사용자 정보 저장."""
+    if not COOKIES_AVAILABLE:
+        return
+    cm = _get_cookie_manager()
+    if cm is None:
+        return
+    try:
+        from datetime import datetime, timedelta
+        cm.set(COOKIE_NAME, json.dumps(user),
+               expires_at=datetime.now() + timedelta(days=COOKIE_EXPIRE_DAYS),
+               key=f"cookie_set_{user.get('id','')}")
+    except Exception:
+        pass
+
+def _cookie_clear_user():
+    """로그아웃 시 쿠키 삭제."""
+    if not COOKIES_AVAILABLE:
+        return
+    cm = _get_cookie_manager()
+    if cm is None:
+        return
+    try:
+        cm.delete(COOKIE_NAME, key="cookie_del")
+    except Exception:
+        pass
+
+def _cookie_restore_user():
+    """앱 시작 시 쿠키에서 사용자 정보 복원."""
+    if not COOKIES_AVAILABLE:
+        return None
+    cm = _get_cookie_manager()
+    if cm is None:
+        return None
+    try:
+        raw = cm.get(COOKIE_NAME)
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        return None
+    return None
+
 # ── 현재 로그인 사용자 헬퍼 ──────────────────────────────────
 def get_app_user() -> Optional[dict]:
-    return st.session_state.get("app_user")
+    # session_state에 있으면 우선 반환
+    u = st.session_state.get("app_user")
+    if u:
+        return u
+    # 없으면 쿠키에서 복원 시도
+    restored = _cookie_restore_user()
+    if restored:
+        st.session_state["app_user"] = restored
+        return restored
+    return None
 
 def is_logged_in() -> bool:
     return bool(get_app_user())
@@ -3052,6 +3119,7 @@ if _u:
     )
     if st.sidebar.button("🔒 로그아웃", key="app_logout", use_container_width=True):
         st.session_state["app_user"] = None
+        _cookie_clear_user()
         st.rerun()
 else:
     with st.sidebar.expander("🔐 로그인", expanded=True):
@@ -3062,6 +3130,7 @@ else:
                 _r = user_authenticate(_id, _pw)
                 if _r:
                     st.session_state["app_user"] = _r
+                    _cookie_save_user(_r)
                 else:
                     st.session_state["_login_fail"] = True
 
@@ -3077,6 +3146,7 @@ else:
             _result = user_authenticate(_lid, _lpw)
             if _result:
                 st.session_state["app_user"] = _result
+                _cookie_save_user(_result)
                 st.rerun()
             else:
                 st.session_state["_login_fail"] = True
@@ -3494,6 +3564,15 @@ elif page == "🎲 랜덤페어":
     # member_selected 수집 — 영구 저장소(selected_members/selected_guests) 기반
     member_selected = {}
     _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
+
+    # 캐시가 비어있으면 자동 로드 (불러오기/rerun 후에도 선택 유지)
+    if _match_df_cache.empty and st.session_state.get("selected_members"):
+        try:
+            _match_df_cache = load_df_for_match()
+            st.session_state["match_df_cache"] = _match_df_cache
+        except Exception:
+            pass
+
     if not _match_df_cache.empty and "league" in _match_df_cache.columns:
         _match_df_cache = _match_df_cache.copy()
         _match_df_cache["league"] = _match_df_cache["league"].astype(str).str.strip()
@@ -4239,42 +4318,6 @@ function showMsg() {{
         else:
             # ── 최초 진입 안내 ───────────────────────────────
             st.info("👈 사이드바에서 리그·페어링 방식·인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
-
-        # ═══════════════════════════════════════════════════════
-        # 저장된 대진표 불러오기
-        # ═══════════════════════════════════════════════════════
-        st.markdown("---")
-        with st.expander("📂 저장된 대진표 불러오기", expanded=False):
-            saved_keys = shelf_list_dates()
-            if not saved_keys:
-                st.info("저장된 대진표가 없습니다.")
-            else:
-                load_key = st.selectbox("날짜+일련번호 선택", saved_keys, key="load_key_rp")
-                if st.button("📥 불러오기", key="load_btn_rp", type="primary"):
-                    loaded = shelf_load(load_key)
-                    if loaded:
-                        loaded_sched = deserialize_schedule(loaded["schedule"])
-                        # stats 재계산
-                        loaded_stats: Dict[str, PlayerStats] = {}
-                        for m in loaded_sched:
-                            update_stats(loaded_stats, m["team1"], m["team2"],
-                                         m["type"].replace("(중복)",""), m["round"], m["league"])
-                        st.session_state.update({
-                            "rp_schedule":     loaded_sched,
-                            "stats":           loaded_stats,
-                            "last_gen_params": {
-                                "league_players":  {},
-                                "is_fully_random": False,
-                                "league_configs":  {},
-                                "use_seed":        False,
-                                "seed_val":        None,
-                                "rp_key":          load_key,
-                            },
-                        })
-                        st.success(f"✅ '{load_key}' 대진표를 불러왔습니다.")
-                        st.rerun()
-                    else:
-                        st.error("불러오기 실패: 데이터를 찾을 수 없습니다.")
 
         # ═══════════════════════════════════════════════════════
         # 리그 설정 (구글 시트 직접 연동)
