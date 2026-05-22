@@ -3415,7 +3415,6 @@ elif page == "🎲 랜덤페어":
     # ══════════════════════════════════════════════════════════
     @st.dialog("👥 참가자 선택 (회원명부 연동)", width="large")
     def _member_select_popup():
-        # ── 데이터는 팝업 최초 열릴 때만 로드 (체크박스 rerun 시 재로드 방지) ──
         if "match_df_cache" not in st.session_state or st.session_state.get("member_popup_just_opened"):
             with st.spinner("📡 회원명부 불러오는 중…"):
                 try:
@@ -3433,12 +3432,10 @@ elif page == "🎲 랜덤페어":
             if st.button("닫기"): st.session_state["member_popup_open"] = False; st.rerun()
             return
 
-        # 리그 미배정 회원 확인
         unassigned_df = match_df[match_df["league"].astype(str).str.strip() == ""]
         if not unassigned_df.empty:
-            st.warning(f"⚠️ 리그 미배정 회원 {len(unassigned_df)}명이 있습니다. 회원명부에서 리그를 배정해주세요.")
+            st.warning(f"⚠️ 리그 미배정 회원 {len(unassigned_df)}명이 있습니다.")
 
-        # 리그별 탭 (설정된 리그 기준)
         tabs_p = st.tabs([f"{lg}" for lg in active_leagues])
         for i, (tab_p, lg) in enumerate(zip(tabs_p, active_leagues)):
             with tab_p:
@@ -3446,65 +3443,103 @@ elif page == "🎲 랜덤페어":
                 lg_df = match_df[match_df["league"].astype(str).str.strip() == lg].copy()
                 lg_df = lg_df.sort_values("name").reset_index(drop=True)
 
-                if lg_df.empty:
-                    st.info(f"{lg}에 배정된 회원이 없습니다. 회원명부에서 리그를 배정해주세요.")
+                # 게스트 목록 (이 리그)
+                _guests_lg = [g for g in guest_load() if g["league"] == lg]
+
+                if lg_df.empty and not _guests_lg:
+                    st.info(f"{lg}에 배정된 회원이 없습니다.")
                     continue
 
-                # 첫 진입 시 해당 리그 전체 선택 초기화
+                # 첫 진입 시 정상 회원 전체선택 초기화
                 _init_key = f"mchk_init_{lg}"
                 if st.session_state.get("member_popup_just_opened") or _init_key not in st.session_state:
                     for _, r in lg_df.iterrows():
+                        _is_dorm_init = (r.get("category") == "휴면")
                         k = f"mchk_{lg}_{r['id']}"
                         if k not in st.session_state:
-                            st.session_state[k] = True   # 첫 열기 시 전체선택
+                            st.session_state[k] = not _is_dorm_init  # 정상=True, 휴면=False
                     st.session_state[_init_key] = True
 
-                # 전체선택/해제
+                # 정상/휴면 분리
+                def _is_dorm(r):
+                    if r.get("category") == "휴면": return True
+                    _dp = str(r.get("dormant_period","")).strip()
+                    if not _dp: return False
+                    if "~" in _dp:
+                        _e = _dp.split("~")[-1].strip()
+                        if not _e: return True
+                        try: return date.fromisoformat(_e[:10]) >= date.today()
+                        except: pass
+                    return True
+
+                normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
+                dormant_df = lg_df[lg_df.apply(_is_dorm, axis=1)]
+
+                # 전체선택/해제 (정상 회원 기준)
                 col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
                 if col_sa.button("✅ 전체선택", key=f"popup_sa_{lg}"):
-                    for _, r in lg_df.iterrows():
+                    for _, r in normal_df.iterrows():
                         st.session_state[f"mchk_{lg}_{r['id']}"] = True
                     st.rerun()
                 if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}"):
                     for _, r in lg_df.iterrows():
                         st.session_state[f"mchk_{lg}_{r['id']}"] = False
                     st.rerun()
+
                 sel_cnt = sum(1 for _, r in lg_df.iterrows()
-                              if st.session_state.get(f"mchk_{lg}_{r['id']}", True))
+                              if st.session_state.get(f"mchk_{lg}_{r['id']}", False))
+                guest_cnt = len(_guests_lg)
+                total_disp = sel_cnt + guest_cnt
                 col_cnt.markdown(
                     f'<div style="padding-top:6px;color:{lc};font-weight:700;">'
-                    f'{sel_cnt} / {len(lg_df)}명 선택</div>', unsafe_allow_html=True
+                    f'{total_disp}명 참가 ({sel_cnt}명 선택'
+                    + (f' + 게스트{guest_cnt}명)' if guest_cnt else ')')
+                    + '</div>', unsafe_allow_html=True
                 )
 
-                # 회원 체크박스 그리드
-                cols_per_row = 3
-                rows_list = [lg_df.iloc[j:j+cols_per_row] for j in range(0, len(lg_df), cols_per_row)]
-                for row_chunk in rows_list:
-                    rcols = st.columns(cols_per_row)
-                    for k, (_, r) in enumerate(row_chunk.iterrows()):
-                        g_label    = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
-                        # 휴면 판별: category 또는 dormant_period 기준
-                        is_dormant = (r.get("category") == "휴면")
-                        if not is_dormant and str(r.get("dormant_period","")).strip():
-                            _dorm_str = str(r.get("dormant_period","")).strip()
-                            if "~" in _dorm_str:
-                                _end = _dorm_str.split("~")[-1].strip()
-                                if not _end:
-                                    is_dormant = True
-                                else:
-                                    try:
-                                        is_dormant = date.fromisoformat(_end[:10]) >= date.today()
-                                    except: pass
-                            else:
-                                is_dormant = True
-                        status_tag = " 💤" if is_dormant else " ✅"
-                        key = f"mchk_{lg}_{r['id']}"
-                        if key not in st.session_state:
-                            st.session_state[key] = False   # 기본 미선택, 직접 체크해야 포함
-                        rcols[k].checkbox(
-                            f"{r['name']}{status_tag} ({g_label})",
-                            key=key
+                # ── 정상 회원 체크박스 그리드 ────────────────
+                if not normal_df.empty:
+                    cols_per_row = 3
+                    for row_chunk in [normal_df.iloc[j:j+cols_per_row]
+                                      for j in range(0, len(normal_df), cols_per_row)]:
+                        rcols = st.columns(cols_per_row)
+                        for k, (_, r) in enumerate(row_chunk.iterrows()):
+                            g_label = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
+                            key = f"mchk_{lg}_{r['id']}"
+                            if key not in st.session_state:
+                                st.session_state[key] = True
+                            rcols[k].checkbox(f"{r['name']} ✅ ({g_label})", key=key)
+
+                # ── 게스트 표시 ──────────────────────────────
+                if _guests_lg:
+                    st.markdown(f"<div style='margin-top:8px;font-size:0.8rem;color:#555;font-weight:700;'>👤 게스트 ({len(_guests_lg)}명) — 자동 포함</div>",
+                                unsafe_allow_html=True)
+                    g_cols = st.columns(3)
+                    for gi, gm in enumerate(_guests_lg):
+                        g_gender = "남" if gm["gender"] == "M" else "여"
+                        g_cols[gi % 3].markdown(
+                            f'<div style="background:#e8f5e9;border-radius:6px;padding:4px 8px;'
+                            f'font-size:0.8rem;margin:2px 0;">⭐ {gm["name"]} ({g_gender})</div>',
+                            unsafe_allow_html=True
                         )
+
+                # ── 휴면 회원 (하단, 체크박스 없음) ──────────
+                if not dormant_df.empty:
+                    st.markdown(f"<div style='margin-top:12px;padding:6px 10px;background:#fff8e1;"
+                                f"border-radius:6px;border-left:3px solid #FF8F00;font-size:0.8rem;"
+                                f"color:#6d4c41;font-weight:700;'>💤 휴면 회원 ({len(dormant_df)}명) — 참가 제외</div>",
+                                unsafe_allow_html=True)
+                    cols_per_row = 3
+                    for row_chunk in [dormant_df.iloc[j:j+cols_per_row]
+                                      for j in range(0, len(dormant_df), cols_per_row)]:
+                        rcols = st.columns(cols_per_row)
+                        for k, (_, r) in enumerate(row_chunk.iterrows()):
+                            g_label = "남" if str(r.get("gender","")).strip() in ("남","M") else "여"
+                            rcols[k].markdown(
+                                f'<div style="color:#aaa;font-size:0.85rem;padding:4px 0;">'
+                                f'💤 {r["name"]} ({g_label})</div>',
+                                unsafe_allow_html=True
+                            )
 
         if st.button("✔️ 확인", type="primary", use_container_width=True):
             st.session_state["member_popup_open"] = False
@@ -3513,12 +3548,11 @@ elif page == "🎲 랜덤페어":
     if st.session_state.get("member_popup_open", False):
         _member_select_popup()
 
+    # ── [4] 날짜·번호 (가로 배치) + 비밀번호 + 생성 버튼 ────
     st.sidebar.markdown("---")
-
-    # ── [4] 날짜 & 일련번호 ──────────────────────────────────
-    st.sidebar.markdown("---")
-    rp_date = st.sidebar.text_input("📅 날짜", value=date.today().strftime("%Y-%m-%d"), key="rp_date")
-    rp_num  = st.sidebar.text_input("번호", value="001", key="rp_num", placeholder="001")
+    _d1, _d2 = st.sidebar.columns([3, 2])
+    rp_date = _d1.text_input("📅 날짜", value=date.today().strftime("%Y-%m-%d"), key="rp_date")
+    rp_num  = _d2.text_input("번호", value="001", key="rp_num", placeholder="001")
     rp_key  = f"{rp_date}_{rp_num}"
     st.sidebar.caption(f"저장키: {rp_key}")
 
