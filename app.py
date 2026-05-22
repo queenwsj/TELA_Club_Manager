@@ -2263,9 +2263,44 @@ def render_roster_page():
       <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
-    # ── 비로그인: 제한 열람 모드 ─────────────────────────────
+    # ── 비로그인: 본인 인증 후 제한 열람 모드 ───────────────────
     if not _logged_in:
-        st.info("🔍 비회원 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다. 전체 정보는 로그인 후 이용하세요.")
+        # 본인 인증 상태 확인
+        _authed_guest = st.session_state.get("guest_auth_ok", False)
+
+        if not _authed_guest:
+            st.warning("🔒 회원명부는 등록된 본인 이름과 연락처를 입력해야 열람할 수 있습니다.")
+            st.markdown("**본인 확인**")
+            _gc1, _gc2 = st.columns(2)
+            _auth_name  = _gc1.text_input("이름", placeholder="홍길동", key="guest_auth_name")
+            _auth_phone = _gc2.text_input("연락처", placeholder="010-1234-5678", key="guest_auth_phone")
+            if st.button("확인", type="primary", key="guest_auth_btn"):
+                try:
+                    _df_auth = load_df(include_deleted=False)
+                    # 연락처 정규화 (숫자만 비교)
+                    import re as _re
+                    _phone_clean = _re.sub(r'\D', '', _auth_phone.strip())
+                    _match = _df_auth[
+                        (_df_auth["name"].str.strip() == _auth_name.strip()) &
+                        (_df_auth["phone"].astype(str).apply(lambda x: _re.sub(r'\D','',x)) == _phone_clean) &
+                        (_df_auth["category"] != "탈퇴")
+                    ]
+                    if not _match.empty:
+                        st.session_state["guest_auth_ok"] = True
+                        st.rerun()
+                    else:
+                        st.error("❌ 일치하는 회원 정보가 없습니다.")
+                except Exception as _e:
+                    st.error(f"오류: {_e}")
+            return
+
+        # 인증 성공 → 제한 열람
+        _auth_col, _logout_col = st.columns([5, 1])
+        _auth_col.info(f"🔍 제한 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다.")
+        if _logout_col.button("🔒 나가기", key="guest_auth_logout"):
+            st.session_state["guest_auth_ok"] = False
+            st.rerun()
+
         with st.spinner("📡 구글 시트에서 데이터 불러오는 중…"):
             try:
                 df_guest = load_df(include_deleted=False)
@@ -2273,16 +2308,41 @@ def render_roster_page():
                 st.error(f"⚠️ Google Sheets 연결 오류: {e}")
                 st.stop()
 
-        # 탈퇴 제외 + 정회원/운영진만
-        from datetime import date as _dt_date
-        CATEGORIES_SHOW = ["마스터","고문","회장","총무","경기이사","홍보이사","정회원","휴면"]
-        df_guest = df_guest[df_guest["category"].isin(CATEGORIES_SHOW)].reset_index(drop=True)
+        # 탈퇴 제외
+        OFFICER_CATS_G = ["마스터","고문","회장","총무","경기이사","홍보이사"]
+        CATEGORIES_SHOW = OFFICER_CATS_G + ["정회원","휴면"]
+        df_guest = df_guest[df_guest["category"].isin(CATEGORIES_SHOW)].copy()
         if df_guest.empty:
             st.info("표시할 회원이 없습니다.")
             return
 
+        # ── 정렬: 운영진 상단 고정 → 정회원 이름순 → 휴면 하단 ──
+        def _sort_key(row):
+            cat = row.get("category","")
+            if cat in OFFICER_CATS_G:
+                order = 0
+                sub   = OFFICER_CATS_G.index(cat)
+            elif cat == "정회원":
+                order = 1
+                sub   = 0
+            else:  # 휴면
+                order = 2
+                sub   = 0
+            return (order, sub, str(row.get("name","")))
+
+        df_guest = df_guest.sort_values(
+            by=["category","name"],
+            key=lambda col: col.map(lambda v: _sort_key({"category": v, "name": ""}) if col.name == "category" else v)
+        )
+        # pandas sort_values key 한계로 직접 정렬
+        df_guest["_sort"] = df_guest.apply(lambda r: (
+            0 if r["category"] in OFFICER_CATS_G else (1 if r["category"] == "정회원" else 2),
+            OFFICER_CATS_G.index(r["category"]) if r["category"] in OFFICER_CATS_G else 0,
+            str(r.get("name",""))
+        ), axis=1)
+        df_guest = df_guest.sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
+
         st.caption(f"총 **{len(df_guest)}명**")
-        # 검색
         gq = st.text_input("🔍 이름 검색", placeholder="이름 입력", key="guest_search",
                            label_visibility="collapsed")
         if gq.strip():
@@ -2293,14 +2353,24 @@ def render_roster_page():
         hc[0].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>구분</div>", unsafe_allow_html=True)
         hc[1].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>성명</div>", unsafe_allow_html=True)
         hc[2].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>연락처</div>", unsafe_allow_html=True)
+
+        _prev_group = None
         for _, row in df_guest.iterrows():
+            cat = row.get("category","")
+            # 그룹 구분선
+            cur_group = 0 if cat in OFFICER_CATS_G else (1 if cat == "정회원" else 2)
+            if _prev_group is not None and cur_group != _prev_group:
+                st.markdown("<div style='border-bottom:2px solid #e2e8f0;margin:4px 0'></div>",
+                            unsafe_allow_html=True)
+            _prev_group = cur_group
+
             rc = st.columns([1, 2, 2])
-            rc[0].markdown(f"<div style='padding:5px 0'>{badge(row.get('category',''))}</div>", unsafe_allow_html=True)
+            rc[0].markdown(f"<div style='padding:5px 0'>{badge(cat)}</div>", unsafe_allow_html=True)
             rc[1].markdown(f"<div style='{_g_fs};padding:7px 0;font-weight:600;color:#1a2e4a'>{row.get('name','')}</div>", unsafe_allow_html=True)
             phone_val = str(row.get('phone','') or '—')
             rc[2].markdown(f"<div style='{_g_fs};padding:7px 0;color:#374151'>{phone_val}</div>", unsafe_allow_html=True)
             st.markdown("<div style='border-bottom:1px solid #f1f5f9'></div>", unsafe_allow_html=True)
-        return  # 비로그인은 여기서 종료
+        return
 
     # ── 로그인 상태: 기존 roster_app 기능 전체 ────────────────
     # 관리자 인증 상태 표시 (roster 내부 admin_authed와 별개)
@@ -3415,22 +3485,24 @@ elif page == "🎲 랜덤페어":
     if _total_sel == 0:
         st.sidebar.caption("⚠️ 참가자를 선택해주세요")
 
-    # member_selected 수집 — mchk_ 체크 여부 기반 (회원 + 게스트 모두)
+    # member_selected 수집 — league 값 완전 정규화
     member_selected = {}
     _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
+    # match_df_cache의 league 컬럼 정규화 (공백 제거)
+    if not _match_df_cache.empty and "league" in _match_df_cache.columns:
+        _match_df_cache = _match_df_cache.copy()
+        _match_df_cache["league"] = _match_df_cache["league"].astype(str).str.strip()
+        st.session_state["match_df_cache"] = _match_df_cache
+
     for i, lg in enumerate(active_leagues):
         pfx = active_prefixes[i]
         selected = []
-        # 팝업에서 체크된 일반 회원
         if not _match_df_cache.empty:
-            lg_rows = _match_df_cache[
-                _match_df_cache["league"].astype(str).str.strip() == lg
-            ]
+            lg_rows = _match_df_cache[_match_df_cache["league"] == lg]
             for _, r in lg_rows.iterrows():
                 if st.session_state.get(f"mchk_{lg}_{r['id']}", False):
                     g = "M" if str(r.get("gender","")).strip() in ("남","M") else "W"
                     selected.append(f"{pfx}{g}{r['name']}")
-        # 팝업에서 체크된 게스트
         for gm in guest_load():
             if gm["league"] == lg:
                 if st.session_state.get(f"gchk_{lg}_{gm['name']}", False):
@@ -3678,6 +3750,11 @@ elif page == "🎲 랜덤페어":
             use_seed_run        = use_seed
             seed_val_run        = seed_val
             rp_key_run          = rp_key
+
+            # ── 디버그: 실제 선택 현황 확인용 ──────────────────
+            with st.expander("🔍 선택 현황 (디버그)", expanded=False):
+                for lg, pl in league_players.items():
+                    st.write(f"**{lg}**: {len(pl)}명 → {pl[:5]}")
 
             # 유효성 검사
             errors = []
