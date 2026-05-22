@@ -3542,46 +3542,6 @@ elif page == "🎲 랜덤페어":
 
     st.sidebar.markdown("---")
 
-    # ── [3-G] 게스트 관리 (회원명부 미반영, 직접 삭제까지 유지) ─
-    st.sidebar.markdown("### 👤 게스트")
-    st.sidebar.caption("회원명부 미반영 · 직접 삭제 전까지 유지")
-
-    # 게스트 추가 입력
-    _gc1, _gc2, _gc3 = st.sidebar.columns([2, 1, 1])
-    _g_lg   = _gc1.selectbox("리그", active_leagues, key="guest_lg",
-                              label_visibility="collapsed")
-    _g_name = _gc2.text_input("이름", key="guest_name", placeholder="이름",
-                               label_visibility="collapsed")
-    _g_sex  = _gc3.selectbox("성별", ["남", "여"], key="guest_sex",
-                              label_visibility="collapsed")
-    if st.sidebar.button("➕ 게스트 추가", key="add_guest_btn", use_container_width=True):
-        if _g_name.strip():
-            _g_code = "M" if _g_sex == "남" else "W"
-            _pfx_g  = active_prefixes[active_leagues.index(_g_lg)]
-            _gcode  = f"{_pfx_g}{_g_code}★{_g_name.strip()}"
-            guest_add(_g_name.strip(), _g_code, _g_lg, _gcode)
-            st.rerun()
-        else:
-            st.sidebar.warning("이름을 입력해주세요.")
-
-    # 현재 게스트 목록 표시 + 삭제
-    _all_guests = guest_load()
-    if _all_guests:
-        for _gm in list(_all_guests):
-            _lc_g = LEAGUE_COLORS[active_leagues.index(_gm["league"])] if _gm["league"] in active_leagues else "#555"
-            _gl_c1, _gl_c2 = st.sidebar.columns([4, 1])
-            _gl_c1.markdown(
-                f'<span style="color:{_lc_g};font-size:0.8rem;">🏷 {_gm["league"]} · {_gm["name"]}</span>',
-                unsafe_allow_html=True
-            )
-            if _gl_c2.button("🗑", key=f"del_guest_{_gm['league']}_{_gm['name']}"):
-                guest_remove(_gm["name"], _gm["league"])
-                st.rerun()
-    else:
-        st.sidebar.caption("등록된 게스트 없음")
-
-    st.sidebar.markdown("---")
-
     # ── [4] 시드 ─────────────────────────────────────────────
     use_seed = st.sidebar.checkbox("🔒 결과 고정 (시드)", value=False)
     seed_val = None
@@ -4253,6 +4213,53 @@ function showMsg() {{
                                     st.rerun()
             else:
                 st.info("구글 시트에 회원 데이터가 없습니다.")
+
+            # ── 게스트 관리 (회원명부 미반영) ────────────────────
+            st.markdown("---")
+            st.markdown("#### 👤 게스트 관리")
+            st.caption("회원명부·구글 시트 미반영 · 직접 삭제 전까지 유지됩니다.")
+
+            # 추가 폼
+            _gc1, _gc2, _gc3, _gc4 = st.columns([2, 2, 1, 1])
+            _g_lg   = _gc1.selectbox("리그", active_leagues, key="guest_lg",
+                                     label_visibility="collapsed")
+            _g_name = _gc2.text_input("이름", key="guest_name", placeholder="이름 입력",
+                                      label_visibility="collapsed")
+            _g_sex  = _gc3.selectbox("성별", ["남", "여"], key="guest_sex",
+                                     label_visibility="collapsed")
+            if _gc4.button("➕ 추가", key="add_guest_btn", use_container_width=True):
+                if _g_name.strip():
+                    _g_code = "M" if _g_sex == "남" else "W"
+                    _pfx_g  = active_prefixes[active_leagues.index(_g_lg)]
+                    _gcode  = f"{_pfx_g}{_g_code}★{_g_name.strip()}"
+                    guest_add(_g_name.strip(), _g_code, _g_lg, _gcode)
+                    st.success(f"✅ '{_g_name.strip()}' 게스트 추가 완료")
+                    st.rerun()
+                else:
+                    st.warning("이름을 입력해주세요.")
+
+            # 현재 게스트 목록
+            _all_guests = guest_load()
+            if _all_guests:
+                st.markdown(f"**등록된 게스트 ({len(_all_guests)}명)**")
+                _gh = st.columns([2, 2, 1, 1])
+                _gh[0].markdown("**리그**"); _gh[1].markdown("**이름**")
+                _gh[2].markdown("**성별**"); _gh[3].markdown("**삭제**")
+                for _gm in list(_all_guests):
+                    _lc_g = LEAGUE_COLORS[active_leagues.index(_gm["league"])] \
+                            if _gm["league"] in active_leagues else "#555"
+                    _gr = st.columns([2, 2, 1, 1])
+                    _gr[0].markdown(
+                        f'<span style="color:{_lc_g};font-weight:700;">{_gm["league"]}</span>',
+                        unsafe_allow_html=True
+                    )
+                    _gr[1].write(_gm["name"])
+                    _gr[2].write("남" if _gm["gender"] == "M" else "여")
+                    if _gr[3].button("🗑", key=f"del_guest_{_gm['league']}_{_gm['name']}"):
+                        guest_remove(_gm["name"], _gm["league"])
+                        st.rerun()
+            else:
+                st.info("등록된 게스트가 없습니다.")
 
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
