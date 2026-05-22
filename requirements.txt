@@ -1,4 +1,6 @@
-streamlit
+streamlit>=1.32.0
 pandas
-xlsxwriter
 openpyxl
+xlsxwriter
+gspread>=6.0.0
+google-auth>=2.0.0
