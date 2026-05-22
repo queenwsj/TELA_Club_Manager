@@ -131,9 +131,9 @@ def is_admin() -> bool:
     return bool(u and u.get("role") == "admin")
 
 
-def shelf_save(date_key: str, schedule: list, scores: dict):
+def shelf_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool = False):
     with shelve.open(SHELF_PATH) as db:
-        db[date_key] = {"schedule": schedule, "scores": scores}
+        db[date_key] = {"schedule": schedule, "scores": scores, "is_fully_random": is_fully_random}
 
 def shelf_load(date_key: str) -> Optional[dict]:
     with shelve.open(SHELF_PATH) as db:
@@ -3718,10 +3718,11 @@ elif page == "🎲 랜덤페어":
         _lb1, _lb2 = st.sidebar.columns([1, 1])
 
         # 불러오기
-        if _lb1.button("📥 불러오기", key="sb_load_btn", use_container_width=True):
+        if _lb1.button("📥 불러오기", key="sb_load_btn", type="primary", use_container_width=True):
             _loaded = shelf_load(_sel_key)
             if _loaded:
                 _loaded_sched = deserialize_schedule(_loaded["schedule"])
+                _loaded_is_fully_random = _loaded.get("is_fully_random", False)
                 _loaded_stats: Dict[str, PlayerStats] = {}
                 for _m in _loaded_sched:
                     update_stats(_loaded_stats, _m["team1"], _m["team2"],
@@ -3731,7 +3732,7 @@ elif page == "🎲 랜덤페어":
                     "stats":           _loaded_stats,
                     "last_gen_params": {
                         "league_players":  {},
-                        "is_fully_random": False,
+                        "is_fully_random": _loaded_is_fully_random,
                         "league_configs":  {},
                         "use_seed":        False,
                         "seed_val":        None,
@@ -3898,7 +3899,7 @@ elif page == "🎲 랜덤페어":
             "rp_schedule": schedule, "rp_key": rp_key_run,
             "sb_schedule": schedule, "sb_scores": {}, "sb_key": "",
         })
-        shelf_save(rp_key_run, serialize_schedule(schedule), {})
+        shelf_save(rp_key_run, serialize_schedule(schedule), {}, IS_FULLY_RANDOM_run)
         mode_label   = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
         active_lgs   = list(league_players.keys())
         league_badge_run = " · ".join(active_lgs)
