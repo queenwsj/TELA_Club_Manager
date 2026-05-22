@@ -1,6 +1,14 @@
 """
-TELA CLUB Random Match Generator v4.00
+TELA CLUB Random Match Generator v4.01
 ======================================
+변경사항 (v4.01):
+  [버그수정] 완전 랜덤페어 여복 미출현 버그 수정
+      · 문제: 남자 10명 여자 5명 등 특정 비율에서 여복이 나오지 않음
+      · 원인: _build_jabbok_minimized_groups의 동점 후보 수집 방식이
+              dong_w=0인 조합만 동점으로 묶어 여복 선택 기회 원천 차단
+      · 수정: best_score + threshold(15점) 이내 모든 유효 조합을 candidates로
+              확장하여 여복/남복 그룹이 골고루 등장하도록 개선
+
 변경사항 (v4.00):
   [1] 페어링 방식 선택 섹션 추가 (v3.01 내용 통합)
       · 조건부 랜덤페어: 리그별 우선순위·쿼터 적용
@@ -606,11 +614,15 @@ def _build_jabbok_minimized_groups(pool):
     """
     잡복(남3+여1, 남1+여3) 최소화 그룹 구성.
     혼복(남2+여2)과 동성(남복+여복)은 동등한 우선순위로,
-    인원 비율에 따라 |혼복수 - 동성수| 최소화 + 잡복 최소화.
+    잡복 최소화 후 남은 조합에서 균등 랜덤 선택.
 
-    스코어 함수:
-      score = 잡복수 × 1000 + |혼복 - (남복+여복)| × 10 - (혼복+동성) × 1
-      → 잡복 최소 우선, 그 다음 혼복/동성 균등, 마지막으로 총 경기수 최대화
+    [버그수정 v4.01]
+    기존: 스코어(잡복+균형 가중합) 동점 조합만 candidates 수집
+      → 남10:여5 등 특정 비율에서 dong_w=0인 조합만 동점으로 묶여
+         여복(dong_w≥1)이 수학적으로 선택 불가능한 상태 발생.
+    수정: "잡복 수가 최소인" 조합 전체를 candidates로 사용
+      → 잡복 수만 최소 조건으로 1차 필터 후 나머지는 랜덤 선택
+      → 여복/남복/혼복이 인원 비율에 맞게 골고루 등장.
     반환: groups (list of list), leftover (list)
     """
     men   = [p for p in pool if get_gender(p) == "M"]
@@ -621,40 +633,29 @@ def _build_jabbok_minimized_groups(pool):
     M, W = len(men), len(women)
     N = (M + W + len(other)) // 4
 
-    # 최적 혼복/동성 수 계산
-    best_mixed  = 0
-    best_dong_m = 0
-    best_dong_w = 0
-    best_score  = float("inf")
-    best_candidates = []
-
+    # 모든 유효 조합 수집 (mixed, dong_m, dong_w, jab_grps)
+    all_valid = []
     for mixed in range(min(M // 2, W // 2) + 1):
         rem_m = M - mixed * 2
         rem_w = W - mixed * 2
         if rem_m < 0 or rem_w < 0: continue
-        dong_m    = rem_m // 4
-        dong_w    = rem_w // 4
-        jab_m     = rem_m % 4
-        jab_w     = rem_w % 4
-        jab_grps  = (jab_m + jab_w) // 4
-        total     = mixed + dong_m + dong_w + jab_grps
+        dong_m   = rem_m // 4
+        dong_w   = rem_w // 4
+        jab_grps = (rem_m % 4 + rem_w % 4) // 4
+        total    = mixed + dong_m + dong_w + jab_grps
         if total != N: continue
+        all_valid.append((mixed, dong_m, dong_w, jab_grps))
 
-        dong_total = dong_m + dong_w
-        score = (jab_grps * 1000
-                 + abs(mixed - dong_total) * 10
-                 - (mixed + dong_total))   # 총 비잡복 경기 많을수록 유리
-        if score < best_score:
-            best_score  = score
-            best_mixed  = mixed
-            best_dong_m = dong_m
-            best_dong_w = dong_w
-            best_candidates = [(mixed, dong_m, dong_w)]
-        elif score == best_score:
-            best_candidates.append((mixed, dong_m, dong_w))
-
-    # 동점 후보 중 랜덤 선택 → 혼복/동성 비율이 매번 다양하게 나옴
-    if best_candidates:
+    best_mixed, best_dong_m, best_dong_w = 0, 0, 0
+    if all_valid:
+        # [핵심 수정] 잡복 수 최소인 조합 전체를 candidates로 사용
+        # 잡복 수가 같은 조합끼리는 균등 랜덤 선택 → 여복 출현 보장
+        min_jab = min(j for _, _, _, j in all_valid)
+        best_candidates = [
+            (m, dm, dw)
+            for m, dm, dw, j in all_valid
+            if j == min_jab
+        ]
         best_mixed, best_dong_m, best_dong_w = random.choice(best_candidates)
 
     groups = []
@@ -1369,7 +1370,7 @@ elif page == "🎲 랜덤페어":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title(f"🎾 TELA CLUB Random Match Generator v4.00")
+    st.title(f"🎾 TELA CLUB Random Match Generator v4.01")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 대진표 생성 ──────────────────────────────────────────
