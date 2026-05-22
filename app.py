@@ -40,6 +40,74 @@ SAVE_DIR   = os.path.join(os.path.dirname(__file__), ".tela_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
 SHELF_PATH  = os.path.join(SAVE_DIR, "scoreboard")
 MEMBER_PATH = os.path.join(SAVE_DIR, "members")
+USER_PATH   = os.path.join(SAVE_DIR, "users")    # 앱 로그인 계정 DB
+
+
+# ── 앱 로그인 계정 관리 ───────────────────────────────────────
+import hashlib
+
+def _hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.strip().encode()).hexdigest()
+
+def user_load_all() -> dict:
+    """전체 계정 로드. 구조: {user_id: {pw_hash, role, name}}"""
+    with shelve.open(USER_PATH) as db:
+        return dict(db.get("users", {}))
+
+def user_save_all(data: dict):
+    with shelve.open(USER_PATH) as db:
+        db["users"] = data
+
+def user_ensure_admin():
+    """secrets의 ADMIN_ID/ADMIN_PASSWORD로 최초 관리자 계정 보장"""
+    admin_id = st.secrets.get("ADMIN_ID", "admin")
+    admin_pw = st.secrets.get("ADMIN_PASSWORD", "1223")
+    data = user_load_all()
+    if admin_id not in data:
+        data[admin_id] = {
+            "pw_hash": _hash_pw(admin_pw),
+            "role":    "admin",
+            "name":    "관리자",
+        }
+        user_save_all(data)
+
+def user_authenticate(user_id: str, password: str) -> Optional[dict]:
+    """로그인 시도. 성공 시 {id, role, name} 반환, 실패 시 None"""
+    data = user_load_all()
+    u = data.get(user_id.strip())
+    if u and u["pw_hash"] == _hash_pw(password):
+        return {"id": user_id.strip(), "role": u["role"], "name": u["name"]}
+    return None
+
+def user_add(user_id: str, password: str, role: str, name: str) -> bool:
+    data = user_load_all()
+    if user_id in data:
+        return False  # 중복
+    data[user_id] = {"pw_hash": _hash_pw(password), "role": role, "name": name}
+    user_save_all(data)
+    return True
+
+def user_delete(user_id: str):
+    data = user_load_all()
+    data.pop(user_id, None)
+    user_save_all(data)
+
+def user_change_pw(user_id: str, new_pw: str):
+    data = user_load_all()
+    if user_id in data:
+        data[user_id]["pw_hash"] = _hash_pw(new_pw)
+        user_save_all(data)
+
+# ── 현재 로그인 사용자 헬퍼 ──────────────────────────────────
+def get_app_user() -> Optional[dict]:
+    return st.session_state.get("app_user")
+
+def is_logged_in() -> bool:
+    return bool(get_app_user())
+
+def is_admin() -> bool:
+    u = get_app_user()
+    return bool(u and u.get("role") == "admin")
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict):
@@ -2083,16 +2151,60 @@ def dialog_form(existing=None):
 
 
 def render_roster_page():
-    """회원명부 페이지"""
+    """회원명부 페이지 — 로그인/비로그인 분기"""
+    _logged_in  = is_logged_in()
+    _is_admin   = is_admin()
+    _app_user   = get_app_user()
+
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">🎾</span>
-      <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v1.07)</span></h1>
+      <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v1.08)</span></h1>
       <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
     </div>""", unsafe_allow_html=True)
-    
-    # 관리자 인증 상태 (타임아웃 잔여 시간 표시)
-    if st.session_state.admin_authed and st.session_state.auth_time:
+
+    # ── 비로그인: 제한 열람 모드 ─────────────────────────────
+    if not _logged_in:
+        st.info("🔍 비회원 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다. 전체 정보는 로그인 후 이용하세요.")
+        with st.spinner("📡 구글 시트에서 데이터 불러오는 중…"):
+            try:
+                df_guest = load_df(include_deleted=False)
+            except Exception as e:
+                st.error(f"⚠️ Google Sheets 연결 오류: {e}")
+                st.stop()
+
+        # 탈퇴 제외 + 정회원/운영진만
+        from datetime import date as _dt_date
+        CATEGORIES_SHOW = ["마스터","고문","회장","총무","경기이사","홍보이사","정회원","휴면"]
+        df_guest = df_guest[df_guest["category"].isin(CATEGORIES_SHOW)].reset_index(drop=True)
+        if df_guest.empty:
+            st.info("표시할 회원이 없습니다.")
+            return
+
+        st.caption(f"총 **{len(df_guest)}명**")
+        # 검색
+        gq = st.text_input("🔍 이름 검색", placeholder="이름 입력", key="guest_search",
+                           label_visibility="collapsed")
+        if gq.strip():
+            df_guest = df_guest[df_guest["name"].str.contains(gq.strip(), na=False)]
+
+        _g_fs = "font-size:12px"
+        hc = st.columns([1, 2, 2])
+        hc[0].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>구분</div>", unsafe_allow_html=True)
+        hc[1].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>성명</div>", unsafe_allow_html=True)
+        hc[2].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>연락처</div>", unsafe_allow_html=True)
+        for _, row in df_guest.iterrows():
+            rc = st.columns([1, 2, 2])
+            rc[0].markdown(f"<div style='padding:5px 0'>{badge(row.get('category',''))}</div>", unsafe_allow_html=True)
+            rc[1].markdown(f"<div style='{_g_fs};padding:7px 0;font-weight:600;color:#1a2e4a'>{row.get('name','')}</div>", unsafe_allow_html=True)
+            phone_val = str(row.get('phone','') or '—')
+            rc[2].markdown(f"<div style='{_g_fs};padding:7px 0;color:#374151'>{phone_val}</div>", unsafe_allow_html=True)
+            st.markdown("<div style='border-bottom:1px solid #f1f5f9'></div>", unsafe_allow_html=True)
+        return  # 비로그인은 여기서 종료
+
+    # ── 로그인 상태: 기존 roster_app 기능 전체 ────────────────
+    # 관리자 인증 상태 표시 (roster 내부 admin_authed와 별개)
+    if st.session_state.get("admin_authed") and st.session_state.get("auth_time"):
         elapsed_min = int((datetime.now() - st.session_state.auth_time).total_seconds() / 60)
         remain_min  = SESSION_TIMEOUT_MIN - elapsed_min
         auth_col1, auth_col2 = st.columns([6, 1])
@@ -2100,14 +2212,65 @@ def render_roster_page():
             st.markdown(
                 f"<div style='background:#d1fae5;border-left:4px solid #10b981;"
                 f"padding:6px 12px;border-radius:6px;font-size:12px;color:#065f46;font-weight:600;'>"
-                f"🔓 관리자 인증됨 — 잔여 {remain_min}분 (총 {SESSION_TIMEOUT_MIN}분 세션)"
+                f"🔓 관리자 인증됨 — 잔여 {remain_min}분"
                 f"</div>", unsafe_allow_html=True)
         with auth_col2:
-            if st.button("🔒 로그아웃", use_container_width=True, key="admin_logout"):
+            if st.button("🔒 잠금", use_container_width=True, key="admin_logout_roster"):
                 st.session_state.admin_authed = False
                 st.session_state.auth_time    = None
                 st.rerun()
-    
+
+    # ── 계정 관리 탭 (관리자 전용) ──────────────────────────
+    if _is_admin:
+        with st.expander("🔑 계정 관리 (관리자 전용)", expanded=False):
+            all_users = user_load_all()
+            st.markdown(f"**등록 계정 ({len(all_users)}개)**")
+
+            # 계정 목록
+            _admin_id = st.secrets.get("ADMIN_ID", "admin")
+            for uid, uinfo in list(all_users.items()):
+                ucols = st.columns([2, 2, 1, 1, 1])
+                ucols[0].write(uid)
+                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else '회원'})")
+                # 비밀번호 변경
+                new_pw_key = f"chpw_{uid}"
+                new_pw = ucols[2].text_input("새PW", key=new_pw_key,
+                                              label_visibility="collapsed",
+                                              placeholder="새 PW")
+                if ucols[3].button("변경", key=f"chpwbtn_{uid}"):
+                    if new_pw.strip():
+                        user_change_pw(uid, new_pw.strip())
+                        st.success(f"'{uid}' 비밀번호 변경 완료")
+                        st.rerun()
+                    else:
+                        st.warning("새 비밀번호를 입력하세요.")
+                # 삭제 (관리자 본인 제외)
+                if uid != _admin_id:
+                    if ucols[4].button("🗑", key=f"delusr_{uid}"):
+                        user_delete(uid)
+                        st.rerun()
+                else:
+                    ucols[4].caption("주계정")
+
+            st.markdown("---")
+            st.markdown("**신규 계정 추가**")
+            nc1, nc2, nc3, nc4, nc5 = st.columns([2, 2, 2, 1, 1])
+            new_uid   = nc1.text_input("아이디", key="new_uid", label_visibility="collapsed", placeholder="아이디")
+            new_upw   = nc2.text_input("비밀번호", key="new_upw", label_visibility="collapsed", placeholder="비밀번호")
+            new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
+            new_urole = nc4.selectbox("권한", ["회원", "관리자"], key="new_urole", label_visibility="collapsed")
+            if nc5.button("➕ 추가", key="add_user_btn"):
+                if new_uid.strip() and new_upw.strip() and new_uname.strip():
+                    role_val = "admin" if new_urole == "관리자" else "member"
+                    ok = user_add(new_uid.strip(), new_upw.strip(), role_val, new_uname.strip())
+                    if ok:
+                        st.success(f"계정 '{new_uid}' 추가 완료")
+                        st.rerun()
+                    else:
+                        st.error(f"이미 존재하는 아이디입니다: {new_uid}")
+                else:
+                    st.warning("아이디, 비밀번호, 이름을 모두 입력해주세요.")
+
     # ─────────────────────────────────────────────────────────
     #  데이터 로드
     # ─────────────────────────────────────────────────────────
@@ -2117,11 +2280,11 @@ def render_roster_page():
         except Exception as e:
             st.error(f"⚠️ Google Sheets 연결 오류: {e}")
             st.stop()
-    
-    # ── 알림 배지 계산 (데이터 로드 직후) ────────────────────
-    anniversary_members = get_this_month_birthdays(df)
+
+    # ── 알림 배지 계산 (로그인 시에만 표시) ──────────────────
+    anniversary_members  = get_this_month_birthdays(df)
     long_dormant_members = get_long_dormant_members(df, months=3)
-    
+
     # 알림 배지 표시
     notif_parts = []
     if anniversary_members:
@@ -2134,8 +2297,6 @@ def render_roster_page():
             "padding:8px 14px;border-radius:8px;font-size:13px;color:#92400e;margin-bottom:8px;'>"
             + " &nbsp;|&nbsp; ".join(notif_parts) +
             "</div>", unsafe_allow_html=True)
-    
-        # 상세 보기 (expander)
         if anniversary_members or long_dormant_members:
             with st.expander("📋 알림 상세 보기", expanded=False):
                 if anniversary_members:
@@ -2246,15 +2407,19 @@ def render_roster_page():
             help="현재 명부 전체를 CSV로 다운로드 (엑셀 호환)"
         )
     with c_add:
-        if st.button("＋ 회원 등록", type="primary", use_container_width=True):
-            st.session_state.open_dialog  = "add"
-            st.session_state.edit_target  = None
-            st.rerun()
-    
+        if _is_admin:
+            if st.button("＋ 회원 등록", type="primary", use_container_width=True):
+                st.session_state.open_dialog  = "add"
+                st.session_state.edit_target  = None
+                st.rerun()
+        else:
+            st.caption("등록: 관리자만 가능")
+
     if not search_q.strip():
         st.session_state.search_active = ""
-    
-    FILTER_OPTIONS = ["전체","운영진","정회원","휴면","탈퇴"]
+
+    # 탈퇴 필터 옵션: 관리자만 볼 수 있음
+    FILTER_OPTIONS = ["전체","운영진","정회원","휴면"] + (["탈퇴"] if _is_admin else [])
     if st.session_state.filter_cat not in FILTER_OPTIONS:
         st.session_state.filter_cat = "전체"
     filter_cat = st.radio("필터", FILTER_OPTIONS,
@@ -2370,12 +2535,15 @@ def render_roster_page():
     
     def apply_filters(data):
         if data.empty: return data
+        # 비관리자: 탈퇴 항목 원천 제외
+        if not _is_admin:
+            data = data[data["category"] != "탈퇴"]
         if filter_cat == "운영진":
             data = data[data["category"].isin(OFFICER_CATS)]
         elif filter_cat == "탈퇴":
             data = data[data["category"] == "탈퇴"]
         elif filter_cat == "전체":
-            data = data[data["category"] != "탈퇴"]   # 전체에서 탈퇴 제외
+            data = data[data["category"] != "탈퇴"]
         else:
             data = data[data["category"] == filter_cat]
         q = st.session_state.search_active.lower()
@@ -2621,15 +2789,16 @@ def render_roster_page():
                         st.session_state.edit_target = {"id": int(row["id"]), "name": row["name"], "type": "detail"}
                         st.rerun()
                 with btn_c2:
-                    if st.button("수정", key=f"edit_{row['id']}", use_container_width=True,
-                                 help="수정 (관리자 인증 필요)"):
-                        target = {"type":"edit","id":int(row["id"]),"name":row["name"]}
-                        st.session_state.edit_target = target
-                        if st.session_state.admin_authed:
-                            st.session_state.open_dialog = "edit"
-                        else:
-                            st.session_state.open_dialog = "pw_edit"
-                        st.rerun()
+                    if _is_admin:
+                        if st.button("수정", key=f"edit_{row['id']}", use_container_width=True,
+                                     help="수정 (관리자 인증 필요)"):
+                            target = {"type":"edit","id":int(row["id"]),"name":row["name"]}
+                            st.session_state.edit_target = target
+                            if st.session_state.admin_authed:
+                                st.session_state.open_dialog = "edit"
+                            else:
+                                st.session_state.open_dialog = "pw_edit"
+                            st.rerun()
     
             st.markdown("<div style='border-bottom:1px solid #f1f5f9'></div>", unsafe_allow_html=True)
 
@@ -2645,6 +2814,41 @@ st.markdown("""
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
 st.sidebar.markdown("---")
+
+# ── 최초 관리자 계정 보장 ────────────────────────────────────
+user_ensure_admin()
+
+# ── 앱 세션 초기화 ───────────────────────────────────────────
+if "app_user" not in st.session_state:
+    st.session_state["app_user"] = None
+
+# ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
+_u = get_app_user()
+if _u:
+    role_label = "🔑 관리자" if _u["role"] == "admin" else "👤 회원"
+    st.sidebar.markdown(
+        f'<div style="background:#d1fae5;border-radius:8px;padding:8px 10px;'
+        f'font-size:0.8rem;color:#065f46;font-weight:700;margin-bottom:6px;">'
+        f'{role_label} · {_u["name"]} ({_u["id"]})</div>',
+        unsafe_allow_html=True
+    )
+    if st.sidebar.button("🔒 로그아웃", key="app_logout", use_container_width=True):
+        st.session_state["app_user"] = None
+        st.rerun()
+else:
+    with st.sidebar.expander("🔐 로그인", expanded=True):
+        _lid  = st.text_input("아이디", key="login_id", placeholder="ID 입력")
+        _lpw  = st.text_input("비밀번호", type="password", key="login_pw", placeholder="비밀번호 입력")
+        if st.button("로그인", key="login_btn", type="primary", use_container_width=True):
+            _result = user_authenticate(_lid, _lpw)
+            if _result:
+                st.session_state["app_user"] = _result
+                st.rerun()
+            else:
+                st.error("아이디 또는 비밀번호가 틀렸습니다.")
+        st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
+
+st.sidebar.markdown("---")
 page = st.sidebar.radio("메뉴", ["📊 점수판", "🎲 랜덤페어", "👥 회원명부"],
                          index=0, label_visibility="collapsed")
 st.sidebar.markdown("---")
@@ -2655,6 +2859,10 @@ st.sidebar.markdown("---")
 # ============================================================
 
 if page == "📊 점수판":
+
+    if not is_logged_in():
+        st.warning("🔐 점수판은 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
+        st.stop()
 
     st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
 
@@ -2946,6 +3154,10 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
 # ============================================================
 
 elif page == "🎲 랜덤페어":
+
+    if not is_logged_in():
+        st.warning("🔐 랜덤페어는 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
+        st.stop()
 
     # ── [1] 페어링 방식 ──────────────────────────────────────
     st.sidebar.markdown("### 🎯 페어링 방식")
