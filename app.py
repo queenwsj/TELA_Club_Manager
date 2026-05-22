@@ -3355,96 +3355,60 @@ elif page == "🎲 랜덤페어":
 
     st.sidebar.markdown("---")
 
-    # ── [3] 입력 방식 ────────────────────────────────────────
-    input_mode = st.sidebar.radio(
-        "입력 방식",
-        ["👥 회원 선택 (명부 연동)", "코드 자동 생성 (AM01/AW01...)", "직접 이름 입력"],
-        index=0
-    )
-    st.sidebar.markdown("---")
+    # ── [3] 참가자 선택 ──────────────────────────────────────
+    # 사이드바: 팝업 버튼 + 선택 현황만 표시
+    if st.sidebar.button("👥 참가자 선택", type="primary",
+                         use_container_width=True, key="open_member_popup"):
+        st.session_state["member_popup_open"] = True
+        st.session_state["member_popup_just_opened"] = True
 
-    # 인원 입력 — 리그 수에 따라 동적 생성
-    custom_input   = {}
-    league_counts  = {}
+    # 현재 선택 현황 요약
+    _match_df_sidebar = st.session_state.get("match_df_cache", pd.DataFrame())
+    _total_sel = 0
+    for i, lg in enumerate(active_leagues):
+        lc = LEAGUE_COLORS[i]
+        if not _match_df_sidebar.empty:
+            lg_rows = _match_df_sidebar[_match_df_sidebar["league"] == lg]
+            sel_cnt = sum(1 for _, r in lg_rows.iterrows()
+                          if st.session_state.get(f"mchk_{lg}_{r['id']}", False))
+        else:
+            sel_cnt = 0
+        # 게스트 수 포함
+        guest_cnt = sum(1 for g in guest_load() if g["league"] == lg)
+        total_lg  = sel_cnt + guest_cnt
+        _total_sel += total_lg
+        disp = f"{lg}: {sel_cnt}명"
+        if guest_cnt: disp += f" + 게스트{guest_cnt}"
+        st.sidebar.markdown(
+            f'<span style="color:{lc};font-size:0.78rem;">{disp}</span>',
+            unsafe_allow_html=True
+        )
+    if _total_sel == 0:
+        st.sidebar.caption("⚠️ 참가자를 선택해주세요")
+
+    # member_selected 수집 (mchk_ 기본값 False — 팝업에서 체크한 것만)
     member_selected = {}
-
-    # ── 회원 선택 모드 (구글 시트 직접 연동) ────────────────
-    if input_mode == "👥 회원 선택 (명부 연동)":
-        custom_input  = None
-        league_counts = None
-
-        # 사이드바: 버튼만 표시
-        st.sidebar.markdown("---")
-        if st.sidebar.button("👥 참가자 선택 열기", type="primary",
-                             use_container_width=True, key="open_member_popup"):
-            st.session_state["member_popup_open"] = True
-            st.session_state["member_popup_just_opened"] = True  # 최초 진입 시 데이터 로드
-
-        # 현재 선택 현황 요약 (구글 시트 기반 캐시 데이터)
-        _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
-        for i, lg in enumerate(active_leagues):
-            lc = LEAGUE_COLORS[i]
-            lg_rows = _match_df_cache[_match_df_cache["league"] == lg] if not _match_df_cache.empty else pd.DataFrame()
-            sel_cnt = sum(
-                1 for _, r in lg_rows.iterrows()
-                if st.session_state.get(f"mchk_{lg}_{r['id']}", True)
-            )
-            dormant_cnt = sum(
-                1 for _, r in lg_rows.iterrows()
-                if st.session_state.get(f"mchk_{lg}_{r['id']}", True)
-                and r.get("category") == "휴면"
-            )
-            summary = f"{lg}: {sel_cnt}명 선택"
-            if dormant_cnt: summary += f" (휴면 {dormant_cnt}명 포함)"
-            st.sidebar.markdown(
-                f'<span style="color:{lc};font-size:0.8rem;">{summary}</span>',
-                unsafe_allow_html=True
-            )
-
-        # 선택 결과 수집
-        _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
-        for i, lg in enumerate(active_leagues):
-            pfx = active_prefixes[i]
-            lg_rows = _match_df_cache[_match_df_cache["league"] == lg] if not _match_df_cache.empty else pd.DataFrame()
-            selected = []
+    _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
+    for i, lg in enumerate(active_leagues):
+        pfx = active_prefixes[i]
+        selected = []
+        # 팝업에서 선택된 회원
+        if not _match_df_cache.empty:
+            lg_rows = _match_df_cache[_match_df_cache["league"] == lg]
             for _, r in lg_rows.iterrows():
-                if st.session_state.get(f"mchk_{lg}_{r['id']}", True):
+                if st.session_state.get(f"mchk_{lg}_{r['id']}", False):  # 기본값 False
                     g = "M" if str(r.get("gender","")).strip() in ("남","M") else "W"
                     selected.append(f"{pfx}{g}{r['name']}")
-            member_selected[lg] = selected
+        # 게스트 추가
+        for gm in guest_load():
+            if gm["league"] == lg:
+                selected.append(gm["code"])
+        member_selected[lg] = selected
 
-    # ── 코드 자동 생성 모드 ──────────────────────────────────
-    elif input_mode == "코드 자동 생성 (AM01/AW01...)":
-        custom_input = None
-        for i, lg in enumerate(active_leagues):
-            lc = LEAGUE_COLORS[i]
-            st.sidebar.markdown(
-                f'<span style="color:{lc};font-weight:700;">{lg}</span>',
-                unsafe_allow_html=True
-            )
-            col1, col2 = st.sidebar.columns(2)
-            with col1:
-                m_cnt = st.number_input(f"남자 ({lg})", min_value=0, max_value=30,
-                                         value=8 if i==0 else 3, step=1, key=f"m_{lg}")
-            with col2:
-                w_cnt = st.number_input(f"여자 ({lg})", min_value=0, max_value=30,
-                                         value=2, step=1, key=f"w_{lg}")
-            league_counts[lg] = {"m": m_cnt, "w": w_cnt}
-
-    # ── 직접 이름 입력 모드 ──────────────────────────────────
-    else:
-        league_counts = None
-        for i, lg in enumerate(active_leagues):
-            lc = LEAGUE_COLORS[i]
-            st.sidebar.markdown(
-                f'<span style="color:{lc};font-weight:700;">{lg} 선수 목록</span>',
-                unsafe_allow_html=True
-            )
-            txt = st.sidebar.text_area(
-                f"{lg} 입력", placeholder="홍길동 남\n김영희 여",
-                height=100, key=f"txt_{lg}", label_visibility="collapsed"
-            )
-            custom_input[lg] = txt
+    # input_mode 고정 (회원 선택 모드)
+    input_mode    = "👥 회원 선택 (명부 연동)"
+    custom_input  = None
+    league_counts = None
 
     # ══════════════════════════════════════════════════════════
     # 참가자 선택 팝업 — 구글 시트 회원명부 직접 연동
@@ -3485,6 +3449,15 @@ elif page == "🎲 랜덤페어":
                 if lg_df.empty:
                     st.info(f"{lg}에 배정된 회원이 없습니다. 회원명부에서 리그를 배정해주세요.")
                     continue
+
+                # 첫 진입 시 해당 리그 전체 선택 초기화
+                _init_key = f"mchk_init_{lg}"
+                if st.session_state.get("member_popup_just_opened") or _init_key not in st.session_state:
+                    for _, r in lg_df.iterrows():
+                        k = f"mchk_{lg}_{r['id']}"
+                        if k not in st.session_state:
+                            st.session_state[k] = True   # 첫 열기 시 전체선택
+                    st.session_state[_init_key] = True
 
                 # 전체선택/해제
                 col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
@@ -3527,7 +3500,7 @@ elif page == "🎲 랜덤페어":
                         status_tag = " 💤" if is_dormant else " ✅"
                         key = f"mchk_{lg}_{r['id']}"
                         if key not in st.session_state:
-                            st.session_state[key] = True
+                            st.session_state[key] = False   # 기본 미선택, 직접 체크해야 포함
                         rcols[k].checkbox(
                             f"{r['name']}{status_tag} ({g_label})",
                             key=key
@@ -3542,26 +3515,16 @@ elif page == "🎲 랜덤페어":
 
     st.sidebar.markdown("---")
 
-    # ── [4] 시드 ─────────────────────────────────────────────
-    use_seed = st.sidebar.checkbox("🔒 결과 고정 (시드)", value=False)
-    seed_val = None
-    if use_seed:
-        seed_val = st.sidebar.number_input("시드 번호", min_value=0, max_value=9999,
-                                            value=42, step=1)
-
-    # ── [5] 날짜 & 일련번호 ──────────────────────────────────
+    # ── [4] 날짜 & 일련번호 ──────────────────────────────────
     st.sidebar.markdown("---")
-    st.sidebar.markdown("📅 **날짜 & 일련번호**")
-    rp_date = st.sidebar.text_input("날짜 (YYYY-MM-DD)",
-                                     value=date.today().strftime("%Y-%m-%d"), key="rp_date")
-    rp_num  = st.sidebar.text_input("일련번호 (예: 001)", value="001", key="rp_num")
+    rp_date = st.sidebar.text_input("📅 날짜", value=date.today().strftime("%Y-%m-%d"), key="rp_date")
+    rp_num  = st.sidebar.text_input("번호", value="001", key="rp_num", placeholder="001")
     rp_key  = f"{rp_date}_{rp_num}"
-    st.sidebar.caption(f"저장 키: {rp_key}")
+    st.sidebar.caption(f"저장키: {rp_key}")
 
-    # ── [6] 관리자 비밀번호 ──────────────────────────────────
+    # ── [5] 생성 버튼 ─────────────────────────────────────────
     st.sidebar.markdown("---")
-    st.sidebar.markdown("🔐 **관리자 확인**")
-    admin_pw = st.sidebar.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+    admin_pw = st.sidebar.text_input("🔐 비밀번호", type="password", placeholder="관리자 비밀번호")
     pw_ok = (admin_pw == ADMIN_PASSWORD)
 
     generate_btn = st.sidebar.button(
@@ -3575,8 +3538,17 @@ elif page == "🎲 랜덤페어":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title(f"🎾 TELA CLUB Random Match Generator v5.00")
+    st.title("🎾 TELA CLUB Random Match Generator v5.00")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
+
+    # ── 결과 고정 (시드) — 본문 배치 ──────────────────────────
+    _sc1, _sc2 = st.columns([1, 4])
+    use_seed = _sc1.checkbox("🔒 결과 고정 (시드)", value=False, key="use_seed_main")
+    seed_val = None
+    if use_seed:
+        seed_val = _sc2.number_input("시드 번호", min_value=0, max_value=9999,
+                                      value=42, step=1, key="seed_val_main",
+                                      label_visibility="collapsed")
 
     # ── 대진표 생성 ──────────────────────────────────────────
 
