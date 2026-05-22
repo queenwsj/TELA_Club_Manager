@@ -2204,7 +2204,7 @@ def render_roster_page():
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">🎾</span>
-      <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v1.08)</span></h1>
+      <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v5.00)</span></h1>
       <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
@@ -2463,14 +2463,35 @@ def render_roster_page():
     if not search_q.strip():
         st.session_state.search_active = ""
 
-    # 탈퇴 필터 옵션: 관리자만 볼 수 있음
+    # ── 카테고리 필터 + 리그 필터 ────────────────────────────
     FILTER_OPTIONS = ["전체","운영진","정회원","휴면"] + (["탈퇴"] if _is_admin else [])
     if st.session_state.filter_cat not in FILTER_OPTIONS:
         st.session_state.filter_cat = "전체"
-    filter_cat = st.radio("필터", FILTER_OPTIONS,
-        index=FILTER_OPTIONS.index(st.session_state.filter_cat),
-        horizontal=True, label_visibility="collapsed",
-        key="filter_radio")
+
+    # 카테고리 + 리그 필터를 한 줄에
+    f_col1, f_sep, f_col2 = st.columns([3, 0.1, 2])
+    with f_col1:
+        filter_cat = st.radio("필터", FILTER_OPTIONS,
+            index=FILTER_OPTIONS.index(st.session_state.filter_cat),
+            horizontal=True, label_visibility="collapsed",
+            key="filter_radio")
+    with f_sep:
+        st.markdown("<div style='border-left:2px solid #e2e8f0;height:36px;margin-top:4px'></div>",
+                    unsafe_allow_html=True)
+    with f_col2:
+        LEAGUE_FILTER_OPTIONS = ["전체 리그"] + LEAGUE_NAMES[:3]
+        if "filter_league" not in st.session_state:
+            st.session_state["filter_league"] = "전체 리그"
+        filter_league = st.radio("리그 필터", LEAGUE_FILTER_OPTIONS,
+            index=LEAGUE_FILTER_OPTIONS.index(
+                st.session_state["filter_league"]
+                if st.session_state["filter_league"] in LEAGUE_FILTER_OPTIONS
+                else "전체 리그"
+            ),
+            horizontal=True, label_visibility="collapsed",
+            key="filter_league_radio"
+        )
+        st.session_state["filter_league"] = filter_league
     
     # ── 카테고리 변경 감지: 필터가 바뀌면 정렬 위젯도 자동 초기화 ──
     # 사용자 의도에 따라:
@@ -2591,6 +2612,10 @@ def render_roster_page():
             data = data[data["category"] != "탈퇴"]
         else:
             data = data[data["category"] == filter_cat]
+        # 리그 필터
+        _fl = st.session_state.get("filter_league", "전체 리그")
+        if _fl and _fl != "전체 리그":
+            data = data[data["league"].astype(str).str.strip() == _fl]
         q = st.session_state.search_active.lower()
         if q:
             mask = (data["name"].str.lower().str.contains(q,na=False) |
@@ -2772,25 +2797,13 @@ def render_roster_page():
     
             rc[col_offset+0].markdown(cell(idx+1,"#9ca3af"), unsafe_allow_html=True)
             rc[col_offset+1].markdown(f"<div style='padding:5px 0'>{badge(row.get('category',''))}</div>", unsafe_allow_html=True)
-            # ── 리그 셀 (인라인 수정 가능, 관리자만) ──
+            # ── 리그 셀 (표시만, 랜덤매치에서 수정) ──
             lg_val = str(row.get('league','') or '').strip()
-            if _is_admin:
-                league_options_cell = [""] + LEAGUE_NAMES
-                _cur_lg_idx = league_options_cell.index(lg_val) if lg_val in league_options_cell else 0
-                _sel_lg = rc[col_offset+2].selectbox(
-                    "리그", league_options_cell, index=_cur_lg_idx,
-                    key=f"lg_sel_{row_id}", label_visibility="collapsed"
-                )
-                if _sel_lg != lg_val:
-                    with st.spinner("리그 저장 중…"):
-                        save_league_to_sheet(row_id, _sel_lg)
-                    st.rerun()
-            else:
-                _lg_color = LEAGUE_COLORS[LEAGUE_NAMES.index(lg_val)] if lg_val in LEAGUE_NAMES else "#9ca3af"
-                rc[col_offset+2].markdown(
-                    f"<div style='padding:5px 0;{RS_FS};color:{_lg_color};font-weight:700'>{lg_val or '—'}</div>",
-                    unsafe_allow_html=True
-                )
+            _lg_color = LEAGUE_COLORS[LEAGUE_NAMES.index(lg_val)] if lg_val in LEAGUE_NAMES else "#9ca3af"
+            rc[col_offset+2].markdown(
+                f"<div style='padding:5px 0;{RS_FS};color:{_lg_color};font-weight:700'>{lg_val or '—'}</div>",
+                unsafe_allow_html=True
+            )
             rc[col_offset+3].markdown(cell(row.get('name',''),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
             rc[col_offset+4].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
             rc[col_offset+5].markdown(cell(by_val), unsafe_allow_html=True)
@@ -3452,7 +3465,7 @@ elif page == "🎲 랜덤페어":
                                     except: pass
                             else:
                                 is_dormant = True
-                        status_tag = " 💤" if is_dormant else ""
+                        status_tag = ""  # 상태 표시 제거
                         key = f"mchk_{lg}_{r['id']}"
                         if key not in st.session_state:
                             st.session_state[key] = True
@@ -4034,7 +4047,6 @@ function showMsg() {{
                     lg_members = all_members.get(mgmt_lg, [])
                     lc_mg = LEAGUE_COLORS[ti % len(LEAGUE_COLORS)]
 
-                    # ── 등록 회원 목록 + 삭제 + 리그 이동 ──────
                     if lg_members:
                         st.markdown(
                             f'<div style="color:{lc_mg};font-weight:700;margin-bottom:6px;">'
@@ -4047,91 +4059,102 @@ function showMsg() {{
                         )
                         has_move = bool(other_leagues)
 
-                        # 헤더
+                        # ── 일괄삭제 버튼 ──────────────────────────
+                        del_all_key = f"delall_confirm_{mgmt_lg}"
+                        dc1, dc2 = st.columns([2, 3])
+                        if dc1.button(f"🗑 전체 삭제 ({len(lg_members)}명)",
+                                      key=f"delall_{mgmt_lg}", help="이 리그 회원 전체 삭제"):
+                            st.session_state[del_all_key] = True
+                        if st.session_state.get(del_all_key):
+                            dc2.warning(f"정말 {mgmt_lg} 전체 {len(lg_members)}명을 삭제할까요?")
+                            cc1, cc2 = dc2.columns(2)
+                            if cc1.button("✅ 확인", key=f"delall_yes_{mgmt_lg}"):
+                                data_del = member_load_all()
+                                data_del[mgmt_lg] = []
+                                member_save_all(data_del)
+                                st.session_state.pop(del_all_key, None)
+                                st.rerun()
+                            if cc2.button("✕ 취소", key=f"delall_no_{mgmt_lg}"):
+                                st.session_state.pop(del_all_key, None)
+                                st.rerun()
+
+                        # ── 헤더 ────────────────────────────────────
                         if has_move:
-                            h_cols = st.columns([3, 1, 1, 2, 1, 1])
-                            h_cols[0].markdown("**이름**"); h_cols[1].markdown("**성별**")
-                            h_cols[2].markdown("**상태**")
+                            h_cols = st.columns([0.3, 3, 1, 2, 1, 1])
+                            h_cols[0].markdown("**☑**")
+                            h_cols[1].markdown("**이름**"); h_cols[2].markdown("**성별**")
                             h_cols[3].markdown("**이동 대상**"); h_cols[4].markdown("**이동**")
                             h_cols[5].markdown("**삭제**")
                         else:
-                            h_cols = st.columns([3, 1, 1, 1])
-                            h_cols[0].markdown("**이름**"); h_cols[1].markdown("**성별**")
-                            h_cols[2].markdown("**상태**"); h_cols[3].markdown("**삭제**")
+                            h_cols = st.columns([0.3, 3, 1, 1])
+                            h_cols[0].markdown("**☑**")
+                            h_cols[1].markdown("**이름**"); h_cols[2].markdown("**성별**")
+                            h_cols[3].markdown("**삭제**")
+
+                        # 선택 상태 초기화
+                        sel_key = f"sel_members_{mgmt_lg}"
+                        if sel_key not in st.session_state:
+                            st.session_state[sel_key] = set()
 
                         for m in list(lg_members):
-                            g_label = "남" if m["gender"]=="M" else "여"
-                            status  = m.get("status", "정상")
-                            if status == "휴면":
-                                badge = '<span style="background:#FF8F00;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">💤휴면</span>'
-                            else:
-                                badge = '<span style="background:#2e7d32;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.72rem;font-weight:700;margin-right:4px;">✅정상</span>'
-                            name_html = f'{badge}{m["name"]}'
+                            g_label  = "남" if m["gender"]=="M" else "여"
+                            chk_k    = f"msel_{mgmt_lg}_{m['name']}"
+                            is_checked = st.session_state.get(chk_k, False)
 
                             if has_move:
-                                row_cols = st.columns([3, 1, 1, 2, 1, 1])
-                                row_cols[0].markdown(name_html, unsafe_allow_html=True)
-                                row_cols[1].write(g_label)
-                                # 상태 토글 버튼
-                                toggle_label = "→정상" if status == "휴면" else "→휴면"
-                                if row_cols[2].button(
-                                    toggle_label,
-                                    key=f"tog_{mgmt_lg}_{m['name']}",
-                                    help="상태 변경"
-                                ):
-                                    data_edit = member_load_all()
-                                    for idx2, mm in enumerate(data_edit.get(mgmt_lg, [])):
-                                        if mm["name"] == m["name"]:
-                                            data_edit[mgmt_lg][idx2]["status"] = (
-                                                "정상" if status == "휴면" else "휴면"
-                                            )
-                                            break
-                                    member_save_all(data_edit)
-                                    st.rerun()
+                                row_cols = st.columns([0.3, 3, 1, 2, 1, 1])
+                                row_cols[0].checkbox("", key=chk_k, label_visibility="collapsed")
+                                row_cols[1].write(m["name"])
+                                row_cols[2].write(g_label)
                                 move_to = row_cols[3].selectbox(
                                     "이동대상", other_leagues,
                                     key=f"moveto_{mgmt_lg}_{m['name']}",
                                     label_visibility="collapsed"
                                 )
-                                if row_cols[4].button(
-                                    "→", key=f"movebtn_{mgmt_lg}_{m['name']}",
-                                    help=f"{move_to}으로 이동"
-                                ):
+                                if row_cols[4].button("→", key=f"movebtn_{mgmt_lg}_{m['name']}",
+                                                      help=f"{move_to}으로 이동"):
                                     member_remove(mgmt_lg, m["name"])
                                     member_add(move_to, m["name"], m["gender"])
-                                    # status 유지
-                                    data_mv = member_load_all()
-                                    for mm in data_mv.get(move_to, []):
-                                        if mm["name"] == m["name"]:
-                                            mm["status"] = status; break
-                                    member_save_all(data_mv)
+                                    # 구글 시트에도 리그 업데이트
+                                    try:
+                                        _mdf = load_df_for_match()
+                                        _row = _mdf[_mdf["name"] == m["name"]]
+                                        if not _row.empty:
+                                            save_league_to_sheet(int(_row.iloc[0]["id"]), move_to)
+                                    except Exception:
+                                        pass
                                     st.success(f"'{m['name']}' → {move_to} 이동 완료")
                                     st.rerun()
                                 if row_cols[5].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
                                     member_remove(mgmt_lg, m["name"])
                                     st.rerun()
                             else:
-                                row_cols = st.columns([3, 1, 1, 1])
-                                row_cols[0].markdown(name_html, unsafe_allow_html=True)
-                                row_cols[1].write(g_label)
-                                toggle_label = "→정상" if status == "휴면" else "→휴면"
-                                if row_cols[2].button(
-                                    toggle_label,
-                                    key=f"tog_{mgmt_lg}_{m['name']}",
-                                    help="상태 변경"
-                                ):
-                                    data_edit = member_load_all()
-                                    for idx2, mm in enumerate(data_edit.get(mgmt_lg, [])):
-                                        if mm["name"] == m["name"]:
-                                            data_edit[mgmt_lg][idx2]["status"] = (
-                                                "정상" if status == "휴면" else "휴면"
-                                            )
-                                            break
-                                    member_save_all(data_edit)
-                                    st.rerun()
+                                row_cols = st.columns([0.3, 3, 1, 1])
+                                row_cols[0].checkbox("", key=chk_k, label_visibility="collapsed")
+                                row_cols[1].write(m["name"])
+                                row_cols[2].write(g_label)
                                 if row_cols[3].button("🗑", key=f"del_{mgmt_lg}_{m['name']}"):
                                     member_remove(mgmt_lg, m["name"])
                                     st.rerun()
+
+                        # ── 선택 삭제 ───────────────────────────────
+                        selected_names = [
+                            m["name"] for m in lg_members
+                            if st.session_state.get(f"msel_{mgmt_lg}_{m['name']}", False)
+                        ]
+                        if selected_names:
+                            if st.button(f"🗑 선택 삭제 ({len(selected_names)}명)",
+                                         key=f"del_sel_{mgmt_lg}", type="secondary"):
+                                data_sel_del = member_load_all()
+                                data_sel_del[mgmt_lg] = [
+                                    mm for mm in data_sel_del.get(mgmt_lg, [])
+                                    if mm["name"] not in selected_names
+                                ]
+                                member_save_all(data_sel_del)
+                                # 체크박스 초기화
+                                for n in selected_names:
+                                    st.session_state.pop(f"msel_{mgmt_lg}_{n}", None)
+                                st.rerun()
                     else:
                         st.info(f"{mgmt_lg}에 등록된 회원이 없습니다.")
 
@@ -4139,7 +4162,7 @@ function showMsg() {{
 
                     # ── 신규 회원 추가 ───────────────────────────
                     st.markdown("**신규 회원 추가**")
-                    col_n, col_g, col_s, col_add = st.columns([3, 1, 1, 1])
+                    col_n, col_g, col_add = st.columns([3, 1, 1])
                     new_name = col_n.text_input(
                         "이름", key=f"new_name_{mgmt_lg}",
                         label_visibility="collapsed", placeholder="이름 입력"
@@ -4147,11 +4170,6 @@ function showMsg() {{
                     new_gender = col_g.selectbox(
                         "성별", ["남", "여"],
                         key=f"new_gender_{mgmt_lg}",
-                        label_visibility="collapsed"
-                    )
-                    new_status = col_s.selectbox(
-                        "상태", ["정상", "휴면"],
-                        key=f"new_status_{mgmt_lg}",
                         label_visibility="collapsed"
                     )
                     if col_add.button("➕", key=f"add_btn_{mgmt_lg}", help="회원 추가"):
@@ -4165,10 +4183,9 @@ function showMsg() {{
                                 data_add[mgmt_lg].append({
                                     "name": new_name.strip(),
                                     "gender": g_code,
-                                    "status": new_status,
                                 })
                                 member_save_all(data_add)
-                                st.success(f"'{new_name}' ({new_status}) 추가 완료")
+                                st.success(f"'{new_name}' 추가 완료")
                                 st.rerun()
                             else:
                                 st.warning(f"'{new_name}'은 이미 등록된 이름입니다.")
@@ -4176,7 +4193,7 @@ function showMsg() {{
                             st.warning("이름을 입력해주세요.")
 
                     # ── 일괄 추가 ────────────────────────────────
-                    st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여, 상태 기본=정상)")
+                    st.markdown("**일괄 추가** (한 줄에 `이름 성별`, 성별: 남/여)")
                     bulk_text = st.text_area(
                         "일괄 입력", placeholder="홍길동 남\n김영희 여\n이철수 남",
                         height=100, key=f"bulk_{mgmt_lg}",
@@ -4197,7 +4214,7 @@ function showMsg() {{
                             bgender = "W" if (len(parts)>=2 and parts[1] in ("여","W","F")) else "M"
                             if bname not in existing_names_bulk:
                                 data_bulk[mgmt_lg].append({
-                                    "name": bname, "gender": bgender, "status": "정상"
+                                    "name": bname, "gender": bgender
                                 })
                                 existing_names_bulk.add(bname)
                                 added += 1
