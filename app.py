@@ -3537,6 +3537,8 @@ elif page == "🎲 랜덤페어":
     # ══════════════════════════════════════════════════════════
     @st.dialog("👥 참가자 선택 (회원명부 연동)", width="large")
     def _member_select_popup():
+        # 호출 즉시 플래그 해제 — rerun 시 팝업 재오픈 방지
+        st.session_state["member_popup_open"] = False
         if "match_df_cache" not in st.session_state or st.session_state.get("member_popup_just_opened"):
             with st.spinner("📡 회원명부 불러오는 중…"):
                 try:
