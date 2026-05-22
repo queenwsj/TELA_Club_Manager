@@ -4014,69 +4014,133 @@ function showMsg() {{
                         st.error("불러오기 실패: 데이터를 찾을 수 없습니다.")
 
         # ═══════════════════════════════════════════════════════
-        # ═══════════════════════════════════════════════════════
         # 리그 설정 (구글 시트 직접 연동)
         # ═══════════════════════════════════════════════════════
         st.markdown("---")
         with st.expander("🏷️ 회원 리그 설정 (구글 시트 직접 연동)", expanded=False):
-            st.caption("회원명부(구글 시트)의 league 컬럼을 직접 수정합니다. 삭제 기능은 없습니다.")
+            st.caption("체크박스로 회원을 선택하고 이동 대상 리그를 선택 후 일괄 저장하세요.")
             try:
                 with st.spinner("회원 명부 불러오는 중…"):
-                    st.cache_data.clear()   # 최신 시트 데이터 보장
+                    st.cache_data.clear()
                     _lg_df = load_df_for_match()
             except Exception as _e:
                 st.error(f"구글 시트 연결 오류: {_e}")
                 _lg_df = pd.DataFrame()
 
             if not _lg_df.empty:
-                # 리그별 탭
+                # ── 리그별 탭 ────────────────────────────────
                 _lg_tabs = st.tabs([f"📋 {lg}" for lg in active_leagues] + ["📋 미배정"])
-                _lg_list = active_leagues + [""]   # ""= 미배정
+                _lg_list = active_leagues + [""]
 
                 for _ti, (_tab, _lg_val) in enumerate(zip(_lg_tabs, _lg_list)):
                     with _tab:
+                        _tab_label = _lg_val if _lg_val else "미배정"
                         if _lg_val == "":
                             _tab_df = _lg_df[_lg_df["league"].astype(str).str.strip() == ""].copy()
-                            _tab_label = "미배정"
                         else:
                             _tab_df = _lg_df[_lg_df["league"].astype(str).str.strip() == _lg_val].copy()
-                            _tab_label = _lg_val
 
                         lc_t = LEAGUE_COLORS[_ti % len(LEAGUE_COLORS)]
                         st.markdown(
-                            f'<div style="color:{lc_t};font-weight:700;margin-bottom:6px;">'
+                            f'<div style="color:{lc_t};font-weight:700;margin-bottom:8px;">'
                             f'{_tab_label} 회원 ({len(_tab_df)}명)</div>',
                             unsafe_allow_html=True
                         )
 
                         if _tab_df.empty:
-                            st.info(f"이 리그에 배정된 회원이 없습니다.")
+                            st.info("이 리그에 배정된 회원이 없습니다.")
                             continue
 
-                        # 헤더
-                        _hc = st.columns([3, 1, 2, 1])
-                        _hc[0].markdown("**이름**"); _hc[1].markdown("**성별**")
-                        _hc[2].markdown("**이동 대상 리그**"); _hc[3].markdown("**저장**")
+                        # ── 이동 대상 리그 + 일괄 저장 (상시 표시) ──
+                        _all_lgs   = active_leagues + (["미배정"] if _lg_val != "" else [])
+                        _other_lgs = [lg for lg in active_leagues if lg != _lg_val] + (["미배정"] if _lg_val != "" else [])
+                        _target_options = _other_lgs if _other_lgs else active_leagues
+
+                        _ctrl1, _ctrl2, _ctrl3, _ctrl4 = st.columns([1, 1, 2, 1])
+                        _sa_key = f"selall_{_tab_label}"
+                        _sd_key = f"seldeall_{_tab_label}"
+
+                        # 전체선택/해제
+                        if _ctrl1.button("✅ 전체선택", key=f"sa_{_tab_label}"):
+                            for _, _r in _tab_df.iterrows():
+                                st.session_state[f"lgchk_{_r['id']}"] = True
+                            st.rerun()
+                        if _ctrl2.button("⬜ 전체해제", key=f"sd_{_tab_label}"):
+                            for _, _r in _tab_df.iterrows():
+                                st.session_state[f"lgchk_{_r['id']}"] = False
+                            st.rerun()
+
+                        # 이동 대상 리그 selectbox (상시)
+                        _target_sel = _ctrl3.selectbox(
+                            "이동 대상 리그",
+                            _target_options,
+                            key=f"bulk_target_{_tab_label}",
+                            label_visibility="collapsed"
+                        )
+                        _target_val = "" if _target_sel == "미배정" else _target_sel
+
+                        # 선택된 회원 수
+                        _checked_ids = [
+                            int(_r["id"]) for _, _r in _tab_df.iterrows()
+                            if st.session_state.get(f"lgchk_{_r['id']}", False)
+                        ]
+                        _checked_names = [
+                            str(_r["name"]) for _, _r in _tab_df.iterrows()
+                            if st.session_state.get(f"lgchk_{_r['id']}", False)
+                        ]
+
+                        # 일괄 저장 버튼 (선택 수 표시)
+                        _btn_label = f"💾 저장 ({len(_checked_ids)}명 선택)" if _checked_ids else "💾 저장 (선택 없음)"
+                        if _ctrl4.button(_btn_label, key=f"bulk_save_{_tab_label}",
+                                         type="primary" if _checked_ids else "secondary",
+                                         disabled=len(_checked_ids) == 0):
+                            _ok_cnt = 0
+                            with st.spinner(f"{len(_checked_ids)}명 저장 중…"):
+                                for _mid in _checked_ids:
+                                    if save_league_to_sheet(_mid, _target_val):
+                                        _ok_cnt += 1
+                            st.success(f"✅ {_ok_cnt}명 → {_target_sel} 저장 완료")
+                            # 체크박스 초기화
+                            for _mid in _checked_ids:
+                                st.session_state[f"lgchk_{_mid}"] = False
+                            st.rerun()
+
+                        st.markdown("<div style='border-bottom:1px solid #e2e8f0;margin:4px 0 8px'></div>",
+                                    unsafe_allow_html=True)
+
+                        # ── 회원 목록 (체크박스) ─────────────────
+                        _hc = st.columns([0.5, 3, 1, 2, 1])
+                        _hc[0].markdown("**☑**")
+                        _hc[1].markdown("**이름**"); _hc[2].markdown("**성별**")
+                        _hc[3].markdown("**개별 이동 대상**"); _hc[4].markdown("**저장**")
 
                         for _, _row in _tab_df.iterrows():
-                            _g = "남" if str(_row.get("gender","")).strip() in ("남","M") else "여"
-                            _rc = st.columns([3, 1, 2, 1])
-                            _rc[0].write(_row["name"])
-                            _rc[1].write(_g)
-                            _move_options = [_lg_val] + [lg for lg in active_leagues if lg != _lg_val] + ([""] if _lg_val != "" else [])
-                            _move_labels  = [_lg_val or "미배정"] + [lg for lg in active_leagues if lg != _lg_val] + (["미배정"] if _lg_val != "" else [])
-                            _sel_idx = _rc[2].selectbox(
-                                "리그", _move_labels,
-                                index=0,
-                                key=f"lgset_{_row['id']}",
+                            _g   = "남" if str(_row.get("gender","")).strip() in ("남","M") else "여"
+                            _rid = int(_row["id"])
+                            _chk_key = f"lgchk_{_rid}"
+                            if _chk_key not in st.session_state:
+                                st.session_state[_chk_key] = False
+
+                            _rc = st.columns([0.5, 3, 1, 2, 1])
+                            _rc[0].checkbox("", key=_chk_key, label_visibility="collapsed")
+                            _rc[1].write(_row["name"])
+                            _rc[2].write(_g)
+
+                            # 개별 이동 대상 selectbox
+                            _ind_opts   = _target_options
+                            _ind_sel    = _rc[3].selectbox(
+                                "개별리그", _ind_opts,
+                                key=f"lgind_{_rid}",
                                 label_visibility="collapsed"
                             )
-                            _sel_val = _move_options[_move_labels.index(_sel_idx)]
-                            if _rc[3].button("저장", key=f"lgsave_{_row['id']}"):
+                            _ind_val = "" if _ind_sel == "미배정" else _ind_sel
+
+                            if _rc[4].button("저장", key=f"lgsave_{_rid}"):
                                 with st.spinner("저장 중…"):
-                                    _ok = save_league_to_sheet(int(_row["id"]), _sel_val)
+                                    _ok = save_league_to_sheet(_rid, _ind_val)
                                 if _ok:
-                                    st.success(f"✅ '{_row['name']}' → {_sel_val or '미배정'} 저장 완료")
+                                    st.session_state[_chk_key] = False
+                                    st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
                                     st.rerun()
             else:
                 st.info("구글 시트에 회원 데이터가 없습니다.")
