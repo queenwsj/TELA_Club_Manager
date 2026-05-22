@@ -2979,15 +2979,34 @@ if _u:
         st.rerun()
 else:
     with st.sidebar.expander("🔐 로그인", expanded=True):
-        _lid  = st.text_input("아이디", key="login_id", placeholder="ID 입력")
-        _lpw  = st.text_input("비밀번호", type="password", key="login_pw", placeholder="비밀번호 입력")
+        def _on_login_enter():
+            _id = st.session_state.get("login_id", "")
+            _pw = st.session_state.get("login_pw", "")
+            if _id and _pw:
+                _r = user_authenticate(_id, _pw)
+                if _r:
+                    st.session_state["app_user"] = _r
+                else:
+                    st.session_state["_login_fail"] = True
+
+        _lid = st.text_input("아이디", key="login_id", placeholder="ID 입력")
+        _lpw = st.text_input("비밀번호", type="password", key="login_pw",
+                              placeholder="입력 후 엔터", on_change=_on_login_enter)
+
+        # on_change로 로그인 성공 시 rerun
+        if st.session_state.get("app_user"):
+            st.rerun()
+
         if st.button("로그인", key="login_btn", type="primary", use_container_width=True):
             _result = user_authenticate(_lid, _lpw)
             if _result:
                 st.session_state["app_user"] = _result
                 st.rerun()
             else:
-                st.error("아이디 또는 비밀번호가 틀렸습니다.")
+                st.session_state["_login_fail"] = True
+
+        if st.session_state.pop("_login_fail", False):
+            st.error("아이디 또는 비밀번호가 틀렸습니다.")
         st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
 
 st.sidebar.markdown("---")
@@ -3569,18 +3588,31 @@ elif page == "🎲 랜덤페어":
     rp_key  = f"{rp_date}_{rp_num}"
     st.sidebar.caption(f"저장키: {rp_key}")
 
-    # ── [5] 생성 버튼 ─────────────────────────────────────────
+    # ── [5] 비밀번호 + 생성 버튼 ──────────────────────────────
+    # 비밀번호 엔터 → on_change 콜백으로 generate 트리거
     st.sidebar.markdown("---")
-    admin_pw = st.sidebar.text_input("🔐 비밀번호", type="password", placeholder="관리자 비밀번호")
+    def _on_pw_enter():
+        if st.session_state.get("sidebar_pw", "") == ADMIN_PASSWORD:
+            st.session_state["_do_generate"] = True
+
+    admin_pw = st.sidebar.text_input(
+        "🔐 비밀번호", type="password", placeholder="입력 후 엔터",
+        key="sidebar_pw", on_change=_on_pw_enter
+    )
     pw_ok = (admin_pw == ADMIN_PASSWORD)
 
     generate_btn = st.sidebar.button(
         "🎾 대진표 생성", type="primary", use_container_width=True, disabled=not pw_ok
     )
+    # 엔터로 트리거된 경우 generate_btn처럼 처리 + 팝업 닫기
+    if st.session_state.pop("_do_generate", False):
+        generate_btn = True
+        st.session_state["member_popup_open"] = False
+
     if admin_pw and not pw_ok:
         st.sidebar.error("❌ 비밀번호가 틀렸습니다.")
     elif not admin_pw:
-        st.sidebar.caption("비밀번호를 입력해야 생성할 수 있습니다.")
+        st.sidebar.caption("비밀번호 입력 후 엔터 또는 버튼 클릭")
 
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
