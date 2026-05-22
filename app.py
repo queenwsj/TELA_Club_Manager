@@ -4369,7 +4369,6 @@ function showMsg() {{
                                 with st.spinner("저장 중…"):
                                     _ok = save_league_to_sheet(_rid, _ind_val)
                                 if _ok:
-                                    st.session_state[_chk_key] = False
                                     st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
                                     st.rerun()
             else:
