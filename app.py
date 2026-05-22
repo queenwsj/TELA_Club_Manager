@@ -3485,14 +3485,32 @@ elif page == "🎲 랜덤페어":
     if _total_sel == 0:
         st.sidebar.caption("⚠️ 참가자를 선택해주세요")
 
-    # member_selected 수집 — league 값 완전 정규화
+    # member_selected 수집 — 다중 안전장치 + 강력 디버그
     member_selected = {}
     _match_df_cache = st.session_state.get("match_df_cache", pd.DataFrame())
-    # match_df_cache의 league 컬럼 정규화 (공백 제거)
     if not _match_df_cache.empty and "league" in _match_df_cache.columns:
         _match_df_cache = _match_df_cache.copy()
         _match_df_cache["league"] = _match_df_cache["league"].astype(str).str.strip()
         st.session_state["match_df_cache"] = _match_df_cache
+
+    # 디버그용 정보 수집
+    _dbg = {
+        "cache_empty": _match_df_cache.empty,
+        "cache_size": len(_match_df_cache) if not _match_df_cache.empty else 0,
+        "unique_leagues_in_cache": [],
+        "active_leagues": active_leagues,
+        "mchk_keys_true": [],
+        "mchk_keys_total": 0,
+    }
+    if not _match_df_cache.empty:
+        _dbg["unique_leagues_in_cache"] = sorted(set(_match_df_cache["league"].astype(str)))
+
+    # 모든 mchk_ 키 스캔
+    for k, v in st.session_state.items():
+        if isinstance(k, str) and k.startswith("mchk_"):
+            _dbg["mchk_keys_total"] += 1
+            if v:
+                _dbg["mchk_keys_true"].append(k)
 
     for i, lg in enumerate(active_leagues):
         pfx = active_prefixes[i]
@@ -3500,7 +3518,11 @@ elif page == "🎲 랜덤페어":
         if not _match_df_cache.empty:
             lg_rows = _match_df_cache[_match_df_cache["league"] == lg]
             for _, r in lg_rows.iterrows():
-                if st.session_state.get(f"mchk_{lg}_{r['id']}", False):
+                # int / str 둘 다 시도
+                rid = r['id']
+                key_int = f"mchk_{lg}_{int(rid)}"
+                key_str = f"mchk_{lg}_{rid}"
+                if st.session_state.get(key_int, False) or st.session_state.get(key_str, False):
                     g = "M" if str(r.get("gender","")).strip() in ("남","M") else "W"
                     selected.append(f"{pfx}{g}{r['name']}")
         for gm in guest_load():
@@ -3508,6 +3530,8 @@ elif page == "🎲 랜덤페어":
                 if st.session_state.get(f"gchk_{lg}_{gm['name']}", False):
                     selected.append(gm["code"])
         member_selected[lg] = selected
+
+    st.session_state["_debug_member_select"] = _dbg
 
     # input_mode 고정 (회원 선택 모드)
     input_mode    = "👥 회원 선택 (명부 연동)"
@@ -3700,6 +3724,24 @@ elif page == "🎲 랜덤페어":
         seed_val = _sc2.number_input("시드 번호", min_value=0, max_value=9999,
                                       value=42, step=1, key="seed_val_main",
                                       label_visibility="collapsed")
+
+    # ── 🔍 디버그 패널 (문제 진단용 - 강제 펼침) ──────────────
+    with st.expander("🔍 진단 정보 (4명 미만 오류 디버깅)", expanded=True):
+        _dbg = st.session_state.get("_debug_member_select", {})
+        st.write("**팝업 캐시 상태**")
+        st.write(f"- 캐시 비어있음: `{_dbg.get('cache_empty', '?')}`")
+        st.write(f"- 캐시 총 회원수: `{_dbg.get('cache_size', 0)}`")
+        st.write(f"- 캐시 내 리그값들: `{_dbg.get('unique_leagues_in_cache', [])}`")
+        st.write(f"- 활성 리그(active_leagues): `{_dbg.get('active_leagues', [])}`")
+        st.write("**체크박스 상태**")
+        st.write(f"- 전체 mchk_ 키 개수: `{_dbg.get('mchk_keys_total', 0)}`")
+        st.write(f"- True인 키 개수: `{len(_dbg.get('mchk_keys_true', []))}`")
+        st.write(f"- True인 키 (처음 5개): `{_dbg.get('mchk_keys_true', [])[:5]}`")
+        st.write("**리그별 선택 인원 (member_selected)**")
+        for lg in active_leagues:
+            cnt = len(member_selected.get(lg, []))
+            sample = member_selected.get(lg, [])[:3]
+            st.write(f"- {lg}: **{cnt}명** → {sample}")
 
     # ── 대진표 생성 ──────────────────────────────────────────
 
