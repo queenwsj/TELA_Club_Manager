@@ -129,11 +129,17 @@ def user_change_pw(user_id: str, new_pw: str):
 COOKIE_NAME = "telaclub_session"
 COOKIE_EXPIRE_DAYS = 30
 
-@st.cache_resource
 def _get_cookie_manager():
+    """CookieManager 싱글톤. @st.cache_resource를 쓰면 위젯 경고가 발생하므로
+    session_state로 직접 관리."""
     if not COOKIES_AVAILABLE:
         return None
-    return stx.CookieManager(key="telaclub_cookie_mgr")
+    if "_cookie_mgr" not in st.session_state:
+        try:
+            st.session_state["_cookie_mgr"] = stx.CookieManager(key="telaclub_cookie_mgr")
+        except Exception:
+            st.session_state["_cookie_mgr"] = None
+    return st.session_state.get("_cookie_mgr")
 
 def _cookie_save_user(user: dict):
     """로그인 성공 시 쿠키에 사용자 정보 저장."""
