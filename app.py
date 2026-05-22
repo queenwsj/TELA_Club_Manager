@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v4.01
+TELA CLUB Random Match Generator v4.02
 ======================================
 변경사항 (v4.01):
   [버그수정] 완전 랜덤페어 여복 미출현 버그 수정
@@ -78,6 +78,80 @@ def member_remove(league: str, name: str):
     if league in data:
         data[league] = [m for m in data[league] if m["name"] != name]
     member_save_all(data)
+
+
+# ── 구글 시트 회원 명부 연동 ──────────────────────────────────
+SHEET_ID = "1QjzPLZuXiE2BKt9lC-6Gzbi1mssYkosR12Q2tO4rVJk"
+UNASSIGNED_KEY = "미배정"   # 리그 미지정 회원 임시 버킷
+
+def _get_gspread_client():
+    """Streamlit secrets의 gcp_service_account로 gspread 인증"""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    scopes = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    # private_key 개행 처리 (TOML에서 \\n → \n)
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    return gspread.authorize(creds)
+
+def sync_from_sheet(target_league: str) -> dict:
+    """
+    구글 시트에서 활성 회원 읽기.
+    컬럼 구조: id(A) category(B) name(C) cafe_id(D) birth_year(E)
+               gender(F) phone(G) region(H) join_date(I) dormant_period(J)
+               leave_date(K) email(L) application(M) memo(N)
+               updated_at(O) deleted_at(P)
+
+    반환: {"imported": int, "skipped": int, "members": [{name, gender}, ...]}
+    """
+    gc     = _get_gspread_client()
+    sh     = gc.open_by_key(SHEET_ID)
+    ws     = sh.sheet1
+    rows   = ws.get_all_records()   # 헤더 행 자동 파싱
+
+    imported, skipped = 0, 0
+    new_members = []
+    for row in rows:
+        name       = str(row.get("name", "")).strip()
+        gender_raw = str(row.get("gender", "")).strip().upper()
+        deleted    = str(row.get("deleted_at", "")).strip()
+
+        if not name:
+            skipped += 1; continue
+        if deleted:          # deleted_at 값 있으면 탈퇴 회원 → 스킵
+            skipped += 1; continue
+
+        # 성별 정규화: 남/M/MALE → M,  여/F/W/FEMALE → W
+        if gender_raw in ("남", "M", "MALE", "1"):
+            gender = "M"
+        elif gender_raw in ("여", "F", "W", "FEMALE", "2"):
+            gender = "W"
+        else:
+            gender = "M"   # 불명확하면 남으로 기본
+
+        new_members.append({"name": name, "gender": gender})
+        imported += 1
+
+    # 기존 shelve 데이터에 머지 (중복 방지, 기존 리그 배정 유지)
+    data = member_load_all()
+    existing_names = {m["name"] for members in data.values() for m in members}
+
+    added = 0
+    for m in new_members:
+        if m["name"] not in existing_names:
+            bucket = target_league if target_league else UNASSIGNED_KEY
+            if bucket not in data:
+                data[bucket] = []
+            data[bucket].append(m)
+            added += 1
+
+    member_save_all(data)
+    return {"imported": imported, "skipped": skipped, "added": added}
 
 
 ADMIN_PASSWORD = "1223"
@@ -1260,7 +1334,7 @@ elif page == "🎲 랜덤페어":
     st.sidebar.markdown("### 🎯 페어링 방식")
     pairing_mode = st.sidebar.radio(
         "페어링 방식 선택",
-        ["🔵 조건부 랜덤페어", "🔴 완전 랜덤페어"],
+        ["🔴 완전 랜덤페어", "🔵 조건부 랜덤페어"],
         index=0, label_visibility="collapsed",
     )
     IS_FULLY_RANDOM = (pairing_mode == "🔴 완전 랜덤페어")
@@ -1495,7 +1569,7 @@ elif page == "🎲 랜덤페어":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title(f"🎾 TELA CLUB Random Match Generator v4.01")
+    st.title(f"🎾 TELA CLUB Random Match Generator v4.02")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 대진표 생성 ──────────────────────────────────────────
@@ -1972,12 +2046,59 @@ function showMsg() {{
         with st.expander("👥 회원 관리 (사전 등록)", expanded=False):
             all_members = member_load_all()
 
-            mgmt_tabs = st.tabs([f"📋 {lg}" for lg in active_leagues])
+            # ── 구글 시트 가져오기 ───────────────────────────
+            st.markdown("#### 📥 구글 시트 회원 명부 가져오기")
+            gs_col1, gs_col2 = st.columns([2, 3])
+            gs_target = gs_col1.selectbox(
+                "가져올 리그",
+                [UNASSIGNED_KEY] + active_leagues,
+                key="gs_target_league",
+                help="시트에서 읽어온 신규 회원을 어느 리그에 넣을지 선택. '미배정' 선택 시 나중에 리그 이동 가능."
+            )
+            if gs_col2.button("🔄 구글 시트에서 가져오기", key="gs_import_btn",
+                               use_container_width=True):
+                try:
+                    with st.spinner("구글 시트 연결 중..."):
+                        result = sync_from_sheet(gs_target)
+                    st.success(
+                        f"✅ 완료! "
+                        f"시트 총 {result['imported']}명 확인 · "
+                        f"신규 추가 {result['added']}명 · "
+                        f"기존/탈퇴 제외 {result['skipped']}명"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    err = str(e)
+                    if "gspread" in err.lower() or "module" in err.lower():
+                        st.error("❌ gspread 패키지 미설치. requirements.txt에 `gspread` 및 `google-auth` 추가 필요.")
+                    elif "CREDENTIALS" in err.upper() or "secret" in err.lower():
+                        st.error("❌ Streamlit Secrets에 gcp_service_account 설정이 없습니다. Settings → Secrets 확인.")
+                    else:
+                        st.error(f"❌ 오류: {err}")
 
-            for ti, (mgmt_tab, mgmt_lg) in enumerate(zip(mgmt_tabs, active_leagues)):
+            # 미배정 버킷 회원 수 안내
+            unassigned = member_load_all().get(UNASSIGNED_KEY, [])
+            if unassigned:
+                st.warning(
+                    f"⚠️ **미배정 회원 {len(unassigned)}명** — "
+                    f"아래 '📋 {UNASSIGNED_KEY}' 탭에서 리그로 이동시켜 주세요."
+                )
+
+            st.markdown("---")
+
+            mgmt_tabs = st.tabs(
+                [f"📋 {UNASSIGNED_KEY}"] + [f"📋 {lg}" for lg in active_leagues]
+                if unassigned
+                else [f"📋 {lg}" for lg in active_leagues]
+            )
+            mgmt_league_list = (
+                [UNASSIGNED_KEY] + active_leagues if unassigned else active_leagues
+            )
+
+            for ti, (mgmt_tab, mgmt_lg) in enumerate(zip(mgmt_tabs, mgmt_league_list)):
                 with mgmt_tab:
                     lg_members = all_members.get(mgmt_lg, [])
-                    lc_mg = LEAGUE_COLORS[ti]
+                    lc_mg = LEAGUE_COLORS[ti % len(LEAGUE_COLORS)]
 
                     # ── 등록 회원 목록 + 삭제 + 리그 이동 ──────
                     if lg_members:
@@ -1986,7 +2107,10 @@ function showMsg() {{
                             f'{mgmt_lg} 등록 회원 ({len(lg_members)}명)</div>',
                             unsafe_allow_html=True
                         )
-                        other_leagues = [lg for lg in active_leagues if lg != mgmt_lg]
+                        other_leagues = (
+                            active_leagues if mgmt_lg == UNASSIGNED_KEY
+                            else [lg for lg in active_leagues if lg != mgmt_lg]
+                        )
                         has_move = bool(other_leagues)
 
                         # 헤더
