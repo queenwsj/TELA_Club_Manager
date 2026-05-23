@@ -1229,6 +1229,55 @@ def deserialize_schedule(schedule):
     } for m in schedule]
 
 
+# ── [다이어트] 랜덤페어 렌더링 공통 헬퍼 ─────────────────────
+# 첫 생성 직후 / 페이지 복귀 후 복원 시 양쪽에서 공통 사용하여 중복 제거.
+
+def _build_matches_df(schedule):
+    """대진표 DataFrame 변환."""
+    import pandas as _pd
+    return _pd.DataFrame([{
+        "라운드": d["round"], "리그": d["league"],
+        "팀1-A": display_name(d["team1"][0]), "팀1-B": display_name(d["team1"][1]),
+        "팀2-A": display_name(d["team2"][0]), "팀2-B": display_name(d["team2"][1]),
+        "매치종류": d["type"],
+    } for d in schedule])
+
+def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict):
+    """대진표 탭 공통 렌더러."""
+    import streamlit as _st
+    _st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
+    lg_color_map = {lg: get_league_color(lg) for lg in active_lgs}
+    def _hl(row):
+        bg = ""
+        for lg, color in lg_color_map.items():
+            if str(row.get("리그","")) == lg:
+                bg = f"{color}18"; break
+        if not bg: bg = "#f5f5f5"
+        return [f"background-color:{bg};color:black"]*len(row)
+    _st.dataframe(df_matches.style.apply(_hl, axis=1), use_container_width=True, height=600)
+    summary = df_matches["매치종류"].value_counts()
+    _st.caption(f"총 {len(df_matches)}경기 | "
+                + " | ".join(f"{k}: {v}경기" for k,v in summary.items()))
+    total_players = sum(len(pl) for pl in league_players_dict.values())
+    per_league = " · ".join(f"{lg} {len(pl)}명" for lg,pl in league_players_dict.items() if pl)
+    _st.caption(f"👥 총 {total_players}명  ({per_league})")
+
+def _render_basic_validation(df_full):
+    """검증 리포트 공통 부분 (3경기 미달, 4경기 초과)."""
+    import streamlit as _st
+    if df_full.empty: return
+    under3 = df_full[df_full["총경기"]<3]
+    if not under3.empty:
+        _st.error(f"❌ 3경기 미달 {len(under3)}명: {', '.join(under3['이름'].tolist())}")
+    else:
+        _st.success("✅ 모든 선수 3경기 이상")
+    over4 = df_full[df_full["총경기"]>4]
+    if not over4.empty:
+        _st.error(f"❌ 4경기 초과 {len(over4)}명: {', '.join(over4['이름'].tolist())}")
+    else:
+        _st.success("✅ 4경기 초과 없음")
+
+
 # ============================================================
 # 섹션 14: Streamlit 앱
 # ============================================================
@@ -1311,16 +1360,8 @@ html, body, [class*="css"] { font-family:'Noto Sans KR',sans-serif !important; }
     font-weight:700 !important;
     font-size:12px !important;
 }
-/* 테이블 수정 버튼 = 노란색 */
-div.edit-col button { background-color:#fbbf24 !important; color:#1a2e4a !important; border:none !important; font-size:12px !important; font-weight:700 !important; }
-div.edit-col button:hover { background-color:#f59e0b !important; }
-/* 폼 버튼 3개: 저장=파란색, 취소=회색, 삭제=빨간색 */
-div.save-col button  { background-color:#2563eb !important; color:#fff !important; border:none !important; font-size:12px !important; font-weight:700 !important; }
-div.save-col button:hover  { background-color:#1d4ed8 !important; }
-div.cancel-col button { background-color:#6b7280 !important; color:#fff !important; border:none !important; font-size:12px !important; font-weight:700 !important; }
-div.cancel-col button:hover { background-color:#4b5563 !important; }
-div.delete-col button { background-color:#ef4444 !important; color:#fff !important; border:none !important; font-size:12px !important; font-weight:700 !important; }
-div.delete-col button:hover { background-color:#dc2626 !important; }
+/* [다이어트] 미사용 div.edit-col / save-col / cancel-col / delete-col CSS 제거
+   (.st-key-form_save 등 방식으로 전환되어 더 이상 사용되지 않음) */
 
 /* 반응형 — 모바일(아이폰) 최적화 */
 section[data-testid="stMain"] .stMainBlockContainer,
@@ -1342,6 +1383,45 @@ section[data-testid="stMain"] .stMainBlockContainer,
 }
 /* 다이얼로그 */
 div[data-testid="stDialog"] > div { max-width: 95vw !important; width: 95vw !important; }
+
+/* ── 다이얼로그 공통 버튼 스타일 (전역 1회 선언, dialog 내부 중복 제거) ── */
+/* 저장 (파랑) */
+.st-key-form_save button { background:#2563eb !important; color:#fff !important; border:none !important; font-weight:700 !important; }
+.st-key-form_save button:hover { background:#1d4ed8 !important; color:#fff !important; }
+.st-key-form_save button p { color:#fff !important; }
+/* 취소 (회색) */
+.st-key-form_cancel button, .st-key-confirm_del_no button { background:#6b7280 !important; color:#fff !important; border:none !important; font-weight:700 !important; height:42px !important; }
+.st-key-form_cancel button:hover, .st-key-confirm_del_no button:hover { background:#4b5563 !important; color:#fff !important; }
+.st-key-form_cancel button p, .st-key-confirm_del_no button p { color:#fff !important; }
+/* 삭제 (빨강) */
+.st-key-form_delete button, .st-key-confirm_del_yes button { background:#ef4444 !important; color:#fff !important; border:none !important; font-weight:700 !important; height:42px !important; }
+.st-key-form_delete button:hover, .st-key-confirm_del_yes button:hover { background:#dc2626 !important; color:#fff !important; }
+.st-key-form_delete button p, .st-key-confirm_del_yes button p { color:#fff !important; }
+/* 휴면 기간 추가 (베이지) */
+.st-key-add_dormant_btn button { background:#fef3c7 !important; color:#854d0e !important; border:1px dashed #ca8a04 !important; font-weight:700 !important; }
+.st-key-add_dormant_btn button:hover { background:#fde68a !important; }
+/* 휴면 기간 행 래퍼 */
+div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; margin-bottom:6px; border-left:3px solid #ca8a04; }
+
+/* ── 회원 목록 행: 열람/수정 버튼 (와일드카드로 전역 1회 선언) ── */
+/* 행마다 .st-key-detail_{id} / .st-key-edit_{id} 형태로 키가 부여되므로 attr selector 사용 */
+[class*="st-key-detail_"] button { background:#f0f9ff !important; color:#0369a1 !important; border:1px solid #bae6fd !important; font-size:11px !important; font-weight:700 !important; padding:2px 4px !important; height:28px !important; }
+[class*="st-key-detail_"] button:hover { background:#dbeafe !important; }
+[class*="st-key-edit_"] button { background:#f0fdf4 !important; color:#15803d !important; border:1px solid #bbf7d0 !important; font-size:11px !important; font-weight:700 !important; padding:2px 4px !important; height:28px !important; }
+[class*="st-key-edit_"] button:hover { background:#dcfce7 !important; }
+
+/* ── 사이드바 컴팩트 + 매치카드 ── */
+[data-testid="stSidebar"] { min-width:230px; max-width:270px; }
+[data-testid="stSidebar"] .stMarkdown p { margin-bottom: 2px !important; }
+[data-testid="stSidebar"] .stMarkdown { margin-bottom: 0px !important; }
+[data-testid="stSidebar"] hr { margin: 6px 0 !important; }
+[data-testid="stSidebar"] .stRadio,
+[data-testid="stSidebar"] .stNumberInput,
+[data-testid="stSidebar"] .stTextInput,
+[data-testid="stSidebar"] .stButton { margin-bottom: 2px !important; }
+[data-testid="stSidebar"] .stCheckbox { margin-bottom: 0px !important; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div { gap: 4px !important; }
+.match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1935,23 +2015,7 @@ def dialog_confirm_delete(target):
     """, unsafe_allow_html=True)
     st.divider()
 
-    # 버튼 스타일 (Streamlit 내장 .st-key-{key} 클래스 사용)
-    st.markdown("""
-    <style>
-    .st-key-confirm_del_yes button {
-        background: #ef4444 !important; color: #fff !important; border: none !important;
-        font-weight: 700 !important; height: 42px !important;
-    }
-    .st-key-confirm_del_yes button:hover { background: #dc2626 !important; color: #fff !important; }
-    .st-key-confirm_del_yes button p { color: #fff !important; }
-    .st-key-confirm_del_no button {
-        background: #6b7280 !important; color: #fff !important; border: none !important;
-        font-weight: 700 !important; height: 42px !important;
-    }
-    .st-key-confirm_del_no button:hover { background: #4b5563 !important; color: #fff !important; }
-    .st-key-confirm_del_no button p { color: #fff !important; }
-    </style>
-    """, unsafe_allow_html=True)
+    # [다이어트] 버튼 스타일은 전역 CSS에 통합됨 (.st-key-confirm_del_yes/no)
 
     cy, cn = st.columns([1, 1], gap="small")
     with cy:
@@ -2047,20 +2111,7 @@ def dialog_form(df, existing=None):
 
     st.markdown("**휴면 기간** <span style='font-size:11px;color:#6b7280;'>(진행중이면 자동→휴면, 모두 종료 시 자동→정회원)</span>", unsafe_allow_html=True)
 
-    # 휴면 기간 행 스타일
-    st.markdown("""
-    <style>
-    div.dormant-row-wrap {
-        background:#fef9c3; border-radius:8px; padding:8px 12px;
-        margin-bottom:6px; border-left:3px solid #ca8a04;
-    }
-    .st-key-add_dormant_btn button {
-        background:#fef3c7 !important; color:#854d0e !important;
-        border:1px dashed #ca8a04 !important; font-weight:700 !important;
-    }
-    .st-key-add_dormant_btn button:hover { background:#fde68a !important; }
-    </style>
-    """, unsafe_allow_html=True)
+    # [다이어트] 휴면기간 행 스타일은 전역 CSS에 통합됨 (dormant-row-wrap, .st-key-add_dormant_btn)
 
     dorm_list = st.session_state[dorm_session_key]
 
@@ -2142,33 +2193,8 @@ def dialog_form(df, existing=None):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 버튼 색상: Streamlit 내장 .st-key-{key} 클래스 사용 (가장 안정적) ──
-    # st.button(key="xxx") → 자동으로 .st-key-xxx 클래스 부여됨
-    st.markdown("""
-    <style>
-    /* 저장 (파랑) */
-    .st-key-form_save button {
-        background: #2563eb !important; color: #fff !important; border: none !important;
-        font-weight: 700 !important;
-    }
-    .st-key-form_save button:hover { background: #1d4ed8 !important; color: #fff !important; }
-    .st-key-form_save button p { color: #fff !important; }
-    /* 취소 (회색) */
-    .st-key-form_cancel button {
-        background: #6b7280 !important; color: #fff !important; border: none !important;
-        font-weight: 700 !important;
-    }
-    .st-key-form_cancel button:hover { background: #4b5563 !important; color: #fff !important; }
-    .st-key-form_cancel button p { color: #fff !important; }
-    /* 삭제 (빨강) */
-    .st-key-form_delete button {
-        background: #ef4444 !important; color: #fff !important; border: none !important;
-        font-weight: 700 !important;
-    }
-    .st-key-form_delete button:hover { background: #dc2626 !important; color: #fff !important; }
-    .st-key-form_delete button p { color: #fff !important; }
-    </style>
-    """, unsafe_allow_html=True)
+    # [다이어트] 폼 버튼 스타일은 전역 CSS에 통합됨
+    # (.st-key-form_save / .st-key-form_cancel / .st-key-form_delete)
 
     if existing:
         bs, bc, bd = st.columns([1,1,1])
@@ -3028,25 +3054,8 @@ def render_roster_page():
                 f"<div style='padding:7px 0;{RS_FS};color:#4b5563' title='{memo_txt}'>{memo_disp}</div>",
                 unsafe_allow_html=True)
     
-            # ── 관리 버튼: 열람 / 수정 ──
+            # [다이어트] 행별 inline CSS 제거 - 전역 와일드카드 사용
             with rc[col_offset+14]:
-                st.markdown(f"""
-                <style>
-                .st-key-detail_{row['id']} button {{
-                    background:#f0f9ff !important; color:#0369a1 !important;
-                    border:1px solid #bae6fd !important;
-                    font-size:11px !important; font-weight:700 !important;
-                    padding:2px 4px !important; height:28px !important;
-                }}
-                .st-key-detail_{row['id']} button:hover {{ background:#dbeafe !important; }}
-                .st-key-edit_{row['id']} button {{
-                    background:#f0fdf4 !important; color:#15803d !important;
-                    border:1px solid #bbf7d0 !important;
-                    font-size:11px !important; font-weight:700 !important;
-                    padding:2px 4px !important; height:28px !important;
-                }}
-                .st-key-edit_{row['id']} button:hover {{ background:#dcfce7 !important; }}
-                </style>""", unsafe_allow_html=True)
                 btn_c1, btn_c2 = st.columns([1, 1])
                 with btn_c1:
                     if st.button("열람", key=f"detail_{row['id']}", use_container_width=True,
@@ -3070,22 +3079,7 @@ def render_roster_page():
 
 
 
-st.markdown("""
-<style>
-[data-testid="stSidebar"] { min-width:230px; max-width:270px; }
-/* 사이드바 위아래 간격 축소 */
-[data-testid="stSidebar"] .stMarkdown p { margin-bottom: 2px !important; }
-[data-testid="stSidebar"] .stMarkdown { margin-bottom: 0px !important; }
-[data-testid="stSidebar"] hr { margin: 6px 0 !important; }
-[data-testid="stSidebar"] .stRadio { margin-bottom: 2px !important; }
-[data-testid="stSidebar"] .stNumberInput { margin-bottom: 2px !important; }
-[data-testid="stSidebar"] .stTextInput { margin-bottom: 2px !important; }
-[data-testid="stSidebar"] .stButton { margin-bottom: 2px !important; }
-[data-testid="stSidebar"] .stCheckbox { margin-bottom: 0px !important; }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div { gap: 4px !important; }
-.match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
-</style>
-""", unsafe_allow_html=True)
+# [다이어트] 사이드바 + 매치카드 CSS는 전역 CSS 블록에 통합됨
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
@@ -3239,14 +3233,9 @@ if page == "📊 점수판":
         st.query_params.clear()
         st.rerun()
 
-    import json as _json
+    # [다이어트] import json 별칭 제거 - 파일 상단의 json 모듈 직접 사용
 
-    def pname_short(code):
-        raw = base_name(code)
-        if is_custom_code(raw):
-            g = "(남)" if raw[1].upper()=="M" else "(여)"
-            return raw[2:] + g
-        return raw
+    # [다이어트] pname_short 제거. pname()이 동일 동작.
 
     def build_full_html(schedule, rounds, scores, session_state):
         # 리그별 색상 동적 생성
@@ -3262,18 +3251,18 @@ if page == "📊 점수판":
                 "round":  match["round"],
                 "league": match["league"],
                 "lc":     lg_color_map.get(match["league"], "#555"),
-                "t1a":    pname_short(match["team1"][0]),
-                "t1b":    pname_short(match["team1"][1]),
-                "t2a":    pname_short(match["team2"][0]),
-                "t2b":    pname_short(match["team2"][1]),
+                "t1a":    pname(match["team1"][0]),
+                "t1b":    pname(match["team1"][1]),
+                "t2a":    pname(match["team2"][0]),
+                "t2b":    pname(match["team2"][1]),
                 "type":   match["type"],
                 "s1":     sc.get("score1", 0),
                 "s2":     sc.get("score2", 0),
                 "locked": is_locked,
             })
 
-        mj = _json.dumps(matches_data, ensure_ascii=False)
-        rj = _json.dumps(rounds, ensure_ascii=False)
+        mj = json.dumps(matches_data, ensure_ascii=False)
+        rj = json.dumps(rounds, ensure_ascii=False)
 
         return f"""<!DOCTYPE html>
 <html><head>
@@ -3991,45 +3980,19 @@ elif page == "🎲 랜덤페어":
 
         seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
 
-        def dn(code): return display_name(code)
+        # [다이어트] dn(code) 제거 + 매치 DataFrame/렌더링 공통 헬퍼화
 
-        df_matches = pd.DataFrame([{
-            "라운드": d["round"], "리그": d["league"],
-            "팀1-A": dn(d["team1"][0]), "팀1-B": dn(d["team1"][1]),
-            "팀2-A": dn(d["team2"][0]), "팀2-B": dn(d["team2"][1]),
-            "매치종류": d["type"],
-        } for d in schedule])
-
+        df_matches = _build_matches_df(schedule)
         df_full    = stats_to_df(stats)
         df_display = df_full.drop(columns=["_코드"])
 
         tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
 
         with tab1:
-            st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
-            lg_color_map = {lg: get_league_color(lg) for lg in active_lgs}
-            def hl_match(row):
-                bg = ""
-                for lg, color in lg_color_map.items():
-                    if str(row.get("리그","")) == lg:
-                        bg = f"{color}18"
-                        break
-                if not bg: bg = "#f5f5f5"
-                return [f"background-color:{bg};color:black"]*len(row)
-            st.dataframe(df_matches.style.apply(hl_match, axis=1),
-                         use_container_width=True, height=600)
-            summary = df_matches["매치종류"].value_counts()
-            st.caption(f"총 {len(df_matches)}경기 | "
-                       +" | ".join(f"{k}: {v}경기" for k,v in summary.items()))
-            # 총 참가 인원수
-            total_players = sum(len(pl) for pl in league_players.values())
-            per_league = " · ".join(
-                f"{lg} {len(pl)}명" for lg, pl in league_players.items() if pl
-            )
-            st.caption(f"👥 총 {total_players}명  ({per_league})")
+            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players)
 
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
-            import json as _json2
+            # [다이어트] _json2 별칭 제거 - 상단의 json 모듈 직접 사용
 
             def build_kakao_text(schedule, mode_label, rp_key_run):
                 """라운드별 경기 목록을 카카오톡 붙여넣기용 텍스트로 변환"""
@@ -4059,7 +4022,7 @@ elif page == "🎲 랜덤페어":
                 return "\n".join(lines)
 
             kakao_text = build_kakao_text(schedule, mode_label, rp_key_run)
-            kakao_json = _json2.dumps(kakao_text, ensure_ascii=False)
+            kakao_json = json.dumps(kakao_text, ensure_ascii=False)
 
             kakao_html = f"""
 <div style="margin:10px 0;">
@@ -4265,50 +4228,20 @@ function showMsg() {{
                           key="regen2")
 
             seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
-            def dn2(code): return display_name(code)
-            df_matches = pd.DataFrame([{
-                "라운드": d["round"], "리그": d["league"],
-                "팀1-A": dn2(d["team1"][0]), "팀1-B": dn2(d["team1"][1]),
-                "팀2-A": dn2(d["team2"][0]), "팀2-B": dn2(d["team2"][1]),
-                "매치종류": d["type"],
-            } for d in schedule])
+            # [다이어트] DataFrame 생성 및 매치 테이블/검증 렌더링 모두 공통 헬퍼 사용
+            df_matches = _build_matches_df(schedule)
             df_full    = stats_to_df(stats)
             df_display = df_full.drop(columns=["_코드"])
 
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
-                st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
-                lg_color_map2 = {lg: get_league_color(lg) for lg in active_lgs}
-                def hl_match2(row):
-                    bg = ""
-                    for lg, color in lg_color_map2.items():
-                        if str(row.get("리그","")) == lg:
-                            bg = f"{color}18"; break
-                    if not bg: bg = "#f5f5f5"
-                    return [f"background-color:{bg};color:black"]*len(row)
-                st.dataframe(df_matches.style.apply(hl_match2, axis=1),
-                             use_container_width=True, height=600)
-                summary2 = df_matches["매치종류"].value_counts()
-                st.caption(f"총 {len(df_matches)}경기 | "+" | ".join(f"{k}: {v}경기" for k,v in summary2.items()))
-                total_players2 = sum(len(pl) for pl in league_players_r.values())
-                per_league2 = " · ".join(f"{lg} {len(pl)}명" for lg,pl in league_players_r.items() if pl)
-                st.caption(f"👥 총 {total_players2}명  ({per_league2})")
+                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r)
             with tab2:
                 st.subheader("선수별 출전 현황")
                 st.dataframe(df_display, use_container_width=True, height=700)
             with tab3:
                 st.subheader("🔍 검증 리포트")
-                if not df_full.empty:
-                    under3 = df_full[df_full["총경기"]<3]
-                    if not under3.empty:
-                        st.error(f"❌ 3경기 미달 {len(under3)}명: {', '.join(under3['이름'].tolist())}")
-                    else:
-                        st.success("✅ 모든 선수 3경기 이상")
-                    over4 = df_full[df_full["총경기"]>4]
-                    if not over4.empty:
-                        st.error(f"❌ 4경기 초과 {len(over4)}명: {', '.join(over4['이름'].tolist())}")
-                    else:
-                        st.success("✅ 4경기 초과 없음")
+                _render_basic_validation(df_full)
 
         else:
             # ── 최초 진입 안내 ───────────────────────────────
