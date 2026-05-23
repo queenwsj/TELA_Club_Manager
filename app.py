@@ -37,6 +37,20 @@ from itertools import zip_longest
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 from datetime import date
 
+# ── 날짜 → 요일 포함 문자열 헬퍼 ────────────────────────────
+_WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+def _date_with_weekday(date_str: str) -> str:
+    """'2026-05-23' → '2026-05-23(토)'. 파싱 실패 시 원본 반환."""
+    try:
+        from datetime import datetime as _dt
+        d = _dt.strptime(date_str.strip()[:10], "%Y-%m-%d")
+        wd = _WEEKDAY_KO[d.weekday()]
+        return f"{date_str.strip()[:10]}({wd})"
+    except Exception:
+        return date_str
+import secrets as _secrets
+
 
 # ============================================================
 # 섹션 0: 저장소 경로 & 상수
@@ -44,10 +58,56 @@ from datetime import date
 
 SAVE_DIR   = os.path.join(os.path.dirname(__file__), ".tela_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
-SHELF_PATH  = os.path.join(SAVE_DIR, "scoreboard")
-MEMBER_PATH = os.path.join(SAVE_DIR, "members")
-USER_PATH   = os.path.join(SAVE_DIR, "users")
-GUEST_PATH  = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
+SHELF_PATH   = os.path.join(SAVE_DIR, "scoreboard")
+MEMBER_PATH  = os.path.join(SAVE_DIR, "members")
+USER_PATH    = os.path.join(SAVE_DIR, "users")
+GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
+SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
+
+# ── 세션 토큰 헬퍼 (query_params 기반 로그인 유지) ─────────────
+SESSION_EXPIRE_DAYS = 30
+
+def _session_save(user: dict) -> str:
+    """토큰 생성 후 shelve에 저장, 토큰 반환"""
+    from datetime import datetime, timedelta
+    token = _secrets.token_urlsafe(32)
+    expire = (datetime.now() + timedelta(days=SESSION_EXPIRE_DAYS)).isoformat()
+    with shelve.open(SESSION_PATH) as db:
+        db[token] = {"user": user, "expire": expire}
+    return token
+
+def _session_load(token: str) -> Optional[dict]:
+    """토큰으로 사용자 정보 복원. 만료/미존재 시 None"""
+    if not token:
+        return None
+    from datetime import datetime
+    with shelve.open(SESSION_PATH) as db:
+        rec = db.get(token)
+    if not rec:
+        return None
+    try:
+        if datetime.fromisoformat(rec["expire"]) < datetime.now():
+            return None
+    except Exception:
+        return None
+    return rec.get("user")
+
+def _session_delete(token: str):
+    with shelve.open(SESSION_PATH) as db:
+        if token in db:
+            del db[token]
+
+def _session_cleanup():
+    """만료 토큰 정리 (10% 확률로 실행)"""
+    import random as _r
+    if _r.random() > 0.1:
+        return
+    from datetime import datetime
+    with shelve.open(SESSION_PATH) as db:
+        expired = [k for k, v in list(db.items())
+                   if datetime.fromisoformat(v.get("expire","2000-01-01")) < datetime.now()]
+        for k in expired:
+            del db[k]
 
 def guest_load() -> list:
     """게스트 목록 로드. [{name, gender, league, code}, ...]"""
@@ -189,7 +249,18 @@ def get_app_user() -> Optional[dict]:
     u = st.session_state.get("app_user")
     if u:
         return u
-    # 없으면 쿠키에서 복원 시도
+    # 1순위: query_params 토큰 복원 (새로고침 후에도 유지)
+    try:
+        token = st.query_params.get("t", "")
+        if token:
+            restored = _session_load(token)
+            if restored:
+                st.session_state["app_user"] = restored
+                _session_cleanup()
+                return restored
+    except Exception:
+        pass
+    # 2순위: 쿠키에서 복원 시도 (extra_streamlit_components 있을 때)
     restored = _cookie_restore_user()
     if restored:
         st.session_state["app_user"] = restored
@@ -3103,6 +3174,13 @@ if _u:
         unsafe_allow_html=True
     )
     if st.sidebar.button("🔒 로그아웃", key="app_logout", use_container_width=True):
+        try:
+            _old_tok = st.query_params.get("t", "")
+            if _old_tok:
+                _session_delete(_old_tok)
+            st.query_params.clear()
+        except Exception:
+            pass
         st.session_state["app_user"] = None
         _cookie_clear_user()
         st.rerun()
@@ -3116,6 +3194,11 @@ else:
                 if _r:
                     st.session_state["app_user"] = _r
                     _cookie_save_user(_r)
+                    _tok = _session_save(_r)
+                    try:
+                        st.query_params["t"] = _tok
+                    except Exception:
+                        pass
                 else:
                     st.session_state["_login_fail"] = True
 
@@ -3132,6 +3215,11 @@ else:
             if _result:
                 st.session_state["app_user"] = _result
                 _cookie_save_user(_result)
+                _tok = _session_save(_result)
+                try:
+                    st.query_params["t"] = _tok
+                except Exception:
+                    pass
                 st.rerun()
             else:
                 st.session_state["_login_fail"] = True
@@ -3162,13 +3250,13 @@ if page == "📊 점수판":
     if sb_mode == "새 점수판 (날짜+번호 입력)":
         sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
         sb_num  = st.text_input("일련번호 (예: 001)", value="001", key="sb_num_inp")
-        selected_key = f"{sb_date}_{sb_num}"
+        selected_key = f"{_date_with_weekday(sb_date)}_{sb_num}"
     else:
         if saved_keys:
             selected_key = st.selectbox("저장된 점수판 선택", saved_keys)
         else:
             st.info("저장된 데이터가 없습니다.")
-            selected_key = f"{today_str}_001"
+            selected_key = f"{_date_with_weekday(today_str)}_001"
 
     st.caption(f"현재 키: **{selected_key}**")
 
@@ -3770,7 +3858,7 @@ elif page == "🎲 랜덤페어":
     _d1, _d2 = st.sidebar.columns([3, 2])
     rp_date = _d1.text_input("📅 날짜", value=date.today().strftime("%Y-%m-%d"), key="rp_date")
     rp_num  = _d2.text_input("번호", value="001", key="rp_num", placeholder="001")
-    rp_key  = f"{rp_date}_{rp_num}"
+    rp_key  = f"{_date_with_weekday(rp_date)}_{rp_num}"
     st.sidebar.caption(f"저장키: {rp_key}")
 
     # ── 저장된 대진표 불러오기 / 삭제 (사이드바) ──────────────
@@ -3783,7 +3871,7 @@ elif page == "🎲 랜덤페어":
         _lb1, _lb2 = st.sidebar.columns([1, 1])
 
         # 불러오기
-        if _lb1.button("📥 불러오기", key="sb_load_btn", type="primary", use_container_width=True):
+        if _lb1.button("📥 Load", key="sb_load_btn", type="primary", use_container_width=True):
             _loaded = shelf_load(_sel_key)
             if _loaded:
                 _loaded_sched = deserialize_schedule(_loaded["schedule"])
@@ -3810,7 +3898,7 @@ elif page == "🎲 랜덤페어":
                 st.sidebar.error("불러오기 실패")
 
         # 삭제 (2단계 확인)
-        if _lb2.button("🗑️ 삭제", key="sb_delete_btn", use_container_width=True):
+        if _lb2.button("🗑️ Del", key="sb_delete_btn", use_container_width=True):
             st.session_state["_sb_confirm_del"] = _sel_key
 
         if st.session_state.get("_sb_confirm_del") == _sel_key:
