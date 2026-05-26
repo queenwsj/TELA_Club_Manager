@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.10
+TELA CLUB Random Match Generator v5.20
 버전 이력: CHANGELOG.md 참고
 """
 
@@ -1660,7 +1660,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.10", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.20", page_icon="🎾", layout="wide")
 
 
 # ============================================================
@@ -3455,7 +3455,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.10")
+st.sidebar.caption("v5.20")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -4990,7 +4990,7 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.10 기능 안내
+                ### v5.20 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
@@ -5157,13 +5157,14 @@ elif page == "🏆 기록실":
                 # 득점왕 (1순위)
                 _mp = _df_all_act["득점"].max()
                 _wp = _df_all_act[_df_all_act["득점"] == _mp].iloc[0]
-                _ch[0] = _award_card("🎯", f"{_yr} 득점왕", _wp["이름"],
+                _yr_lbl = f"{_yr[2:]}년 통합"
+                _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", _wp["이름"],
                                      f"{int(_mp)}점", "#2563eb",
                                      f"득실차 {int(_wp['득실차']):+d}")
                 # 다승왕
                 _mw = _df_all_act["승"].max()
                 _ww = _df_all_act[_df_all_act["승"] == _mw].iloc[0]
-                _ch[1] = _award_card("🥇", f"{_yr} 다승왕", _ww["이름"],
+                _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", _ww["이름"],
                                      f"{int(_mw)}승", "#f59e0b",
                                      f"승률 {_ww['승률']}")
                 # 승률왕
@@ -5172,15 +5173,16 @@ elif page == "🏆 기록실":
                     _df_r2["_rn"] = _df_r2["승"] / (_df_r2["승"]+_df_r2["패"])
                     _mr = _df_r2["_rn"].max()
                     _wr = _df_r2[_df_r2["_rn"]==_mr].iloc[0]
-                    _ch[2] = _award_card("👑", f"{_yr} 승률왕", _wr["이름"],
+                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", _wr["이름"],
                                          _wr["승률"], "#7c3aed",
                                          f"{int(_wr['승'])}승 {int(_wr['패'])}패")
                 else:
-                    _ch[2] = _award_card("👑", f"{_yr} 승률왕", "—", "2경기↑ 필요", "#9ca3af")
+                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "2경기↑ 필요", "#9ca3af")
             else:
-                _ch[0] = _award_card("🎯", f"{_yr} 득점왕", "—", "기록 없음", "#9ca3af")
-                _ch[1] = _award_card("🥇", f"{_yr} 다승왕", "—", "기록 없음", "#9ca3af")
-                _ch[2] = _award_card("👑", f"{_yr} 승률왕", "—", "기록 없음", "#9ca3af")
+                _yr_lbl = f"{_yr[2:]}년 통합"
+                _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", "—", "기록 없음", "#9ca3af")
+                _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", "—", "기록 없음", "#9ca3af")
+                _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "기록 없음", "#9ca3af")
             for _ci, _h in enumerate(_ch):
                 _ac[_ci].markdown(_h, unsafe_allow_html=True)
             st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
@@ -5210,9 +5212,15 @@ elif page == "🏆 기록실":
             # 수정5: 카드 순서 = 득점왕(0) → 다승왕(1) → 승률왕(2)
             if _ft == "monthly":
                 _ym = _fv  # "2026-05"
-                _t_score = f"{_rec_lg} {_ym} 최다득점"
-                _t_wins  = f"{_rec_lg} {_ym} 최다승"
-                _t_rate  = f"{_rec_lg} {_ym} 최고승률"
+                # "2026-05" → "26년 05월"
+                try:
+                    _ym_parts = _ym.split("-")
+                    _ym_label = f"{_ym_parts[0][2:]}년 {_ym_parts[1]}월"
+                except Exception:
+                    _ym_label = _ym
+                _t_score = f"{_rec_lg} {_ym_label} 최다득점"
+                _t_wins  = f"{_rec_lg} {_ym_label} 최다승"
+                _t_rate  = f"{_rec_lg} {_ym_label} 최고승률"
             else:
                 _t_score = f"{_rec_lg} 득점왕"
                 _t_wins  = f"{_rec_lg} 다승왕"
