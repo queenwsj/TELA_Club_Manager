@@ -4824,22 +4824,56 @@ function showMsg() {{
                                         _lp2_all.append(_p3)
                         _pl2 = {base_name(p): display_name(p) for p in _lp2_all}
                         _keys2 = list(_pl2.keys())
-                        _c1, _c2 = st.columns(2)
                         def _idx2(code):
                             k = base_name(code)
                             return _keys2.index(k) if k in _keys2 else 0
+                        _cm2_pre = {base_name(p): p for p in _lp2_all}
+                        _prev_excl2 = set(_sm2.get("exclude_players", []))
+                        _new_excl2 = []
+
+                        st.markdown("**팀 재구성 + 기록실 제외 설정**")
+                        st.caption("선수를 선택하고 '기록 제외' 체크박스로 개인별 기록 제외 여부를 설정하세요.")
+                        _c1, _c2 = st.columns(2)
                         with _c1:
                             st.markdown("**팀1**")
                             _t1a2 = st.selectbox("팀1A", _keys2, format_func=lambda k:_pl2.get(k,k),
                                                   index=_idx2(_sm2["team1"][0]), key=f"adj2_t1a_{_sel_mi2}")
+                            _fc2_t1a = _cm2_pre.get(_t1a2, _t1a2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t1a2,_t1a2)})",
+                                           value=(base_name(_fc2_t1a) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_0",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t1a))
+
                             _t1b2 = st.selectbox("팀1B", _keys2, format_func=lambda k:_pl2.get(k,k),
                                                   index=_idx2(_sm2["team1"][1]), key=f"adj2_t1b_{_sel_mi2}")
+                            _fc2_t1b = _cm2_pre.get(_t1b2, _t1b2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t1b2,_t1b2)})",
+                                           value=(base_name(_fc2_t1b) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_1",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t1b))
+
                         with _c2:
                             st.markdown("**팀2**")
                             _t2a2 = st.selectbox("팀2A", _keys2, format_func=lambda k:_pl2.get(k,k),
                                                   index=_idx2(_sm2["team2"][0]), key=f"adj2_t2a_{_sel_mi2}")
+                            _fc2_t2a = _cm2_pre.get(_t2a2, _t2a2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t2a2,_t2a2)})",
+                                           value=(base_name(_fc2_t2a) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_2",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t2a))
+
                             _t2b2 = st.selectbox("팀2B", _keys2, format_func=lambda k:_pl2.get(k,k),
                                                   index=_idx2(_sm2["team2"][1]), key=f"adj2_t2b_{_sel_mi2}")
+                            _fc2_t2b = _cm2_pre.get(_t2b2, _t2b2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t2b2,_t2b2)})",
+                                           value=(base_name(_fc2_t2b) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_3",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t2b))
+
                         _d2 = len({_t1a2,_t1b2,_t2a2,_t2b2}) < 4
                         if _d2: st.warning("⚠️ 4명 모두 달라야 합니다.")
                         if st.button("✅ 페어 적용", type="primary", key=f"adj2_apply_{_sel_mi2}", disabled=_d2):
@@ -4847,12 +4881,17 @@ function showMsg() {{
                             _nt1 = tuple([_cm2.get(_t1a2,_t1a2), _cm2.get(_t1b2,_t1b2)])
                             _nt2 = tuple([_cm2.get(_t2a2,_t2a2), _cm2.get(_t2b2,_t2b2)])
                             _ntype = classify_match([base_name(p) for p in list(_nt1)+list(_nt2)])
-                            _adj2_matches[_sel_mi2] = {**_sm2, "team1":_nt1, "team2":_nt2, "type":_ntype}
+                            _adj2_matches[_sel_mi2] = {
+                                **_sm2,
+                                "team1": _nt1, "team2": _nt2, "type": _ntype,
+                                "exclude_players": _new_excl2,
+                            }
                             st.session_state["rp_schedule"] = _adj2_matches
                             st.session_state["sb_schedule"] = _adj2_matches
                             _ifr2 = restored_params.get("is_fully_random", False)
                             shelf_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
-                            st.success(f"✅ #{_sel_mi2+1} 경기 페어 조정 완료!")
+                            _excl_msg2 = f" (제외: {', '.join(_new_excl2)})" if _new_excl2 else ""
+                            st.success(f"✅ #{_sel_mi2+1} 경기 페어 조정 완료{_excl_msg2}!")
                             st.rerun()
             with tab2:
                 st.subheader("선수별 출전 현황")
