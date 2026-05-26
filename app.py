@@ -1474,24 +1474,26 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
 def records_commit(date_key: str, schedule: list, scores: dict):
     """
     구글시트 records 탭에 세션 점수 반영.
-    동일 date_key 행이 있으면 삭제 후 재삽입 (중복 방지).
+    1) 동일 date_key 기존 행 무조건 삭제 (제외/삭제 등으로 비어도 정정)
+    2) session_stats가 있으면 새 행 삽입
     """
     try:
         ws = _get_records_sheet()
         if ws is None:
             return
-        session_stats = _records_build_session_stats(date_key, schedule, scores)
-        if not session_stats:
-            return
 
-        # 기존 동일 date_key 행 삭제 (역순으로 삭제해야 인덱스 밀림 없음)
+        # ① 기존 동일 date_key 행 삭제 (집계가 비어있어도 반드시 실행)
         all_rows = ws.get_all_values()
         del_rows = [i+1 for i, row in enumerate(all_rows)
                     if i > 0 and len(row) > 0 and row[0] == date_key]
         for ri in sorted(del_rows, reverse=True):
             ws.delete_rows(ri)
 
-        # 새 행 일괄 삽입
+        # ② session_stats 새로 계산해 삽입
+        session_stats = _records_build_session_stats(date_key, schedule, scores)
+        if not session_stats:
+            return  # 삭제만 하고 종료 (점수 없거나 전원 제외인 경우)
+
         new_rows = []
         for pkey, pdata in session_stats.items():
             new_rows.append([
@@ -1509,7 +1511,22 @@ def records_commit(date_key: str, schedule: list, scores: dict):
         if new_rows:
             ws.append_rows(new_rows, value_input_option="USER_ENTERED")
     except Exception:
-        pass  # 기록실 오류는 점수 저장을 막지 않음
+        pass
+
+
+def records_delete_by_date(date_key: str):
+    """구글시트 records 탭에서 특정 date_key의 모든 행을 삭제."""
+    try:
+        ws = _get_records_sheet()
+        if ws is None:
+            return
+        all_rows = ws.get_all_values()
+        del_rows = [i+1 for i, row in enumerate(all_rows)
+                    if i > 0 and len(row) > 0 and row[0] == date_key]
+        for ri in sorted(del_rows, reverse=True):
+            ws.delete_rows(ri)
+    except Exception:
+        pass
 
 
 # ── 기록실 제외 선수 관리 (shelve 저장) ──────────────────────
@@ -4261,12 +4278,18 @@ elif page == "📋 대진표생성":
             _dc1, _dc2 = st.sidebar.columns([1, 1])
             if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
                 shelf_delete(_sel_key)
+                # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
+                try:
+                    records_delete_by_date(_sel_key)
+                    st.cache_data.clear()
+                except Exception:
+                    pass
                 st.session_state.pop("_sb_confirm_del", None)
                 if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
                     st.session_state.pop("rp_schedule", None)
                     st.session_state.pop("stats", None)
                     st.session_state.pop("last_gen_params", None)
-                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨")
+                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
                 st.rerun()
             if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
                 st.session_state.pop("_sb_confirm_del", None)
@@ -4566,15 +4589,14 @@ elif page == "📋 대진표생성":
                         _ifr = st.session_state.get("last_gen_params",{}).get("is_fully_random", False)
                         shelf_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
 
-                        # 기존 스코어보드 점수가 있으면 기록실 재집계 (제외 선수 반영)
+                        # 점수가 있든 없든 기록실 재집계 (제외 선수 변경 즉시 반영)
                         _existing = shelf_load(rp_key_run) or {}
                         _ex_scores = _existing.get("scores", {})
-                        if _ex_scores:
-                            try:
-                                records_commit(rp_key_run, _adj_matches, _ex_scores)
-                                st.cache_data.clear()
-                            except Exception:
-                                pass
+                        try:
+                            records_commit(rp_key_run, _adj_matches, _ex_scores)
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
 
                         _excl_msg = f" (제외: {', '.join(_new_excl)})" if _new_excl else ""
                         _msg_col.success(f"✅ #{_sel_mi+1} 적용 완료{_excl_msg}")
@@ -4927,15 +4949,14 @@ function showMsg() {{
                             _ifr2 = restored_params.get("is_fully_random", False)
                             shelf_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
 
-                            # 저장된 점수가 있으면 기록실 재집계
+                            # 점수 유무 관계없이 기록실 재집계 (제외 선수 변경 즉시 반영)
                             _existing2 = shelf_load(rp_key_run) or {}
                             _ex_scores2 = _existing2.get("scores", {})
-                            if _ex_scores2:
-                                try:
-                                    records_commit(rp_key_run, _adj2_matches, _ex_scores2)
-                                    st.cache_data.clear()
-                                except Exception:
-                                    pass
+                            try:
+                                records_commit(rp_key_run, _adj2_matches, _ex_scores2)
+                                st.cache_data.clear()
+                            except Exception:
+                                pass
 
                             _excl_msg2 = f" (제외: {', '.join(_new_excl2)})" if _new_excl2 else ""
                             _msg2_col.success(f"✅ #{_sel_mi2+1} 적용 완료{_excl_msg2}")
