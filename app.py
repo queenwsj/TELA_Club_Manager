@@ -70,6 +70,7 @@ USER_PATH    = os.path.join(SAVE_DIR, "users")
 GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
 SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
 RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
+EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
 
 # ── 세션 토큰 헬퍼 (query_params 기반 로그인 유지) ─────────────
 SESSION_EXPIRE_DAYS = 30
@@ -1388,10 +1389,15 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
             continue
 
         # (중복) 여부 체크 — 중복 선수는 기록에서 완전 제외
+        # 제외 선수 목록(코치 등)도 함께 필터
         t1_codes = list(match["team1"])
         t2_codes = list(match["team2"])
-        t1_valid = [c for c in t1_codes if not _is_duplicate_player(c)]
-        t2_valid = [c for c in t2_codes if not _is_duplicate_player(c)]
+        t1_valid = [c for c in t1_codes
+                    if not _is_duplicate_player(c)
+                    and not _is_excluded_player(_clean_player_key(c))]
+        t2_valid = [c for c in t2_codes
+                    if not _is_duplicate_player(c)
+                    and not _is_excluded_player(_clean_player_key(c))]
         t1_keys  = [_clean_player_key(c) for c in t1_valid]
         t2_keys  = [_clean_player_key(c) for c in t2_valid]
 
@@ -1468,6 +1474,34 @@ def records_commit(date_key: str, schedule: list, scores: dict):
         pass  # 기록실 오류는 점수 저장을 막지 않음
 
 
+# ── 기록실 제외 선수 관리 (shelve 저장) ──────────────────────
+def exclude_list_load() -> list:
+    """제외 선수 이름 목록 로드. ['윤지수', '홍길동', ...]"""
+    with shelve.open(EXCLUDE_PATH) as db:
+        return list(db.get("excluded", []))
+
+def exclude_list_save(names: list):
+    with shelve.open(EXCLUDE_PATH) as db:
+        db["excluded"] = sorted(list(set(names)))
+
+def exclude_list_add(name: str):
+    names = exclude_list_load()
+    name = name.strip()
+    if name and name not in names:
+        names.append(name)
+        exclude_list_save(names)
+
+def exclude_list_remove(name: str):
+    names = exclude_list_load()
+    names = [n for n in names if n != name.strip()]
+    exclude_list_save(names)
+
+def _is_excluded_player(player_key: str) -> bool:
+    """player_key(순수 이름)가 제외 목록에 있는지 확인."""
+    excluded = exclude_list_load()
+    return player_key.strip() in excluded
+
+
 @st.cache_data(ttl=120)
 def records_load_cached() -> list:
     """records 시트 캐시 로드 (120초 TTL)."""
@@ -1478,10 +1512,14 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     """
     filter_type: 'monthly' 또는 'yearly'
     filter_value: 'YYYY-MM' 또는 'YYYY'
+    제외 선수 목록에 있는 player_key는 조회에서도 제외.
     """
     all_rows = records_load_cached()
     col = "year_month" if filter_type == "monthly" else "year"
-    filtered = [r for r in all_rows if str(r.get(col,"")).strip() == filter_value]
+    excluded = set(exclude_list_load())  # 제외 선수 이름 세트
+    filtered = [r for r in all_rows
+                if str(r.get(col,"")).strip() == filter_value
+                and str(r.get("player_key","")).strip() not in excluded]
     if not filtered:
         return pd.DataFrame()
 
@@ -3658,6 +3696,27 @@ if page == "📊 점수판":
         st.rerun()
     _rc2.caption("⚠️ 초기화 시 저장된 점수가 모두 삭제됩니다.")
 
+    # ── 관리자 전용: 기록실 재집계 ────────────────────────────
+    # 기존 시트 데이터(잘못된 집계)를 현재 코드 기준으로 덮어써서 정정
+    if is_admin():
+        _ra1, _ra2 = st.columns([3, 7])
+        if _ra1.button("🔁 기록실 재집계 (관리자)", type="secondary",
+                       help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 구글시트에 덮어씁니다."):
+            _reagg_scores = st.session_state.get("sb_scores", {})
+            if not _reagg_scores:
+                _sd = shelf_load(selected_key)
+                if _sd: _reagg_scores = _sd.get("scores", {})
+            if _reagg_scores:
+                with st.spinner("기록실 재집계 중…"):
+                    try:
+                        records_commit(selected_key, schedule, _reagg_scores)
+                        st.cache_data.clear()
+                        st.success(f"✅ '{selected_key}' 기록실 재집계 완료! 중복 선수 데이터가 제거되었습니다.")
+                    except Exception as _e:
+                        st.error(f"재집계 오류: {_e}")
+            else:
+                st.warning("저장된 점수가 없습니다. 먼저 점수를 저장해주세요.")
+
     # 선수별 현황
     st.markdown("### 📈 선수별 현황")
     _current_scores = st.session_state.get("sb_scores", {})
@@ -4874,7 +4933,75 @@ function showMsg() {{
 
 elif page == "🏆 기록실":
     st.markdown("## 🏆 기록실 (누적 통계)")
-    st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 중복 선수는 기록에서 제외됩니다.")
+    st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 중복 선수 및 제외 지정 선수는 기록에서 제외됩니다.")
+
+    # ── 관리자 전용: 기록 제외 선수 관리 ────────────────────────
+    if is_admin():
+        with st.expander("⚙️ 관리자: 기록 제외 선수 설정 (코치 등)", expanded=False):
+            st.caption("여기 등록된 선수는 기록실 집계·조회에서 완전히 제외됩니다. 이름은 구글시트 player_key와 동일하게 입력하세요.")
+            _ex_list = exclude_list_load()
+
+            # 현재 제외 목록
+            if _ex_list:
+                st.markdown(f"**현재 제외 선수 ({len(_ex_list)}명)**")
+                for _ex_name in _ex_list:
+                    _exc1, _exc2 = st.columns([5, 1])
+                    _exc1.markdown(f'<div style="padding:4px 0;font-size:0.9rem;">🚫 {_ex_name}</div>',
+                                   unsafe_allow_html=True)
+                    if _exc2.button("삭제", key=f"del_ex_{_ex_name}", use_container_width=True):
+                        exclude_list_remove(_ex_name)
+                        st.success(f"'{_ex_name}' 제외 목록에서 제거됨")
+                        st.rerun()
+            else:
+                st.info("제외 선수가 없습니다.")
+
+            st.markdown("---")
+            _add_c1, _add_c2 = st.columns([5, 1])
+            _new_ex = _add_c1.text_input("제외할 선수 이름 입력",
+                                          placeholder="예: 윤지수  (구글시트 player_key와 동일하게)",
+                                          label_visibility="collapsed", key="new_exclude_inp")
+            if _add_c2.button("➕ 추가", key="add_exclude_btn", use_container_width=True):
+                if _new_ex.strip():
+                    if _new_ex.strip() in _ex_list:
+                        st.warning(f"'{_new_ex.strip()}'는 이미 제외 목록에 있습니다.")
+                    else:
+                        exclude_list_add(_new_ex.strip())
+                        st.success(f"✅ '{_new_ex.strip()}' 제외 등록 완료. 재집계 버튼으로 기존 데이터도 정정하세요.")
+                        st.rerun()
+                else:
+                    st.warning("이름을 입력해주세요.")
+
+            # ── 전체 날짜 일괄 재집계 ──
+            st.markdown("---")
+            st.caption("⚠️ 제외 선수를 새로 추가한 경우, 기존에 저장된 모든 날짜의 기록을 아래 버튼으로 한 번에 재집계해야 합니다.")
+            if st.button("🔁 전체 날짜 일괄 재집계 (관리자)", type="primary",
+                         key="bulk_reagg_btn",
+                         help="저장된 모든 점수판 날짜의 기록실 데이터를 현재 제외 목록 기준으로 다시 계산합니다."):
+                _all_keys = shelf_list_dates()
+                if not _all_keys:
+                    st.warning("저장된 점수판이 없습니다.")
+                else:
+                    _ok, _fail = 0, 0
+                    with st.spinner(f"{len(_all_keys)}개 날짜 재집계 중…"):
+                        for _dk in _all_keys:
+                            try:
+                                _sd = shelf_load(_dk)
+                                if not _sd:
+                                    continue
+                                _sched = deserialize_schedule(_sd["schedule"])
+                                _sc    = _sd.get("scores", {})
+                                if _sc:
+                                    records_commit(_dk, _sched, _sc)
+                                    _ok += 1
+                            except Exception:
+                                _fail += 1
+                    st.cache_data.clear()
+                    if _fail:
+                        st.warning(f"✅ {_ok}개 완료, ⚠️ {_fail}개 오류")
+                    else:
+                        st.success(f"✅ {_ok}개 날짜 재집계 완료! 제외 선수({', '.join(exclude_list_load())})가 모든 기록에서 제거되었습니다.")
+                    st.rerun()
+
 
     _now = date.today()
     _c1, _c2, _c3 = st.columns([3, 3, 2])
