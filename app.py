@@ -1241,14 +1241,36 @@ def stats_to_df(all_stats):
 # ============================================================
 
 def compute_scoreboard_stats(schedule, scores):
+    """
+    선수별 현황 계산.
+    - (중복) 태그 선수: 출전수 포함하되 승/패/득점/실점 제외
+    - 제외 목록 선수(코치 등): 완전 제외
+    - 게스트(★ prefix): 완전 제외
+    """
+    _excluded = set(exclude_list_load())
+
+    def _skip_player(code: str) -> bool:
+        """True이면 집계에서 완전 제외"""
+        raw = base_name(code)
+        # 게스트: 코드 내 ★ 포함
+        if "★" in raw:
+            return True
+        # 제외 목록
+        pkey = _clean_player_key(code)
+        if pkey in _excluded:
+            return True
+        return False
+
     player_stats = {}
 
     def ensure_player(code, league):
+        if _skip_player(code):
+            return
         key = base_name(code)
         if key not in player_stats:
             player_stats[key] = {
-                "이름": pname(code), "리그": league,
-                "출전":0,"승":0,"패":0,"승점":0,"실점":0,
+                "이름": display_name(code), "리그": league,
+                "출전":0,"승":0,"패":0,"득점":0,"실점":0,
                 "1R출전":0,"2R출전":0,"3R출전":0,"4R출전":0,
             }
 
@@ -1257,38 +1279,63 @@ def compute_scoreboard_stats(schedule, scores):
         s1  = sc.get("score1", None)
         s2  = sc.get("score2", None)
         league = match["league"]
-        t1  = [base_name(p) for p in match["team1"]]
-        t2  = [base_name(p) for p in match["team2"]]
+
+        # (중복) 여부 분리
+        t1_all = list(match["team1"])
+        t2_all = list(match["team2"])
+
+        # 정상 선수만 등록
+        for code in t1_all + t2_all:
+            ensure_player(code, league)
+
         rnd = match["round"]
         rnd_num = (1 if rnd=="1R" else 2 if rnd=="2R" else 3 if rnd=="3R"
                    else 4 if ("4R" in rnd or "이벤트" in rnd) else None)
 
-        for code in match["team1"]: ensure_player(code, league)
-        for code in match["team2"]: ensure_player(code, league)
+        # 출전 카운트: 중복·제외·게스트 제외한 선수만
+        for code in t1_all + t2_all:
+            if _skip_player(code) or _is_duplicate_player(code):
+                continue
+            key = base_name(code)
+            if key in player_stats:
+                player_stats[key]["출전"] += 1
+                if rnd_num==1: player_stats[key]["1R출전"]+=1
+                elif rnd_num==2: player_stats[key]["2R출전"]+=1
+                elif rnd_num==3: player_stats[key]["3R출전"]+=1
+                elif rnd_num==4: player_stats[key]["4R출전"]+=1
 
-        for p in t1+t2:
-            player_stats[p]["출전"] += 1
-            if rnd_num==1: player_stats[p]["1R출전"]+=1
-            elif rnd_num==2: player_stats[p]["2R출전"]+=1
-            elif rnd_num==3: player_stats[p]["3R출전"]+=1
-            elif rnd_num==4: player_stats[p]["4R출전"]+=1
+        # 승/패/득점/실점: 중복·제외·게스트 제외한 선수만
+        t1_valid = [base_name(c) for c in t1_all
+                    if not _skip_player(c) and not _is_duplicate_player(c)]
+        t2_valid = [base_name(c) for c in t2_all
+                    if not _skip_player(c) and not _is_duplicate_player(c)]
 
-        if s1 is not None and s2 is not None and (s1+s2)>0:
-            if s1>s2: winners,losers,ws,ls=t1,t2,s1,s2
-            elif s2>s1: winners,losers,ws,ls=t2,t1,s2,s1
+        if s1 is not None and s2 is not None and (s1+s2) > 0:
+            if s1 > s2:
+                winners, losers, ws, ls = t1_valid, t2_valid, s1, s2
+            elif s2 > s1:
+                winners, losers, ws, ls = t2_valid, t1_valid, s2, s1
             else:
-                for p in t1+t2:
-                    player_stats[p]["승점"]+=s1; player_stats[p]["실점"]+=s2
+                for p in t1_valid + t2_valid:
+                    if p in player_stats:
+                        player_stats[p]["득점"] += s1
+                        player_stats[p]["실점"] += s2
                 continue
             for p in winners:
-                player_stats[p]["승"]+=1; player_stats[p]["승점"]+=ws; player_stats[p]["실점"]+=ls
+                if p in player_stats:
+                    player_stats[p]["승"]+=1
+                    player_stats[p]["득점"]+=ws
+                    player_stats[p]["실점"]+=ls
             for p in losers:
-                player_stats[p]["패"]+=1; player_stats[p]["승점"]+=ls; player_stats[p]["실점"]+=ws
+                if p in player_stats:
+                    player_stats[p]["패"]+=1
+                    player_stats[p]["득점"]+=ls
+                    player_stats[p]["실점"]+=ws
 
     if not player_stats: return pd.DataFrame()
     df = pd.DataFrame(list(player_stats.values()))
-    df = df[["리그","이름","출전","승","패","승점","실점","1R출전","2R출전","3R출전","4R출전"]]
-    return df.sort_values(["리그","승","승점"],ascending=[True,False,False]).reset_index(drop=True)
+    df = df[["리그","이름","출전","승","패","득점","실점","1R출전","2R출전","3R출전","4R출전"]]
+    return df.sort_values(["리그","승","득점"],ascending=[True,False,False]).reset_index(drop=True)
 
 
 # ============================================================
@@ -1390,14 +1437,17 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
 
         # (중복) 여부 체크 — 중복 선수는 기록에서 완전 제외
         # 제외 선수 목록(코치 등)도 함께 필터
+        # 게스트(★ 포함)도 자동 제외
         t1_codes = list(match["team1"])
         t2_codes = list(match["team2"])
         t1_valid = [c for c in t1_codes
                     if not _is_duplicate_player(c)
-                    and not _is_excluded_player(_clean_player_key(c))]
+                    and not _is_excluded_player(_clean_player_key(c))
+                    and "★" not in base_name(c)]
         t2_valid = [c for c in t2_codes
                     if not _is_duplicate_player(c)
-                    and not _is_excluded_player(_clean_player_key(c))]
+                    and not _is_excluded_player(_clean_player_key(c))
+                    and "★" not in base_name(c)]
         t1_keys  = [_clean_player_key(c) for c in t1_valid]
         t2_keys  = [_clean_player_key(c) for c in t2_valid]
 
@@ -3417,6 +3467,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
+st.sidebar.caption("v5.10")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -3492,7 +3543,7 @@ else:
         st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
 
 st.sidebar.markdown("---")
-page = st.sidebar.radio("메뉴", ["📊 점수판", "🏆 기록실", "🎲 랜덤페어", "👥 회원명부"],
+page = st.sidebar.radio("메뉴", ["📊 스코어보드", "🏆 기록실", "📋 대진표생성", "👥 회원명부"],
                          index=0, label_visibility="collapsed")
 st.sidebar.markdown("---")
 
@@ -3501,22 +3552,22 @@ st.sidebar.markdown("---")
 # 페이지 A: 점수판
 # ============================================================
 
-if page == "📊 점수판":
+if page == "📊 스코어보드":
 
-    st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
+    st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
 
     today_str  = date.today().strftime("%Y-%m-%d")
     saved_keys = shelf_list_dates()
 
-    sb_mode = st.radio("모드", ["새 점수판 (날짜+번호 입력)", "저장된 점수판 불러오기"],
+    sb_mode = st.radio("모드", ["새 스코어보드 (날짜+번호 입력)", "저장된 스코어보드 불러오기"],
                        index=0, horizontal=True, label_visibility="collapsed")
-    if sb_mode == "새 점수판 (날짜+번호 입력)":
+    if sb_mode == "새 스코어보드 (날짜+번호 입력)":
         sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
         sb_num  = st.text_input("일련번호 (예: 001)", value="001", key="sb_num_inp")
         selected_key = f"{_date_with_weekday(sb_date)}_{sb_num}"
     else:
         if saved_keys:
-            selected_key = st.selectbox("저장된 점수판 선택", saved_keys)
+            selected_key = st.selectbox("저장된 스코어보드 선택", saved_keys)
         else:
             st.info("저장된 데이터가 없습니다.")
             selected_key = f"{_date_with_weekday(today_str)}_001"
@@ -3568,20 +3619,29 @@ if page == "📊 점수판":
     # query_params/window.top.location.href 방식 제거 → 저장 안되는 버그 완전 해결
 
     def _save_score(idx, s1, s2):
-        """점수 저장 공통 함수"""
+        """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리(딜레이 제거)"""
         scores[str(idx)] = {"score1": int(s1), "score2": int(s2)}
         st.session_state["sb_scores"] = scores
         st.session_state[f"locked_{idx}"] = True
         _cur_schedule = st.session_state.get("sb_schedule")
         if _cur_schedule:
+            # ① shelf 저장 (로컬, 즉시)
             _prev = shelf_load(selected_key) or {}
             _ifr  = _prev.get("is_fully_random", False)
             shelf_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
-            try:
-                records_commit(selected_key, _cur_schedule, scores)
-                st.cache_data.clear()
-            except Exception:
-                pass
+            # ② 구글시트 기록 → 백그라운드 스레드 (UI 블로킹 없음)
+            import threading as _threading
+            def _bg_commit(_dk, _sched, _sc):
+                try:
+                    records_commit(_dk, _sched, dict(_sc))
+                except Exception:
+                    pass
+            _t = _threading.Thread(
+                target=_bg_commit,
+                args=(selected_key, list(_cur_schedule), dict(scores)),
+                daemon=True
+            )
+            _t.start()
 
     def _unlock_score(idx):
         st.session_state[f"locked_{idx}"] = False
@@ -3753,10 +3813,10 @@ if page == "📊 점수판":
 # 페이지 B: 랜덤페어
 # ============================================================
 
-elif page == "🎲 랜덤페어":
+elif page == "📋 대진표생성":
 
     if not is_logged_in():
-        st.warning("🔐 랜덤페어는 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
+        st.warning("🔐 대진표생성은 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
         st.stop()
 
     # ── [1] 페어링 방식 ──────────────────────────────────────
@@ -4489,7 +4549,7 @@ function showMsg() {{
 </script>
 """
             st.components.v1.html(qr_html, height=200)
-            st.info("💡 대진표 생성 후 사이드바에서 **📊 점수판**을 선택하면 점수를 입력할 수 있습니다.")
+            st.info("💡 대진표 생성 후 사이드바에서 **📊 스코어보드**를 선택하면 점수를 입력할 수 있습니다.")
 
         with tab2:
             st.subheader("선수별 출전 현황")
@@ -4914,7 +4974,7 @@ function showMsg() {{
                 |------|------|
                 | **회원 사전 등록** | 👥 회원 관리에서 리그별 회원 등록 후 체크박스로 선택 |
                 | **대진표 불러오기** | 📂 저장된 대진표 불러오기에서 날짜 선택 후 로드 |
-                | **페이지 복귀 유지** | 점수판↔랜덤페어 이동해도 마지막 대진표 유지 |
+                | **페이지 복귀 유지** | 스코어보드↔대진표생성 이동해도 마지막 대진표 유지 |
                 | **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
                 | **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
                 | **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
@@ -4926,8 +4986,8 @@ function showMsg() {{
                 - 최대 4경기 제한
 
                 ### 점수판
-                1. 대진표 생성 후 사이드바 **📊 점수판** 선택
-                2. 날짜+일련번호 입력 (랜덤페어와 동일하게)
+                1. 대진표 생성 후 사이드바 **📊 스코어보드** 선택
+                2. 날짜+일련번호 입력 (대진표생성과 동일하게)
                 3. 각 경기 **💾 저장** 버튼 클릭 → 새로고침 후에도 유지
                 """)
 
@@ -4979,7 +5039,7 @@ elif page == "🏆 기록실":
                          help="저장된 모든 점수판 날짜의 기록실 데이터를 현재 제외 목록 기준으로 다시 계산합니다."):
                 _all_keys = shelf_list_dates()
                 if not _all_keys:
-                    st.warning("저장된 점수판이 없습니다.")
+                    st.warning("저장된 스코어보드가 없습니다.")
                 else:
                     _ok, _fail = 0, 0
                     with st.spinner(f"{len(_all_keys)}개 날짜 재집계 중…"):
@@ -5038,7 +5098,7 @@ elif page == "🏆 기록실":
             _df_rec = pd.DataFrame()
 
     if _df_rec.empty:
-        st.info(f"📭 {_lbl} 기록이 없습니다. 점수판에서 점수를 저장하면 자동으로 집계됩니다.")
+        st.info(f"📭 {_lbl} 기록이 없습니다. 스코어보드에서 점수를 저장하면 자동으로 집계됩니다.")
     else:
         _all_leagues = list(_df_rec["리그"].unique())
 
