@@ -3562,13 +3562,13 @@ else:
         st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
 
 st.sidebar.markdown("---")
-# 수정2: 현재 선택 페이지를 session_state로 기억 → 로그아웃 후에도 유지
+# session_state key로 radio 상태 직접 관리 → 1클릭으로 즉시 반영
 _menu_opts = ["🏆 기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부"]
-_cur_page  = st.session_state.get("current_page", "🏆 기록실")
-_cur_idx   = _menu_opts.index(_cur_page) if _cur_page in _menu_opts else 0
+if "current_page" not in st.session_state:
+    st.session_state["current_page"] = "🏆 기록실"
 page = st.sidebar.radio("메뉴", _menu_opts,
-                         index=_cur_idx, label_visibility="collapsed")
-st.session_state["current_page"] = page
+                         key="current_page",
+                         label_visibility="collapsed")
 st.sidebar.markdown("---")
 
 
