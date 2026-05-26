@@ -1,6 +1,21 @@
 """
-TELA CLUB Random Match Generator v5.00
+TELA CLUB Random Match Generator v5.10
 ======================================
+변경사항 (v5.10):
+  [수정1] 점수 저장 후 새로고침 시 데이터 유지
+      · shelf_save 호출 시 schedule None 체크 강화
+      · sb_key 변경 시 shelf에서 locked 상태까지 복원
+  [수정2] 점수판 하단 선수별 현황 작동 수정
+      · shelf에서 불러온 scores를 compute_scoreboard_stats에 정확히 전달
+      · 점수 미저장 시 shelf fallback 조회 추가
+  [추가1] 점수판 하단 기록실 추가
+      · 개인 누적 승수, 패수, 득점, 실점, 득실차, 승률 표기
+      · 월간 / 연간 구분 조회
+      · 점수 저장 시 자동 누적 (중복 방지 로직 포함)
+  [수정3] 관리자 수동 페어 조정 기능
+      · 대진표 탭1 하단 "🔧 관리자: 페어 수동 조정" expander 추가
+      · 경기 선택 → 리그 내 선수 재배정 → 즉시 저장
+      · 신규 생성 및 복원 대진표 양쪽에 모두 적용
 변경사항 (v4.01):
   [버그수정] 완전 랜덤페어 여복 미출현 버그 수정
       · 문제: 남자 10명 여자 5명 등 특정 비율에서 여복이 나오지 않음
@@ -63,6 +78,7 @@ MEMBER_PATH  = os.path.join(SAVE_DIR, "members")
 USER_PATH    = os.path.join(SAVE_DIR, "users")
 GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
 SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
+RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
 
 # ── 세션 토큰 헬퍼 (query_params 기반 로그인 유지) ─────────────
 SESSION_EXPIRE_DAYS = 30
@@ -1298,6 +1314,139 @@ def deserialize_schedule(schedule):
         "round": m["round"], "league": m["league"],
         "team1": tuple(m["team1"]), "team2": tuple(m["team2"]), "type": m["type"],
     } for m in schedule]
+
+
+# ============================================================
+# 섹션 12-B: 누적 기록실 (월간/연간)
+# ============================================================
+
+def records_load_all() -> dict:
+    """누적 기록 전체 로드. 구조: {date_key: {player_name: {wins,losses,points_for,points_against}}}"""
+    with shelve.open(RECORDS_PATH) as db:
+        return dict(db.get("records", {}))
+
+def records_save_all(data: dict):
+    with shelve.open(RECORDS_PATH) as db:
+        db["records"] = data
+
+def records_commit(date_key: str, schedule: list, scores: dict):
+    """
+    특정 date_key의 점수를 누적 기록실에 반영.
+    기존 동일 date_key 기록은 덮어씌워 중복 집계 방지.
+    """
+    from datetime import datetime as _dt
+    # date_key 예: "2026-05-23(토)_001"
+    try:
+        year_month = _dt.strptime(date_key[:7], "%Y-%m").strftime("%Y-%m")
+        year_str   = date_key[:4]
+    except Exception:
+        year_month = "unknown"
+        year_str   = "unknown"
+
+    # 해당 date_key 점수 계산
+    session_stats = {}  # player_name → {wins, losses, pf, pa}
+    for idx, match in enumerate(schedule):
+        sc = scores.get(str(idx), {})
+        s1 = sc.get("score1", None)
+        s2 = sc.get("score2", None)
+        if s1 is None or s2 is None:
+            continue
+        t1 = [base_name(p) for p in match["team1"]]
+        t2 = [base_name(p) for p in match["team2"]]
+        all_players = t1 + t2
+        for p in all_players:
+            if p not in session_stats:
+                session_stats[p] = {"wins": 0, "losses": 0, "pf": 0, "pa": 0,
+                                    "league": match["league"], "display": pname(match["team1"][0])}
+        # display name 설정
+        for code in match["team1"]:
+            pkey = base_name(code)
+            session_stats[pkey]["display"] = pname(code)
+            session_stats[pkey]["league"]  = match["league"]
+        for code in match["team2"]:
+            pkey = base_name(code)
+            session_stats[pkey]["display"] = pname(code)
+            session_stats[pkey]["league"]  = match["league"]
+
+        if s1 > s2:
+            for p in t1: session_stats[p]["wins"]+=1; session_stats[p]["pf"]+=s1; session_stats[p]["pa"]+=s2
+            for p in t2: session_stats[p]["losses"]+=1; session_stats[p]["pf"]+=s2; session_stats[p]["pa"]+=s1
+        elif s2 > s1:
+            for p in t2: session_stats[p]["wins"]+=1; session_stats[p]["pf"]+=s2; session_stats[p]["pa"]+=s1
+            for p in t1: session_stats[p]["losses"]+=1; session_stats[p]["pf"]+=s1; session_stats[p]["pa"]+=s2
+        else:
+            for p in t1+t2:
+                session_stats[p]["pf"] += s1
+                session_stats[p]["pa"] += s2
+
+    all_records = records_load_all()
+    # 이 date_key의 기존 기록 삭제 후 재기록 (중복 방지)
+    key_monthly = f"monthly_{year_month}"
+    key_yearly  = f"yearly_{year_str}"
+    key_session = f"session_{date_key}"
+
+    # 이전 session 기록이 있으면 monthly/yearly에서 차감
+    prev = all_records.get(key_session, {})
+    for pname_key, pdata in prev.items():
+        for agg_key in (key_monthly, key_yearly):
+            if agg_key in all_records and pname_key in all_records[agg_key]:
+                rec = all_records[agg_key][pname_key]
+                rec["wins"]    = max(0, rec.get("wins",0)    - pdata.get("wins",0))
+                rec["losses"]  = max(0, rec.get("losses",0)  - pdata.get("losses",0))
+                rec["pf"]      = max(0, rec.get("pf",0)      - pdata.get("pf",0))
+                rec["pa"]      = max(0, rec.get("pa",0)      - pdata.get("pa",0))
+
+    # 새 session 기록 저장
+    all_records[key_session] = session_stats
+
+    # monthly/yearly 누적
+    for agg_key in (key_monthly, key_yearly):
+        if agg_key not in all_records:
+            all_records[agg_key] = {}
+        for pname_key, pdata in session_stats.items():
+            if pname_key not in all_records[agg_key]:
+                all_records[agg_key][pname_key] = {
+                    "wins":0,"losses":0,"pf":0,"pa":0,
+                    "display": pdata["display"], "league": pdata["league"]
+                }
+            rec = all_records[agg_key][pname_key]
+            rec["wins"]   += pdata["wins"]
+            rec["losses"] += pdata["losses"]
+            rec["pf"]     += pdata["pf"]
+            rec["pa"]     += pdata["pa"]
+            rec["display"] = pdata["display"]
+            rec["league"]  = pdata["league"]
+
+    records_save_all(all_records)
+
+
+def records_get_df(period_key: str) -> "pd.DataFrame":
+    """period_key 예: 'monthly_2026-05' 또는 'yearly_2026'. DataFrame 반환."""
+    all_records = records_load_all()
+    data = all_records.get(period_key, {})
+    if not data:
+        return pd.DataFrame()
+    rows = []
+    for pkey, rec in data.items():
+        wins   = rec.get("wins", 0)
+        losses = rec.get("losses", 0)
+        total  = wins + losses
+        rate   = f"{wins/total*100:.1f}%" if total > 0 else "-"
+        diff   = rec.get("pf",0) - rec.get("pa",0)
+        rows.append({
+            "리그":    rec.get("league",""),
+            "이름":    rec.get("display", pkey),
+            "승":      wins,
+            "패":      losses,
+            "득점":    rec.get("pf",0),
+            "실점":    rec.get("pa",0),
+            "득실차":  diff,
+            "승률":    rate,
+        })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    return df.sort_values(["리그","승","득점"], ascending=[True,False,False]).reset_index(drop=True)
 
 
 # ── [다이어트] 랜덤페어 렌더링 공통 헬퍼 ─────────────────────
@@ -3265,7 +3414,12 @@ if page == "📊 점수판":
         loaded = shelf_load(selected_key)
         if loaded:
             st.session_state["sb_schedule"] = deserialize_schedule(loaded["schedule"])
-            st.session_state["sb_scores"]   = loaded["scores"]
+            # [수정1] shelf에서 점수 정확히 복원 (새로고침 후 데이터 유지)
+            st.session_state["sb_scores"]   = loaded.get("scores", {})
+            # locked 상태도 복원
+            for k, v in loaded.get("scores", {}).items():
+                if v:
+                    st.session_state[f"locked_{k}"] = True
         else:
             rp_sched = st.session_state.get("rp_schedule")
             rp_key   = st.session_state.get("rp_key", "")
@@ -3308,12 +3462,18 @@ if page == "📊 점수판":
                 st.session_state["sb_scores"] = scores
                 st.session_state[f"locked_{pidx}"] = True
                 # [버그수정] 기존 저장 데이터의 is_fully_random 모드 유지
-                # 기존엔 누락되어 항상 False로 덮어쓰여 모드 정보가 손실됨
                 _prev = shelf_load(selected_key) or {}
                 _ifr  = _prev.get("is_fully_random", False)
-                shelf_save(selected_key,
-                           serialize_schedule(st.session_state["sb_schedule"]),
-                           scores, _ifr)
+                _cur_schedule = st.session_state.get("sb_schedule")
+                if _cur_schedule:
+                    shelf_save(selected_key,
+                               serialize_schedule(_cur_schedule),
+                               scores, _ifr)
+                    # [추가] 누적 기록실 반영
+                    try:
+                        records_commit(selected_key, _cur_schedule, scores)
+                    except Exception:
+                        pass
             elif act == "edit" and pidx >= 0:
                 st.session_state[f"locked_{pidx}"] = False
         except Exception:
@@ -3500,8 +3660,17 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
         st.session_state["sb_scores"] = {}
         st.rerun()
 
-    st.markdown("### 📈 선수별 통계")
-    df_sb = compute_scoreboard_stats(schedule, st.session_state.get("sb_scores", {}))
+    # [수정2] 선수별 통계: session_state의 scores(최신)를 사용하되
+    # shelf에서 로드한 경우 반드시 shelf 데이터 기준으로 표시
+    st.markdown("### 📈 선수별 현황")
+    _current_scores = st.session_state.get("sb_scores", {})
+    # shelf에서 다시 읽어 scores가 비어있는 경우 보완
+    if not _current_scores:
+        _shelf_data = shelf_load(selected_key)
+        if _shelf_data:
+            _current_scores = _shelf_data.get("scores", {})
+            st.session_state["sb_scores"] = _current_scores
+    df_sb = compute_scoreboard_stats(schedule, _current_scores)
     if df_sb.empty:
         st.info("점수를 저장하면 통계가 표시됩니다.")
     else:
@@ -3512,7 +3681,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
             lg_color = get_league_color(league)
             st.markdown(
                 f'<div style="color:{lg_color};font-weight:700;border-bottom:2px solid {lg_color};'
-                f'padding-bottom:4px;margin:16px 0 8px 0;">🎾 {league} 통계</div>',
+                f'padding-bottom:4px;margin:16px 0 8px 0;">🎾 {league} 선수별 현황</div>',
                 unsafe_allow_html=True)
             max_win = int(df_lg["승"].max()) if not df_lg.empty else 0
             def hl_sb(row, mw=max_win):
@@ -3524,6 +3693,67 @@ body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
                 return styles
             st.dataframe(df_lg.style.apply(hl_sb, axis=1),
                          use_container_width=True, hide_index=True)
+
+    # ── 추가1: 기록실 ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏆 기록실 (누적 통계)")
+    st.caption("점수 저장 시 자동으로 누적됩니다. 월간/연간으로 구분하여 조회할 수 있습니다.")
+
+    from datetime import date as _today_date, datetime as _dt_cls
+    _now = _today_date.today()
+    _rec_mode = st.radio(
+        "기간 선택", ["월간", "연간"],
+        horizontal=True, key="rec_period_mode", label_visibility="collapsed"
+    )
+
+    if _rec_mode == "월간":
+        # 최근 6개월 선택지
+        _months = []
+        for i in range(6):
+            m = (_now.month - i - 1) % 12 + 1
+            y = _now.year - ((_now.month - i - 1) // 12 if (_now.month - i - 1) < 0 else 0)
+            if _now.month - i <= 0:
+                y = _now.year - 1
+                m = 12 + (_now.month - i)
+            _months.append(f"{y}-{m:02d}")
+        # 중복 제거 및 정렬
+        _months = sorted(list(dict.fromkeys(_months)), reverse=True)
+        _sel_month = st.selectbox("월 선택", _months, key="rec_month_sel",
+                                   label_visibility="collapsed")
+        _period_key = f"monthly_{_sel_month}"
+        _period_label = f"{_sel_month} 월간"
+    else:
+        _years = [str(_now.year - i) for i in range(3)]
+        _sel_year = st.selectbox("연도 선택", _years, key="rec_year_sel",
+                                  label_visibility="collapsed")
+        _period_key = f"yearly_{_sel_year}"
+        _period_label = f"{_sel_year} 연간"
+
+    _df_rec = records_get_df(_period_key)
+    if _df_rec.empty:
+        st.info(f"📭 {_period_label} 기록이 없습니다. 점수를 저장하면 자동으로 집계됩니다.")
+    else:
+        _rec_leagues = _df_rec["리그"].unique()
+        for _rec_lg in _rec_leagues:
+            _df_rec_lg = _df_rec[_df_rec["리그"]==_rec_lg].drop(columns=["리그"]).reset_index(drop=True)
+            if _df_rec_lg.empty: continue
+            _lc = get_league_color(_rec_lg)
+            st.markdown(
+                f'<div style="color:{_lc};font-weight:700;border-bottom:2px solid {_lc};'
+                f'padding-bottom:4px;margin:12px 0 6px;">🎾 {_rec_lg} — {_period_label}</div>',
+                unsafe_allow_html=True)
+            _max_w = int(_df_rec_lg["승"].max()) if not _df_rec_lg.empty else 0
+            def _hl_rec(row, mw=_max_w):
+                styles = [""]*len(row)
+                if "승률" in row.index:
+                    ri = row.index.get_loc("승률")
+                    if row["승"]==mw and mw>0:
+                        styles[ri] = "background-color:#FFF176;font-weight:bold"
+                return styles
+            st.dataframe(
+                _df_rec_lg.style.apply(_hl_rec, axis=1),
+                use_container_width=True, hide_index=True
+            )
 
 
 # ============================================================
@@ -4079,6 +4309,92 @@ elif page == "🎲 랜덤페어":
         with tab1:
             _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players)
 
+            # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
+            if is_admin():
+                with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
+                    st.caption("경기 번호를 선택하고 선수를 재배정할 수 있습니다.")
+                    _adj_matches = st.session_state.get("schedule", schedule)
+                    _match_labels = []
+                    for _mi, _m in enumerate(_adj_matches):
+                        t1a = display_name(_m["team1"][0]); t1b = display_name(_m["team1"][1])
+                        t2a = display_name(_m["team2"][0]); t2b = display_name(_m["team2"][1])
+                        _match_labels.append(f"#{_mi+1} [{_m['round']}·{_m['league']}] {t1a}/{t1b} vs {t2a}/{t2b}")
+
+                    _sel_mi = st.selectbox("조정할 경기 선택", range(len(_adj_matches)),
+                                           format_func=lambda i: _match_labels[i],
+                                           key="adj_match_sel")
+                    _sel_match = _adj_matches[_sel_mi]
+                    st.markdown(f"**현재:** {_match_labels[_sel_mi]}")
+
+                    # 해당 리그 전체 선수 목록 수집
+                    _lg_name   = _sel_match["league"]
+                    _lg_players_all = []
+                    for _m2 in _adj_matches:
+                        if _m2["league"] == _lg_name:
+                            for _p in list(_m2["team1"]) + list(_m2["team2"]):
+                                _pb = base_name(_p)
+                                if _pb not in [base_name(x) for x in _lg_players_all]:
+                                    _lg_players_all.append(_p)
+
+                    _player_labels = {base_name(p): display_name(p) for p in _lg_players_all}
+
+                    st.markdown("**팀 재구성**")
+                    _cc1, _cc2 = st.columns(2)
+                    with _cc1:
+                        st.markdown("**팀1**")
+                        _t1_new_a = st.selectbox("팀1 선수A", list(_player_labels.keys()),
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=list(_player_labels.keys()).index(base_name(_sel_match["team1"][0]))
+                                                        if base_name(_sel_match["team1"][0]) in _player_labels else 0,
+                                                  key="adj_t1a")
+                        _t1_new_b = st.selectbox("팀1 선수B", list(_player_labels.keys()),
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=list(_player_labels.keys()).index(base_name(_sel_match["team1"][1]))
+                                                        if base_name(_sel_match["team1"][1]) in _player_labels else 0,
+                                                  key="adj_t1b")
+                    with _cc2:
+                        st.markdown("**팀2**")
+                        _t2_new_a = st.selectbox("팀2 선수A", list(_player_labels.keys()),
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=list(_player_labels.keys()).index(base_name(_sel_match["team2"][0]))
+                                                        if base_name(_sel_match["team2"][0]) in _player_labels else 0,
+                                                  key="adj_t2a")
+                        _t2_new_b = st.selectbox("팀2 선수B", list(_player_labels.keys()),
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=list(_player_labels.keys()).index(base_name(_sel_match["team2"][1]))
+                                                        if base_name(_sel_match["team2"][1]) in _player_labels else 0,
+                                                  key="adj_t2b")
+
+                    _all_4 = [_t1_new_a, _t1_new_b, _t2_new_a, _t2_new_b]
+                    _dup_warn = len(set(_all_4)) < 4
+
+                    if _dup_warn:
+                        st.warning("⚠️ 4명 모두 달라야 합니다. 중복 선수가 있습니다.")
+
+                    if st.button("✅ 페어 적용", type="primary", key="adj_apply_btn",
+                                 disabled=_dup_warn):
+                        # 원래 코드(prefix 포함)를 복원
+                        _code_map = {base_name(p): p for p in _lg_players_all}
+                        _new_t1 = tuple([_code_map.get(_t1_new_a, _t1_new_a),
+                                         _code_map.get(_t1_new_b, _t1_new_b)])
+                        _new_t2 = tuple([_code_map.get(_t2_new_a, _t2_new_a),
+                                         _code_map.get(_t2_new_b, _t2_new_b)])
+                        _new_type = classify_match([base_name(p) for p in list(_new_t1)+list(_new_t2)])
+                        _adj_matches[_sel_mi] = {
+                            **_sel_match,
+                            "team1": _new_t1,
+                            "team2": _new_t2,
+                            "type":  _new_type,
+                        }
+                        st.session_state["schedule"]    = _adj_matches
+                        st.session_state["rp_schedule"] = _adj_matches
+                        st.session_state["sb_schedule"] = _adj_matches
+                        # shelf 재저장
+                        _ifr = st.session_state.get("last_gen_params",{}).get("is_fully_random", False)
+                        shelf_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
+                        st.success(f"✅ #{_sel_mi+1} 경기 페어 조정 완료! 페이지가 갱신됩니다.")
+                        st.rerun()
+
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
             # [다이어트] _json2 별칭 제거 - 상단의 json 모듈 직접 사용
 
@@ -4324,6 +4640,59 @@ function showMsg() {{
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
                 _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r)
+                # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
+                if is_admin():
+                    with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
+                        st.caption("경기 번호를 선택하고 선수를 재배정할 수 있습니다.")
+                        _adj2_matches = list(schedule)
+                        _adj2_labels = []
+                        for _mi2, _m2 in enumerate(_adj2_matches):
+                            t1a2 = display_name(_m2["team1"][0]); t1b2 = display_name(_m2["team1"][1])
+                            t2a2 = display_name(_m2["team2"][0]); t2b2 = display_name(_m2["team2"][1])
+                            _adj2_labels.append(f"#{_mi2+1} [{_m2['round']}·{_m2['league']}] {t1a2}/{t1b2} vs {t2a2}/{t2b2}")
+                        _sel_mi2 = st.selectbox("조정할 경기", range(len(_adj2_matches)),
+                                                format_func=lambda i: _adj2_labels[i],
+                                                key="adj2_match_sel")
+                        _sm2 = _adj2_matches[_sel_mi2]
+                        _lg2 = _sm2["league"]
+                        _lp2_all = []
+                        for _m3 in _adj2_matches:
+                            if _m3["league"] == _lg2:
+                                for _p3 in list(_m3["team1"]) + list(_m3["team2"]):
+                                    if base_name(_p3) not in [base_name(x) for x in _lp2_all]:
+                                        _lp2_all.append(_p3)
+                        _pl2 = {base_name(p): display_name(p) for p in _lp2_all}
+                        _keys2 = list(_pl2.keys())
+                        _c1, _c2 = st.columns(2)
+                        def _idx2(code):
+                            k = base_name(code)
+                            return _keys2.index(k) if k in _keys2 else 0
+                        with _c1:
+                            st.markdown("**팀1**")
+                            _t1a2 = st.selectbox("팀1A", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team1"][0]), key="adj2_t1a")
+                            _t1b2 = st.selectbox("팀1B", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team1"][1]), key="adj2_t1b")
+                        with _c2:
+                            st.markdown("**팀2**")
+                            _t2a2 = st.selectbox("팀2A", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team2"][0]), key="adj2_t2a")
+                            _t2b2 = st.selectbox("팀2B", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team2"][1]), key="adj2_t2b")
+                        _d2 = len({_t1a2,_t1b2,_t2a2,_t2b2}) < 4
+                        if _d2: st.warning("⚠️ 4명 모두 달라야 합니다.")
+                        if st.button("✅ 페어 적용", type="primary", key="adj2_apply", disabled=_d2):
+                            _cm2 = {base_name(p): p for p in _lp2_all}
+                            _nt1 = tuple([_cm2.get(_t1a2,_t1a2), _cm2.get(_t1b2,_t1b2)])
+                            _nt2 = tuple([_cm2.get(_t2a2,_t2a2), _cm2.get(_t2b2,_t2b2)])
+                            _ntype = classify_match([base_name(p) for p in list(_nt1)+list(_nt2)])
+                            _adj2_matches[_sel_mi2] = {**_sm2, "team1":_nt1, "team2":_nt2, "type":_ntype}
+                            st.session_state["rp_schedule"] = _adj2_matches
+                            st.session_state["sb_schedule"] = _adj2_matches
+                            _ifr2 = restored_params.get("is_fully_random", False)
+                            shelf_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
+                            st.success(f"✅ #{_sel_mi2+1} 경기 페어 조정 완료!")
+                            st.rerun()
             with tab2:
                 st.subheader("선수별 출전 현황")
                 st.dataframe(df_display, use_container_width=True, height=700)
