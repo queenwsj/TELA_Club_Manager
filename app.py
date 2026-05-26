@@ -2897,14 +2897,20 @@ def render_roster_page():
             new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
             new_urole = nc4.selectbox("권한", ["회원", "관리자"], key="new_urole", label_visibility="collapsed")
             if nc5.button("➕ 추가", key="add_user_btn"):
-                if new_uid.strip() and new_upw.strip() and new_uname.strip():
-                    role_val = "admin" if new_urole == "관리자" else "member"
-                    ok = user_add(new_uid.strip(), new_upw.strip(), role_val, new_uname.strip())
-                    if ok:
-                        st.success(f"계정 '{new_uid}' 추가 완료")
-                        st.rerun()
+                import re as _re_uid
+                _uid_val = new_uid.strip()
+                if _uid_val and new_upw.strip() and new_uname.strip():
+                    # 수정3: ID는 영문+숫자만 허용
+                    if not _re_uid.match(r'^[A-Za-z0-9]+$', _uid_val):
+                        st.error("아이디는 영문과 숫자만 사용할 수 있습니다. (한글·특수문자 불가)")
                     else:
-                        st.error(f"이미 존재하는 아이디입니다: {new_uid}")
+                        role_val = "admin" if new_urole == "관리자" else "member"
+                        ok = user_add(_uid_val, new_upw.strip(), role_val, new_uname.strip())
+                        if ok:
+                            st.success(f"계정 '{_uid_val}' 추가 완료")
+                            st.rerun()
+                        else:
+                            st.error(f"이미 존재하는 아이디입니다: {_uid_val}")
                 else:
                     st.warning("아이디, 비밀번호, 이름을 모두 입력해주세요.")
 
@@ -3512,7 +3518,7 @@ else:
                 else:
                     st.session_state["_login_fail"] = True
 
-        _lid = st.text_input("아이디", key="login_id", placeholder="ID 입력")
+        _lid = st.text_input("아이디", key="login_id", placeholder="영문+숫자 ID")
         _lpw = st.text_input("비밀번호", type="password", key="login_pw",
                               placeholder="입력 후 엔터", on_change=_on_login_enter)
 
@@ -3539,8 +3545,13 @@ else:
         st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
 
 st.sidebar.markdown("---")
-page = st.sidebar.radio("메뉴", ["🏆 기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부"],
-                         index=0, label_visibility="collapsed")
+# 수정2: 현재 선택 페이지를 session_state로 기억 → 로그아웃 후에도 유지
+_menu_opts = ["🏆 기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부"]
+_cur_page  = st.session_state.get("current_page", "🏆 기록실")
+_cur_idx   = _menu_opts.index(_cur_page) if _cur_page in _menu_opts else 0
+page = st.sidebar.radio("메뉴", _menu_opts,
+                         index=_cur_idx, label_visibility="collapsed")
+st.session_state["current_page"] = page
 st.sidebar.markdown("---")
 
 
@@ -4452,11 +4463,17 @@ elif page == "📋 대진표생성":
 
                     _player_labels = {base_name(p): display_name(p) for p in _lg_players_all}
 
-                    st.markdown("**팀 재구성**")
+                    st.markdown("**팀 재구성 + 기록실 제외 설정**")
+                    st.caption("선수를 선택하고 '기록 제외' 체크박스로 개인별 기록 제외 여부를 설정하세요.")
                     _pkeys = list(_player_labels.keys())
                     def _pidx(code, _pk=_pkeys):
                         k = base_name(code)
                         return _pk.index(k) if k in _pk else 0
+                    # 기존 저장된 exclude_players
+                    _prev_excl = set(_sel_match.get("exclude_players", []))
+                    _code_map_pre = {base_name(p): p for p in _lg_players_all}
+                    _new_excl = []
+
                     _cc1, _cc2 = st.columns(2)
                     with _cc1:
                         st.markdown("**팀1**")
@@ -4464,48 +4481,56 @@ elif page == "📋 대진표생성":
                                                   format_func=lambda k: _player_labels.get(k,k),
                                                   index=_pidx(_sel_match["team1"][0]),
                                                   key=f"adj_t1a_{_sel_mi}")
+                        _fc_t1a = _code_map_pre.get(_t1_new_a, _t1_new_a)
+                        _excl_t1a = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t1_new_a, _t1_new_a)})",
+                            value=(base_name(_fc_t1a) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_0",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t1a: _new_excl.append(base_name(_fc_t1a))
+
                         _t1_new_b = st.selectbox("팀1 선수B", _pkeys,
                                                   format_func=lambda k: _player_labels.get(k,k),
                                                   index=_pidx(_sel_match["team1"][1]),
                                                   key=f"adj_t1b_{_sel_mi}")
+                        _fc_t1b = _code_map_pre.get(_t1_new_b, _t1_new_b)
+                        _excl_t1b = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t1_new_b, _t1_new_b)})",
+                            value=(base_name(_fc_t1b) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_1",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t1b: _new_excl.append(base_name(_fc_t1b))
+
                     with _cc2:
                         st.markdown("**팀2**")
                         _t2_new_a = st.selectbox("팀2 선수A", _pkeys,
                                                   format_func=lambda k: _player_labels.get(k,k),
                                                   index=_pidx(_sel_match["team2"][0]),
                                                   key=f"adj_t2a_{_sel_mi}")
+                        _fc_t2a = _code_map_pre.get(_t2_new_a, _t2_new_a)
+                        _excl_t2a = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t2_new_a, _t2_new_a)})",
+                            value=(base_name(_fc_t2a) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_2",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t2a: _new_excl.append(base_name(_fc_t2a))
+
                         _t2_new_b = st.selectbox("팀2 선수B", _pkeys,
                                                   format_func=lambda k: _player_labels.get(k,k),
                                                   index=_pidx(_sel_match["team2"][1]),
                                                   key=f"adj_t2b_{_sel_mi}")
+                        _fc_t2b = _code_map_pre.get(_t2_new_b, _t2_new_b)
+                        _excl_t2b = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t2_new_b, _t2_new_b)})",
+                            value=(base_name(_fc_t2b) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_3",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t2b: _new_excl.append(base_name(_fc_t2b))
 
                     _all_4 = [_t1_new_a, _t1_new_b, _t2_new_a, _t2_new_b]
                     _dup_warn = len(set(_all_4)) < 4
                     if _dup_warn:
                         st.warning("⚠️ 4명 모두 달라야 합니다. 중복 선수가 있습니다.")
-
-                    # 수정2: 개인별 기록 제외 체크박스
-                    st.markdown("**기록실 제외 설정** (중복 참여 등 개인별 선택)")
-                    _code_map_pre = {base_name(p): p for p in _lg_players_all}
-                    _preview_players = [
-                        (_t1_new_a, _player_labels.get(_t1_new_a, _t1_new_a), "팀1A"),
-                        (_t1_new_b, _player_labels.get(_t1_new_b, _t1_new_b), "팀1B"),
-                        (_t2_new_a, _player_labels.get(_t2_new_a, _t2_new_a), "팀2A"),
-                        (_t2_new_b, _player_labels.get(_t2_new_b, _t2_new_b), "팀2B"),
-                    ]
-                    # 기존 저장된 exclude_players 불러오기
-                    _prev_excl = set(_sel_match.get("exclude_players", []))
-                    _excl_cc = st.columns(4)
-                    _new_excl = []
-                    for _ei, (_ek, _en, _elbl) in enumerate(_preview_players):
-                        _full_code = _code_map_pre.get(_ek, _ek)
-                        _is_excl = _excl_cc[_ei].checkbox(
-                            f"제외 {_en}", value=(base_name(_full_code) in _prev_excl),
-                            key=f"adj_excl_{_sel_mi}_{_ei}",
-                            help=f"{_elbl}: {_en} 이 경기 기록 제외"
-                        )
-                        if _is_excl:
-                            _new_excl.append(base_name(_full_code))
 
                     if st.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
                                  disabled=_dup_warn):
