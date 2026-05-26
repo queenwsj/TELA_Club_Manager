@@ -4532,28 +4532,52 @@ elif page == "📋 대진표생성":
                     if _dup_warn:
                         st.warning("⚠️ 4명 모두 달라야 합니다. 중복 선수가 있습니다.")
 
-                    if st.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
-                                 disabled=_dup_warn):
+                    # 적용 버튼 + 메시지 같은 줄 배치
+                    _btn_col, _msg_col = st.columns([2, 6])
+                    if _btn_col.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
+                                       disabled=_dup_warn):
                         _code_map = {base_name(p): p for p in _lg_players_all}
-                        _new_t1 = tuple([_code_map.get(_t1_new_a, _t1_new_a),
-                                         _code_map.get(_t1_new_b, _t1_new_b)])
-                        _new_t2 = tuple([_code_map.get(_t2_new_a, _t2_new_a),
-                                         _code_map.get(_t2_new_b, _t2_new_b)])
+
+                        # 제외 선수에는 (중복) 태그 추가, 정상은 태그 제거
+                        def _apply_dup(code):
+                            raw = base_name(code).replace("(중복)","")
+                            base_only = code.replace("(중복)","").strip()
+                            return base_only + ("(중복)" if base_name(base_only) in _new_excl else "")
+
+                        _new_t1 = tuple([_apply_dup(_code_map.get(_t1_new_a, _t1_new_a)),
+                                         _apply_dup(_code_map.get(_t1_new_b, _t1_new_b))])
+                        _new_t2 = tuple([_apply_dup(_code_map.get(_t2_new_a, _t2_new_a)),
+                                         _apply_dup(_code_map.get(_t2_new_b, _t2_new_b))])
                         _new_type = classify_match([base_name(p) for p in list(_new_t1)+list(_new_t2)])
+                        # 매치 type에 (중복) 표기 (기록 제외 표시)
+                        if _new_excl and "(중복)" not in _new_type:
+                            _new_type = _new_type + "(중복)"
+
                         _adj_matches[_sel_mi] = {
                             **_sel_match,
                             "team1": _new_t1,
                             "team2": _new_t2,
                             "type":  _new_type,
-                            "exclude_players": _new_excl,  # 개인별 기록 제외
+                            "exclude_players": _new_excl,
                         }
                         st.session_state["schedule"]    = _adj_matches
                         st.session_state["rp_schedule"] = _adj_matches
                         st.session_state["sb_schedule"] = _adj_matches
                         _ifr = st.session_state.get("last_gen_params",{}).get("is_fully_random", False)
                         shelf_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
+
+                        # 기존 스코어보드 점수가 있으면 기록실 재집계 (제외 선수 반영)
+                        _existing = shelf_load(rp_key_run) or {}
+                        _ex_scores = _existing.get("scores", {})
+                        if _ex_scores:
+                            try:
+                                records_commit(rp_key_run, _adj_matches, _ex_scores)
+                                st.cache_data.clear()
+                            except Exception:
+                                pass
+
                         _excl_msg = f" (제외: {', '.join(_new_excl)})" if _new_excl else ""
-                        st.success(f"✅ #{_sel_mi+1} 경기 페어 조정 완료{_excl_msg}!")
+                        _msg_col.success(f"✅ #{_sel_mi+1} 적용 완료{_excl_msg}")
                         st.rerun()
 
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
@@ -4876,11 +4900,23 @@ function showMsg() {{
 
                         _d2 = len({_t1a2,_t1b2,_t2a2,_t2b2}) < 4
                         if _d2: st.warning("⚠️ 4명 모두 달라야 합니다.")
-                        if st.button("✅ 페어 적용", type="primary", key=f"adj2_apply_{_sel_mi2}", disabled=_d2):
+                        _btn2_col, _msg2_col = st.columns([2, 6])
+                        if _btn2_col.button("✅ 페어 적용", type="primary",
+                                            key=f"adj2_apply_{_sel_mi2}", disabled=_d2):
                             _cm2 = {base_name(p): p for p in _lp2_all}
-                            _nt1 = tuple([_cm2.get(_t1a2,_t1a2), _cm2.get(_t1b2,_t1b2)])
-                            _nt2 = tuple([_cm2.get(_t2a2,_t2a2), _cm2.get(_t2b2,_t2b2)])
+
+                            def _apply_dup2(code):
+                                base_only = code.replace("(중복)","").strip()
+                                return base_only + ("(중복)" if base_name(base_only) in _new_excl2 else "")
+
+                            _nt1 = tuple([_apply_dup2(_cm2.get(_t1a2,_t1a2)),
+                                          _apply_dup2(_cm2.get(_t1b2,_t1b2))])
+                            _nt2 = tuple([_apply_dup2(_cm2.get(_t2a2,_t2a2)),
+                                          _apply_dup2(_cm2.get(_t2b2,_t2b2))])
                             _ntype = classify_match([base_name(p) for p in list(_nt1)+list(_nt2)])
+                            if _new_excl2 and "(중복)" not in _ntype:
+                                _ntype = _ntype + "(중복)"
+
                             _adj2_matches[_sel_mi2] = {
                                 **_sm2,
                                 "team1": _nt1, "team2": _nt2, "type": _ntype,
@@ -4890,8 +4926,19 @@ function showMsg() {{
                             st.session_state["sb_schedule"] = _adj2_matches
                             _ifr2 = restored_params.get("is_fully_random", False)
                             shelf_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
+
+                            # 저장된 점수가 있으면 기록실 재집계
+                            _existing2 = shelf_load(rp_key_run) or {}
+                            _ex_scores2 = _existing2.get("scores", {})
+                            if _ex_scores2:
+                                try:
+                                    records_commit(rp_key_run, _adj2_matches, _ex_scores2)
+                                    st.cache_data.clear()
+                                except Exception:
+                                    pass
+
                             _excl_msg2 = f" (제외: {', '.join(_new_excl2)})" if _new_excl2 else ""
-                            st.success(f"✅ #{_sel_mi2+1} 경기 페어 조정 완료{_excl_msg2}!")
+                            _msg2_col.success(f"✅ #{_sel_mi2+1} 적용 완료{_excl_msg2}")
                             st.rerun()
             with tab2:
                 st.subheader("선수별 출전 현황")
