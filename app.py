@@ -1416,7 +1416,8 @@ def _is_duplicate_player(code: str) -> bool:
 def _records_build_session_stats(date_key: str, schedule: list, scores: dict) -> dict:
     """
     date_key 세션의 선수별 통계 계산.
-    - (중복) 태그 선수: 점수판 표시는 유지하되 기록 집계 제외
+    - (중복) 태그 선수: 기록 집계 제외
+    - 제외 목록 선수(코치 등) / 게스트(★): 완전 제외
     - player_key: 리그+성별 접두사 제거, 순수 이름만 사용
     """
     from datetime import datetime as _dt
@@ -1427,6 +1428,16 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
         year_month = "unknown"
         year_str   = "unknown"
 
+    # 제외 목록 1회만 로드 (경기 수만큼 반복 호출 방지)
+    _excluded_set = set(exclude_list_load())
+
+    def _should_skip(code: str) -> bool:
+        raw = base_name(code)
+        if "★" in raw: return True
+        if _is_duplicate_player(code): return True
+        if _clean_player_key(code) in _excluded_set: return True
+        return False
+
     session_stats = {}
     for idx, match in enumerate(schedule):
         sc = scores.get(str(idx), {})
@@ -1435,19 +1446,10 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
         if s1 is None or s2 is None:
             continue
 
-        # (중복) 여부 체크 — 중복 선수는 기록에서 완전 제외
-        # 제외 선수 목록(코치 등)도 함께 필터
-        # 게스트(★ 포함)도 자동 제외
         t1_codes = list(match["team1"])
         t2_codes = list(match["team2"])
-        t1_valid = [c for c in t1_codes
-                    if not _is_duplicate_player(c)
-                    and not _is_excluded_player(_clean_player_key(c))
-                    and "★" not in base_name(c)]
-        t2_valid = [c for c in t2_codes
-                    if not _is_duplicate_player(c)
-                    and not _is_excluded_player(_clean_player_key(c))
-                    and "★" not in base_name(c)]
+        t1_valid = [c for c in t1_codes if not _should_skip(c)]
+        t2_valid = [c for c in t2_codes if not _should_skip(c)]
         t1_keys  = [_clean_player_key(c) for c in t1_valid]
         t2_keys  = [_clean_player_key(c) for c in t2_valid]
 
@@ -1672,7 +1674,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.00", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.10", page_icon="🎾", layout="wide")
 
 
 # ============================================================
@@ -2745,7 +2747,7 @@ def render_roster_page():
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">🎾</span>
-      <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v5.00)</span></h1>
+      <div><h1>테라클럽 회원 명부</h1>
       <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
@@ -3598,7 +3600,7 @@ if page == "📊 스코어보드":
     schedule = st.session_state.get("sb_schedule")
     if not schedule:
         st.warning("⚠️ 이 키에 저장된 대진표가 없습니다.")
-        st.info("👈 **🎲 랜덤페어**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
+        st.info("👈 **📋 대진표생성**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
         st.stop()
 
     scores = st.session_state.setdefault("sb_scores", {})
@@ -4215,7 +4217,7 @@ elif page == "📋 대진표생성":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title("🎾 TELA CLUB Random Match Generator v5.00")
+    st.title("🎾 TELA CLUB 대진표 생성")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 결과 고정 (시드) — 본문 배치 ──────────────────────────
@@ -4968,7 +4970,7 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.00 기능 안내
+                ### v5.10 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
