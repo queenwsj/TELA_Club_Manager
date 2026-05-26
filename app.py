@@ -1349,8 +1349,28 @@ def _records_sheet_load_all() -> list:
         return []
 
 
+def _clean_player_key(raw_code: str) -> str:
+    """
+    player_key 정제: 리그+성별 접두사(AM/AW/BM/BW 등) 제거 → 순수 이름만 반환.
+    예) 'AM윤지수' → '윤지수', 'AW최선화' → '최선화', 'AM★조원찬' → '★조원찬'
+    """
+    b = base_name(raw_code)
+    if is_custom_code(b):
+        return b[2:]  # 접두사 2글자 제거
+    return b
+
+
+def _is_duplicate_player(code: str) -> bool:
+    """(중복) 태그가 있는 이벤트 라운드 중복 선수 여부"""
+    return "(중복)" in code
+
+
 def _records_build_session_stats(date_key: str, schedule: list, scores: dict) -> dict:
-    """date_key 세션의 선수별 통계 계산. {player_key: {...}}"""
+    """
+    date_key 세션의 선수별 통계 계산.
+    - (중복) 태그 선수: 점수판 표시는 유지하되 기록 집계 제외
+    - player_key: 리그+성별 접두사 제거, 순수 이름만 사용
+    """
     from datetime import datetime as _dt
     try:
         year_month = _dt.strptime(date_key[:7], "%Y-%m").strftime("%Y-%m")
@@ -1366,33 +1386,44 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
         s2 = sc.get("score2", None)
         if s1 is None or s2 is None:
             continue
-        t1 = [base_name(p) for p in match["team1"]]
-        t2 = [base_name(p) for p in match["team2"]]
-        for code in list(match["team1"]) + list(match["team2"]):
-            pkey = base_name(code)
+
+        # (중복) 여부 체크 — 중복 선수는 기록에서 완전 제외
+        t1_codes = list(match["team1"])
+        t2_codes = list(match["team2"])
+        t1_valid = [c for c in t1_codes if not _is_duplicate_player(c)]
+        t2_valid = [c for c in t2_codes if not _is_duplicate_player(c)]
+        t1_keys  = [_clean_player_key(c) for c in t1_valid]
+        t2_keys  = [_clean_player_key(c) for c in t2_valid]
+
+        # 정상 선수만 session_stats 등록
+        for code, pkey in zip(t1_valid + t2_valid, t1_keys + t2_keys):
             if pkey not in session_stats:
                 session_stats[pkey] = {
-                    "date_key": date_key, "year_month": year_month, "year": year_str,
-                    "player_key": pkey, "display_name": pname(code),
-                    "league": match["league"],
+                    "date_key":    date_key,
+                    "year_month":  year_month,
+                    "year":        year_str,
+                    "player_key":  pkey,
+                    "display_name": pname(code),
+                    "league":      match["league"],
                     "wins": 0, "losses": 0, "pf": 0, "pa": 0,
                 }
             session_stats[pkey]["display_name"] = pname(code)
             session_stats[pkey]["league"] = match["league"]
+
         if s1 > s2:
-            for p in t1:
-                session_stats[p]["wins"]+=1; session_stats[p]["pf"]+=s1; session_stats[p]["pa"]+=s2
-            for p in t2:
-                session_stats[p]["losses"]+=1; session_stats[p]["pf"]+=s2; session_stats[p]["pa"]+=s1
+            for k in t1_keys:
+                session_stats[k]["wins"]+=1; session_stats[k]["pf"]+=s1; session_stats[k]["pa"]+=s2
+            for k in t2_keys:
+                session_stats[k]["losses"]+=1; session_stats[k]["pf"]+=s2; session_stats[k]["pa"]+=s1
         elif s2 > s1:
-            for p in t2:
-                session_stats[p]["wins"]+=1; session_stats[p]["pf"]+=s2; session_stats[p]["pa"]+=s1
-            for p in t1:
-                session_stats[p]["losses"]+=1; session_stats[p]["pf"]+=s1; session_stats[p]["pa"]+=s2
+            for k in t2_keys:
+                session_stats[k]["wins"]+=1; session_stats[k]["pf"]+=s2; session_stats[k]["pa"]+=s1
+            for k in t1_keys:
+                session_stats[k]["losses"]+=1; session_stats[k]["pf"]+=s1; session_stats[k]["pa"]+=s2
         else:
-            for p in t1+t2:
-                session_stats[p]["pf"] += s1
-                session_stats[p]["pa"] += s2
+            for k in t1_keys + t2_keys:
+                session_stats[k]["pf"] += s1
+                session_stats[k]["pa"] += s2
     return session_stats
 
 
@@ -3545,8 +3576,8 @@ if page == "📊 점수판":
                 s1_saved = sc.get("score1", 0)
                 s2_saved = sc.get("score2", 0)
 
-                t1a = pname(match["team1"][0]); t1b = pname(match["team1"][1])
-                t2a = pname(match["team2"][0]); t2b = pname(match["team2"][1])
+                t1a = display_name(match["team1"][0]); t1b = display_name(match["team1"][1])
+                t2a = display_name(match["team2"][0]); t2b = display_name(match["team2"][1])
                 match_type = match["type"]
 
                 # 승자 표시용
@@ -4843,33 +4874,34 @@ function showMsg() {{
 
 elif page == "🏆 기록실":
     st.markdown("## 🏆 기록실 (누적 통계)")
-    st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 월간 / 연간으로 구분 조회합니다.")
+    st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 중복 선수는 기록에서 제외됩니다.")
 
     _now = date.today()
-    _rec_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
-                          key="rec_page_mode", label_visibility="collapsed")
-
-    if _rec_mode == "월간":
-        _months = []
-        for i in range(12):
-            _m = _now.month - i
-            _y = _now.year
-            while _m <= 0: _m += 12; _y -= 1
-            _months.append(f"{_y}-{_m:02d}")
-        _months = sorted(list(dict.fromkeys(_months)), reverse=True)
-        _sel_val = st.selectbox("월 선택", _months, key="rec_pg_month",
-                                 label_visibility="collapsed")
-        _ft = "monthly"; _fv = _sel_val; _lbl = f"{_sel_val} 월간"
-    else:
-        _years = [str(_now.year - i) for i in range(4)]
-        _sel_val = st.selectbox("연도 선택", _years, key="rec_pg_year",
-                                 label_visibility="collapsed")
-        _ft = "yearly"; _fv = _sel_val; _lbl = f"{_sel_val} 연간"
-
-    _rr1, _rr2 = st.columns([2, 8])
-    if _rr1.button("🔄 새로고침", key="rec_refresh"):
-        st.cache_data.clear()
-        st.rerun()
+    _c1, _c2, _c3 = st.columns([3, 3, 2])
+    with _c1:
+        _rec_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
+                              key="rec_page_mode", label_visibility="collapsed")
+    with _c2:
+        if _rec_mode == "월간":
+            _months = []
+            for i in range(12):
+                _m = _now.month - i
+                _y = _now.year
+                while _m <= 0: _m += 12; _y -= 1
+                _months.append(f"{_y}-{_m:02d}")
+            _months = sorted(list(dict.fromkeys(_months)), reverse=True)
+            _sel_val = st.selectbox("월", _months, key="rec_pg_month",
+                                     label_visibility="collapsed")
+            _ft = "monthly"; _fv = _sel_val; _lbl = f"{_sel_val} 월간"
+        else:
+            _years = [str(_now.year - i) for i in range(4)]
+            _sel_val = st.selectbox("연도", _years, key="rec_pg_year",
+                                     label_visibility="collapsed")
+            _ft = "yearly"; _fv = _sel_val; _lbl = f"{_sel_val} 연간"
+    with _c3:
+        if st.button("🔄 새로고침", key="rec_refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
     with st.spinner("기록 불러오는 중…"):
         try:
@@ -4881,23 +4913,92 @@ elif page == "🏆 기록실":
     if _df_rec.empty:
         st.info(f"📭 {_lbl} 기록이 없습니다. 점수판에서 점수를 저장하면 자동으로 집계됩니다.")
     else:
-        for _rec_lg in _df_rec["리그"].unique():
-            _df_lg = _df_rec[_df_rec["리그"]==_rec_lg].drop(columns=["리그"]).reset_index(drop=True)
-            if _df_lg.empty: continue
+        _all_leagues = list(_df_rec["리그"].unique())
+
+        # ── 왕 카드 렌더 헬퍼 ─────────────────────────────────
+        def _award_card(emoji, title, name, value, color, subtitle=""):
+            return f"""
+<div style="background:linear-gradient(135deg,{color}22,{color}08);
+     border:2px solid {color}55;border-radius:14px;padding:14px 16px;
+     text-align:center;box-shadow:0 2px 12px {color}22;">
+  <div style="font-size:2rem;line-height:1.1">{emoji}</div>
+  <div style="font-size:0.7rem;font-weight:700;color:{color};
+       letter-spacing:1px;text-transform:uppercase;margin:4px 0 2px">{title}</div>
+  <div style="font-size:1.15rem;font-weight:900;color:#1a2e4a;margin:2px 0">{name}</div>
+  <div style="font-size:0.85rem;font-weight:700;color:{color}">{value}</div>
+  {"<div style='font-size:0.65rem;color:#9ca3af;margin-top:2px'>"+subtitle+"</div>" if subtitle else ""}
+</div>"""
+
+        # ── 리그별 섹션 ──────────────────────────────────────
+        for _rec_lg in _all_leagues:
+            _df_lg_full = _df_rec[_df_rec["리그"] == _rec_lg].copy()
+            if _df_lg_full.empty:
+                continue
+
             _lc = get_league_color(_rec_lg)
+
+            # 리그 헤더
             st.markdown(
-                f'<div style="color:{_lc};font-weight:700;border-bottom:2px solid {_lc};'
-                f'padding-bottom:4px;margin:16px 0 8px 0;">🎾 {_rec_lg} — {_lbl}</div>',
-                unsafe_allow_html=True)
-            _max_w = int(_df_lg["승"].max()) if not _df_lg.empty else 0
-            def _hl_rec_pg(row, mw=_max_w):
-                styles = [""]*len(row)
+                f'<div style="background:linear-gradient(135deg,{_lc}22,transparent);'
+                f'border-left:5px solid {_lc};border-radius:0 10px 10px 0;'
+                f'padding:10px 16px;margin:20px 0 12px 0;">'
+                f'<span style="color:{_lc};font-weight:900;font-size:1.05rem;">🎾 {_rec_lg}</span>'
+                f'<span style="color:#6b7280;font-size:0.8rem;margin-left:8px;">— {_lbl}</span>'
+                f'</div>', unsafe_allow_html=True)
+
+            # 수상자 계산 (최소 1경기 이상)
+            _df_active = _df_lg_full[(_df_lg_full["승"] + _df_lg_full["패"]) > 0]
+
+            _award_cols = st.columns(3)
+            _cards_html = ["", "", ""]
+
+            if not _df_active.empty:
+                # 다승왕
+                _max_w = _df_active["승"].max()
+                _winner_w = _df_active[_df_active["승"] == _max_w].iloc[0]
+                _cards_html[0] = _award_card("🥇", "다승왕", _winner_w["이름"],
+                                              f"{int(_max_w)}승", "#f59e0b",
+                                              f"승률 {_winner_w['승률']}")
+
+                # 득점왕
+                _max_p = _df_active["득점"].max()
+                _winner_p = _df_active[_df_active["득점"] == _max_p].iloc[0]
+                _cards_html[1] = _award_card("🎯", "득점왕", _winner_p["이름"],
+                                              f"{int(_max_p)}점", "#2563eb",
+                                              f"득실차 {int(_winner_p['득실차']):+d}")
+
+                # 승률왕 (최소 2경기 이상)
+                _df_rate = _df_active[(_df_active["승"] + _df_active["패"]) >= 2].copy()
+                if not _df_rate.empty:
+                    _df_rate["_rate_num"] = _df_rate["승"] / (_df_rate["승"] + _df_rate["패"])
+                    _max_r = _df_rate["_rate_num"].max()
+                    _winner_r = _df_rate[_df_rate["_rate_num"] == _max_r].iloc[0]
+                    _cards_html[2] = _award_card("👑", "승률왕", _winner_r["이름"],
+                                                  _winner_r["승률"], "#7c3aed",
+                                                  f"{int(_winner_r['승'])}승 {int(_winner_r['패'])}패")
+                else:
+                    _cards_html[2] = _award_card("👑", "승률왕", "—", "2경기↑ 필요", "#9ca3af")
+            else:
+                for i in range(3):
+                    _cards_html[i] = _award_card(["🥇","🎯","👑"][i],
+                                                   ["다승왕","득점왕","승률왕"][i],
+                                                   "—", "기록 없음", "#9ca3af")
+
+            for _ci, _html in enumerate(_cards_html):
+                _award_cols[_ci].markdown(_html, unsafe_allow_html=True)
+
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+            # 전체 기록 테이블
+            _df_lg_disp = _df_lg_full.drop(columns=["리그"]).reset_index(drop=True)
+            _max_w2 = int(_df_lg_disp["승"].max()) if not _df_lg_disp.empty else 0
+            def _hl_rec_pg(row, mw=_max_w2, lc=_lc):
+                styles = [""] * len(row)
                 if "승" in row.index:
                     wi = row.index.get_loc("승")
-                    if row["승"]==mw and mw>0:
-                        styles[wi] = "background-color:#FFF176;font-weight:bold"
+                    styles[wi] = f"background-color:{lc}22;font-weight:bold" if row["승"] == mw and mw > 0 else ""
                 return styles
-            st.dataframe(_df_lg.style.apply(_hl_rec_pg, axis=1),
+            st.dataframe(_df_lg_disp.style.apply(_hl_rec_pg, axis=1),
                          use_container_width=True, hide_index=True)
 
 elif page == "👥 회원명부":
