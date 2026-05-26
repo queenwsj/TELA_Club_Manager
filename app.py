@@ -1423,6 +1423,9 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
         s2 = sc.get("score2", None)
         if s1 is None or s2 is None:
             continue
+        # 수정8: 관리자가 수동으로 중복 처리한 경기는 기록실 제외
+        if sc.get("is_dup", False):
+            continue
 
         t1_codes = list(match["team1"])
         t2_codes = list(match["team2"])
@@ -1589,7 +1592,12 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    return df.sort_values(["리그","승","득점"], ascending=[True,False,False]).reset_index(drop=True)
+    df = df.sort_values(["리그","득점","득실차","승"], ascending=[True,False,False,False]).reset_index(drop=True)
+    # 수정4: 순위 컬럼 추가 (리그별 독립 순위)
+    df["순위"] = df.groupby("리그").cumcount() + 1
+    df["순위"] = df["순위"].apply(lambda x: f"{x}위")
+    cols = ["리그","순위","이름","승","패","득점","실점","득실차","승률"]
+    return df[cols]
 
 
 
@@ -2735,7 +2743,7 @@ def render_roster_page():
         _authed_guest = st.session_state.get("guest_auth_ok", False)
 
         if not _authed_guest:
-            st.warning("🔒 회원명부는 등록된 본인 이름과 연락처를 입력해야 열람할 수 있습니다.")
+            st.warning("🔒 회원명부는 등록된 본인 이름과 연락처를 입력해야 열람할 수 있습니다.\n\n운영진이 아닌 일반 회원은 제한된 열람만 가능합니다.")
             st.markdown("**본인 확인**")
             _gc1, _gc2 = st.columns(2)
             _auth_name  = _gc1.text_input("이름", placeholder="홍길동", key="guest_auth_name")
@@ -3523,7 +3531,7 @@ else:
         st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
 
 st.sidebar.markdown("---")
-page = st.sidebar.radio("메뉴", ["📊 스코어보드", "🏆 기록실", "📋 대진표생성", "👥 회원명부"],
+page = st.sidebar.radio("메뉴", ["🏆 기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부"],
                          index=0, label_visibility="collapsed")
 st.sidebar.markdown("---")
 
@@ -3539,7 +3547,7 @@ if page == "📊 스코어보드":
     today_str  = date.today().strftime("%Y-%m-%d")
     saved_keys = shelf_list_dates()
 
-    sb_mode = st.radio("모드", ["새 스코어보드 (날짜+번호 입력)", "저장된 스코어보드 불러오기"],
+    sb_mode = st.radio("모드", ["저장된 스코어보드 불러오기", "새 스코어보드 (날짜+번호 입력)"],
                        index=0, horizontal=True, label_visibility="collapsed")
     if sb_mode == "새 스코어보드 (날짜+번호 입력)":
         sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
@@ -3595,39 +3603,57 @@ if page == "📊 스코어보드":
         f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:8px;">'
         f'{disp_date} · {disp_num}</div>', unsafe_allow_html=True)
 
-    # ── [수정4] 점수 입력 UI: Streamlit native 위젯 방식 ──────
-    # query_params/window.top.location.href 방식 제거 → 저장 안되는 버그 완전 해결
+    # ── 점수 입력 UI ─────────────────────────────────────────
+    _can_edit = is_admin()   # 수정1: 저장·수정은 관리자만
 
-    def _save_score(idx, s1, s2):
-        """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리(딜레이 제거)"""
-        scores[str(idx)] = {"score1": int(s1), "score2": int(s2)}
+    def _save_score(idx, s1, s2, is_dup=False):
+        """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
+        scores[str(idx)] = {"score1": int(s1), "score2": int(s2), "is_dup": is_dup}
         st.session_state["sb_scores"] = scores
         st.session_state[f"locked_{idx}"] = True
+        st.session_state.pop(f"editing_{idx}", None)
         _cur_schedule = st.session_state.get("sb_schedule")
         if _cur_schedule:
-            # ① shelf 저장 (로컬, 즉시)
             _prev = shelf_load(selected_key) or {}
             _ifr  = _prev.get("is_fully_random", False)
             shelf_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
-            # ② 구글시트 기록 → 백그라운드 스레드 (UI 블로킹 없음)
             import threading as _threading
             def _bg_commit(_dk, _sched, _sc):
                 try:
                     records_commit(_dk, _sched, dict(_sc))
                 except Exception:
                     pass
-            _t = _threading.Thread(
+            _threading.Thread(
                 target=_bg_commit,
                 args=(selected_key, list(_cur_schedule), dict(scores)),
                 daemon=True
-            )
-            _t.start()
+            ).start()
 
     def _unlock_score(idx):
         st.session_state[f"locked_{idx}"] = False
+        st.session_state[f"editing_{idx}"] = True
 
-    # 경기 표시
-    league_list = list(dict.fromkeys(m["league"] for m in schedule))
+    def _cancel_edit(idx, s1_orig, s2_orig):
+        st.session_state[f"locked_{idx}"] = True
+        st.session_state.pop(f"editing_{idx}", None)
+
+    # 모바일 한 줄 레이아웃용 CSS (수정3)
+    st.markdown("""
+<style>
+/* 점수 입력행 모바일 강제 한 줄 */
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+    min-width: 0 !important;
+}
+.score-input-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+}
+</style>""", unsafe_allow_html=True)
+
+    league_list  = list(dict.fromkeys(m["league"] for m in schedule))
     lg_color_map = {lg: get_league_color(lg) for lg in league_list}
 
     for rnd in rounds:
@@ -3649,82 +3675,98 @@ if page == "📊 스코어보드":
 
             for idx, match in [(i, m) for i, m in enumerate(schedule)
                                if m["round"] == rnd and m["league"] == lg]:
-                sc = scores.get(str(idx), {})
+                sc        = scores.get(str(idx), {})
                 is_locked = st.session_state.get(f"locked_{idx}", bool(sc))
-                s1_saved = sc.get("score1", 0)
-                s2_saved = sc.get("score2", 0)
+                s1_saved  = sc.get("score1", 0)
+                s2_saved  = sc.get("score2", 0)
+                is_dup_saved = sc.get("is_dup", False)
 
                 t1a = display_name(match["team1"][0]); t1b = display_name(match["team1"][1])
                 t2a = display_name(match["team2"][0]); t2b = display_name(match["team2"][1])
                 match_type = match["type"]
 
-                # 승자 표시용
-                t1_win = is_locked and s1_saved > s2_saved
-                t2_win = is_locked and s2_saved > s1_saved
+                t1_win    = is_locked and s1_saved > s2_saved
+                t2_win    = is_locked and s2_saved > s1_saved
+                win_style = "color:#b71c1c;font-weight:900;"
+                nrm_style = "color:#333;font-weight:600;"
 
-                win_style  = "color:#b71c1c;font-weight:900;"
-                norm_style = "color:#333;font-weight:600;"
-
-                # 경기 카드
                 border_color = "#a5d6a7" if is_locked else lc
                 bg_color     = "#f0fff0" if is_locked else "#fff"
-                with st.container():
-                    st.markdown(
-                        f'<div style="border:1px solid {border_color};border-left:4px solid {lc};'
-                        f'border-radius:6px;background:{bg_color};padding:6px 10px;margin-bottom:2px;">'
-                        f'<div style="display:flex;align-items:center;justify-content:space-between;">'
-                        f'<div style="flex:3;min-width:0;">'
-                        f'<div style="{t1_win and win_style or norm_style}font-size:0.8rem;">{t1a}</div>'
-                        f'<div style="{t1_win and win_style or norm_style}font-size:0.8rem;">{t1b}</div>'
-                        f'</div>'
-                        f'<div style="flex:0 0 60px;text-align:center;font-size:1rem;font-weight:800;color:#333;">'
-                        f'{s1_saved if is_locked else "·"} vs {s2_saved if is_locked else "·"}'
-                        f'</div>'
-                        f'<div style="flex:3;min-width:0;text-align:right;">'
-                        f'<div style="{t2_win and win_style or norm_style}font-size:0.8rem;">{t2a}</div>'
-                        f'<div style="{t2_win and win_style or norm_style}font-size:0.8rem;">{t2b}</div>'
-                        f'</div>'
-                        f'</div>'
-                        f'<div style="font-size:0.6rem;color:#aaa;text-align:right;margin-top:2px;">'
-                        f'{match_type}{" ✅저장완료" if is_locked else ""}'
-                        f'</div>'
-                        f'</div>', unsafe_allow_html=True)
+                dup_badge    = ' <span style="font-size:0.65rem;color:#e65100;background:#fff3e0;padding:1px 5px;border-radius:8px;">중복</span>' if is_dup_saved else ""
 
-                    if is_locked:
-                        # 저장됨 → 수정 버튼만
-                        _ec1, _ec2, _ec3 = st.columns([4, 2, 4])
-                        _ec1.markdown(f'<div style="text-align:center;padding:6px;background:#ebebeb;'
-                                      f'border-radius:5px;font-size:0.95rem;font-weight:700;">{s1_saved}</div>',
-                                      unsafe_allow_html=True)
-                        if _ec2.button("✏️ 수정", key=f"edit_{idx}", use_container_width=True):
+                st.markdown(
+                    f'<div style="border:1px solid {border_color};border-left:4px solid {lc};'
+                    f'border-radius:6px;background:{bg_color};padding:6px 10px;margin-bottom:2px;">'
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;">'
+                    f'<div style="flex:3;min-width:0;">'
+                    f'<div style="{t1_win and win_style or nrm_style}font-size:0.8rem;">{t1a}</div>'
+                    f'<div style="{t1_win and win_style or nrm_style}font-size:0.8rem;">{t1b}</div>'
+                    f'</div>'
+                    f'<div style="flex:0 0 60px;text-align:center;font-size:1rem;font-weight:800;color:#333;">'
+                    f'{s1_saved if is_locked else "·"} vs {s2_saved if is_locked else "·"}'
+                    f'</div>'
+                    f'<div style="flex:3;min-width:0;text-align:right;">'
+                    f'<div style="{t2_win and win_style or nrm_style}font-size:0.8rem;">{t2a}</div>'
+                    f'<div style="{t2_win and win_style or nrm_style}font-size:0.8rem;">{t2b}</div>'
+                    f'</div>'
+                    f'</div>'
+                    f'<div style="font-size:0.6rem;color:#aaa;text-align:right;margin-top:2px;">'
+                    f'{match_type}{dup_badge}{" ✅저장완료" if is_locked else ""}'
+                    f'</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+                if is_locked:
+                    if _can_edit:
+                        # 저장됨 + 관리자: 점수표시 + 수정버튼
+                        _lk1, _lk2, _lk3, _lk4 = st.columns([3, 3, 2, 2])
+                        _lk1.markdown(
+                            f'<div style="text-align:center;padding:6px;background:#ebebeb;'
+                            f'border-radius:5px;font-size:0.95rem;font-weight:700;">{s1_saved}</div>',
+                            unsafe_allow_html=True)
+                        _lk3.markdown(
+                            f'<div style="text-align:center;padding:6px;background:#ebebeb;'
+                            f'border-radius:5px;font-size:0.95rem;font-weight:700;">{s2_saved}</div>',
+                            unsafe_allow_html=True)
+                        if _lk2.button("✏️ 수정", key=f"edit_{idx}", use_container_width=True):
                             _unlock_score(idx)
                             st.rerun()
-                        _ec3.markdown(f'<div style="text-align:center;padding:6px;background:#ebebeb;'
-                                      f'border-radius:5px;font-size:0.95rem;font-weight:700;">{s2_saved}</div>',
-                                      unsafe_allow_html=True)
-                    else:
-                        # 입력 모드
-                        _ic1, _ic2, _ic3 = st.columns([4, 2, 4])
+                    # 비관리자: 점수만 표시, 버튼 없음
+
+                else:
+                    if _can_edit:
+                        # 수정3: 모바일 한 줄 — columns 비율 고정
+                        # [점수1] [저장] [취소] [점수2]
+                        _ic1, _ic2, _ic3, _ic4 = st.columns([3, 2, 2, 3])
                         s1_new = _ic1.number_input(
-                            f"팀1점수_{idx}", min_value=0, max_value=6,
+                            f"팀1_{idx}", min_value=0, max_value=9,
                             value=s1_saved, step=1, key=f"s1_{idx}",
                             label_visibility="collapsed"
                         )
-                        if _ic2.button("💾 저장", key=f"save_{idx}", type="primary",
-                                       use_container_width=True):
-                            s2_val = st.session_state.get(f"s2_{idx}", s2_saved)
-                            _save_score(idx, s1_new, s2_val)
-                            st.rerun()
-                        s2_new = _ic3.number_input(
-                            f"팀2점수_{idx}", min_value=0, max_value=6,
+                        s2_new = _ic4.number_input(
+                            f"팀2_{idx}", min_value=0, max_value=9,
                             value=s2_saved, step=1, key=f"s2_{idx}",
                             label_visibility="collapsed"
                         )
-                        # 저장 버튼이 s2를 읽기 전에 눌릴 수 있으므로
-                        # on_click 대신 렌더 후 바로 체크
-                        if st.session_state.get(f"_pending_save_{idx}"):
-                            st.session_state.pop(f"_pending_save_{idx}", None)
-                            _save_score(idx, s1_new, s2_new)
+                        # 수정8: 중복 여부 체크박스
+                        _dup_new = st.checkbox(
+                            "중복 경기로 처리 (기록실 제외)",
+                            value=is_dup_saved,
+                            key=f"dup_{idx}"
+                        )
+                        if _ic2.button("💾 저장", key=f"save_{idx}", type="primary",
+                                       use_container_width=True):
+                            _save_score(idx,
+                                        st.session_state.get(f"s1_{idx}", s1_new),
+                                        st.session_state.get(f"s2_{idx}", s2_new),
+                                        st.session_state.get(f"dup_{idx}", _dup_new))
+                            st.rerun()
+                        # 수정1: 취소 버튼 — 수정 중이었으면 이전 저장값으로 복귀
+                        if _ic3.button("✖ 취소", key=f"cancel_{idx}",
+                                       use_container_width=True):
+                            if bool(sc):  # 기존 저장값이 있으면 locked 복귀
+                                _cancel_edit(idx, s1_saved, s2_saved)
+                            else:         # 아예 새 경기면 그냥 state 초기화
+                                st.session_state.pop(f"editing_{idx}", None)
                             st.rerun()
 
     st.markdown("---")
@@ -5089,12 +5131,59 @@ elif page == "🏆 기록실":
      border:2px solid {color}55;border-radius:14px;padding:14px 16px;
      text-align:center;box-shadow:0 2px 12px {color}22;">
   <div style="font-size:2rem;line-height:1.1">{emoji}</div>
-  <div style="font-size:0.7rem;font-weight:700;color:{color};
-       letter-spacing:1px;text-transform:uppercase;margin:4px 0 2px">{title}</div>
-  <div style="font-size:1.15rem;font-weight:900;color:#1a2e4a;margin:2px 0">{name}</div>
+  <div style="font-size:0.68rem;font-weight:700;color:{color};
+       letter-spacing:0.5px;margin:4px 0 2px;line-height:1.3">{title}</div>
+  <div style="font-size:1.1rem;font-weight:900;color:#1a2e4a;margin:2px 0">{name}</div>
   <div style="font-size:0.85rem;font-weight:700;color:{color}">{value}</div>
   {"<div style='font-size:0.65rem;color:#9ca3af;margin-top:2px'>"+subtitle+"</div>" if subtitle else ""}
 </div>"""
+
+        # ── 연간 모드: 전 리그 통합 수상 ─────────────────────
+        if _ft == "yearly":
+            _yr = _fv
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,#1a1a2e22,transparent);'
+                f'border-left:5px solid #1a1a2e;border-radius:0 10px 10px 0;'
+                f'padding:10px 16px;margin:16px 0 12px;">'
+                f'<span style="color:#1a1a2e;font-weight:900;font-size:1.05rem;">🏆 {_yr} TELA 통합 랭킹</span>'
+                f'<span style="color:#6b7280;font-size:0.8rem;margin-left:8px;">— 전 리그 통합</span>'
+                f'</div>', unsafe_allow_html=True)
+
+            _df_all = _df_rec.copy()
+            _df_all_act = _df_all[(_df_all["승"] + _df_all["패"]) > 0]
+            _ac = st.columns(3)
+            _ch = ["", "", ""]
+            if not _df_all_act.empty:
+                # 득점왕 (1순위)
+                _mp = _df_all_act["득점"].max()
+                _wp = _df_all_act[_df_all_act["득점"] == _mp].iloc[0]
+                _ch[0] = _award_card("🎯", f"{_yr} 득점왕", _wp["이름"],
+                                     f"{int(_mp)}점", "#2563eb",
+                                     f"득실차 {int(_wp['득실차']):+d}")
+                # 다승왕
+                _mw = _df_all_act["승"].max()
+                _ww = _df_all_act[_df_all_act["승"] == _mw].iloc[0]
+                _ch[1] = _award_card("🥇", f"{_yr} 다승왕", _ww["이름"],
+                                     f"{int(_mw)}승", "#f59e0b",
+                                     f"승률 {_ww['승률']}")
+                # 승률왕
+                _df_r2 = _df_all_act[(_df_all_act["승"]+_df_all_act["패"])>=2].copy()
+                if not _df_r2.empty:
+                    _df_r2["_rn"] = _df_r2["승"] / (_df_r2["승"]+_df_r2["패"])
+                    _mr = _df_r2["_rn"].max()
+                    _wr = _df_r2[_df_r2["_rn"]==_mr].iloc[0]
+                    _ch[2] = _award_card("👑", f"{_yr} 승률왕", _wr["이름"],
+                                         _wr["승률"], "#7c3aed",
+                                         f"{int(_wr['승'])}승 {int(_wr['패'])}패")
+                else:
+                    _ch[2] = _award_card("👑", f"{_yr} 승률왕", "—", "2경기↑ 필요", "#9ca3af")
+            else:
+                _ch[0] = _award_card("🎯", f"{_yr} 득점왕", "—", "기록 없음", "#9ca3af")
+                _ch[1] = _award_card("🥇", f"{_yr} 다승왕", "—", "기록 없음", "#9ca3af")
+                _ch[2] = _award_card("👑", f"{_yr} 승률왕", "—", "기록 없음", "#9ca3af")
+            for _ci, _h in enumerate(_ch):
+                _ac[_ci].markdown(_h, unsafe_allow_html=True)
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
         # ── 리그별 섹션 ──────────────────────────────────────
         for _rec_lg in _all_leagues:
@@ -5113,57 +5202,65 @@ elif page == "🏆 기록실":
                 f'<span style="color:#6b7280;font-size:0.8rem;margin-left:8px;">— {_lbl}</span>'
                 f'</div>', unsafe_allow_html=True)
 
-            # 수상자 계산 (최소 1경기 이상)
             _df_active = _df_lg_full[(_df_lg_full["승"] + _df_lg_full["패"]) > 0]
-
             _award_cols = st.columns(3)
             _cards_html = ["", "", ""]
 
-            if not _df_active.empty:
-                # 다승왕
-                _max_w = _df_active["승"].max()
-                _winner_w = _df_active[_df_active["승"] == _max_w].iloc[0]
-                _cards_html[0] = _award_card("🥇", "다승왕", _winner_w["이름"],
-                                              f"{int(_max_w)}승", "#f59e0b",
-                                              f"승률 {_winner_w['승률']}")
+            # 수정6: 월간 카드 제목 = "{리그} 월간 최다득점" 등
+            # 수정5: 카드 순서 = 득점왕(0) → 다승왕(1) → 승률왕(2)
+            if _ft == "monthly":
+                _ym = _fv  # "2026-05"
+                _t_score = f"{_rec_lg} {_ym} 최다득점"
+                _t_wins  = f"{_rec_lg} {_ym} 최다승"
+                _t_rate  = f"{_rec_lg} {_ym} 최고승률"
+            else:
+                _t_score = f"{_rec_lg} 득점왕"
+                _t_wins  = f"{_rec_lg} 다승왕"
+                _t_rate  = f"{_rec_lg} 승률왕"
 
-                # 득점왕
+            if not _df_active.empty:
+                # 득점왕 (카드 0번)
                 _max_p = _df_active["득점"].max()
                 _winner_p = _df_active[_df_active["득점"] == _max_p].iloc[0]
-                _cards_html[1] = _award_card("🎯", "득점왕", _winner_p["이름"],
+                _cards_html[0] = _award_card("🎯", _t_score, _winner_p["이름"],
                                               f"{int(_max_p)}점", "#2563eb",
                                               f"득실차 {int(_winner_p['득실차']):+d}")
-
-                # 승률왕 (최소 2경기 이상)
+                # 다승왕 (카드 1번)
+                _max_w = _df_active["승"].max()
+                _winner_w = _df_active[_df_active["승"] == _max_w].iloc[0]
+                _cards_html[1] = _award_card("🥇", _t_wins, _winner_w["이름"],
+                                              f"{int(_max_w)}승", "#f59e0b",
+                                              f"승률 {_winner_w['승률']}")
+                # 승률왕 (카드 2번)
                 _df_rate = _df_active[(_df_active["승"] + _df_active["패"]) >= 2].copy()
                 if not _df_rate.empty:
                     _df_rate["_rate_num"] = _df_rate["승"] / (_df_rate["승"] + _df_rate["패"])
                     _max_r = _df_rate["_rate_num"].max()
                     _winner_r = _df_rate[_df_rate["_rate_num"] == _max_r].iloc[0]
-                    _cards_html[2] = _award_card("👑", "승률왕", _winner_r["이름"],
+                    _cards_html[2] = _award_card("👑", _t_rate, _winner_r["이름"],
                                                   _winner_r["승률"], "#7c3aed",
                                                   f"{int(_winner_r['승'])}승 {int(_winner_r['패'])}패")
                 else:
-                    _cards_html[2] = _award_card("👑", "승률왕", "—", "2경기↑ 필요", "#9ca3af")
+                    _cards_html[2] = _award_card("👑", _t_rate, "—", "2경기↑ 필요", "#9ca3af")
             else:
-                for i in range(3):
-                    _cards_html[i] = _award_card(["🥇","🎯","👑"][i],
-                                                   ["다승왕","득점왕","승률왕"][i],
-                                                   "—", "기록 없음", "#9ca3af")
+                _cards_html[0] = _award_card("🎯", _t_score, "—", "기록 없음", "#9ca3af")
+                _cards_html[1] = _award_card("🥇", _t_wins,  "—", "기록 없음", "#9ca3af")
+                _cards_html[2] = _award_card("👑", _t_rate,  "—", "기록 없음", "#9ca3af")
 
             for _ci, _html in enumerate(_cards_html):
                 _award_cols[_ci].markdown(_html, unsafe_allow_html=True)
 
             st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-            # 전체 기록 테이블
+            # 수정4: 순위 컬럼 포함, 득점 기준 정렬 (이미 records_get_df에서 처리됨)
             _df_lg_disp = _df_lg_full.drop(columns=["리그"]).reset_index(drop=True)
-            _max_w2 = int(_df_lg_disp["승"].max()) if not _df_lg_disp.empty else 0
-            def _hl_rec_pg(row, mw=_max_w2, lc=_lc):
+            # 득점 1위 하이라이트
+            _max_score = int(_df_lg_disp["득점"].max()) if not _df_lg_disp.empty else 0
+            def _hl_rec_pg(row, ms=_max_score, lc=_lc):
                 styles = [""] * len(row)
-                if "승" in row.index:
-                    wi = row.index.get_loc("승")
-                    styles[wi] = f"background-color:{lc}22;font-weight:bold" if row["승"] == mw and mw > 0 else ""
+                if "득점" in row.index:
+                    pi = row.index.get_loc("득점")
+                    styles[pi] = f"background-color:{lc}33;font-weight:bold" if row["득점"] == ms and ms > 0 else ""
                 return styles
             st.dataframe(_df_lg_disp.style.apply(_hl_rec_pg, axis=1),
                          use_container_width=True, hide_index=True)
