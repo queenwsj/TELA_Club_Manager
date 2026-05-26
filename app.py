@@ -1324,12 +1324,14 @@ def serialize_schedule(schedule):
     return [{
         "round": m["round"], "league": m["league"],
         "team1": list(m["team1"]), "team2": list(m["team2"]), "type": m["type"],
+        "exclude_players": m.get("exclude_players", []),
     } for m in schedule]
 
 def deserialize_schedule(schedule):
     return [{
         "round": m["round"], "league": m["league"],
         "team1": tuple(m["team1"]), "team2": tuple(m["team2"]), "type": m["type"],
+        "exclude_players": m.get("exclude_players", []),
     } for m in schedule]
 
 
@@ -1409,11 +1411,12 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
     # 제외 목록 1회만 로드 (경기 수만큼 반복 호출 방지)
     _excluded_set = set(exclude_list_load())
 
-    def _should_skip(code: str) -> bool:
+    def _should_skip(code: str, _me: set = None) -> bool:
         raw = base_name(code)
         if "★" in raw: return True
         if _is_duplicate_player(code): return True
         if _clean_player_key(code) in _excluded_set: return True
+        if _me and base_name(code) in _me: return True
         return False
 
     session_stats = {}
@@ -1423,14 +1426,16 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
         s2 = sc.get("score2", None)
         if s1 is None or s2 is None:
             continue
-        # 수정8: 관리자가 수동으로 중복 처리한 경기는 기록실 제외
+        # 경기 전체 중복 처리(스코어보드 is_dup) → 기록실 제외
         if sc.get("is_dup", False):
             continue
+        # 대진표 수동조정의 개인별 제외 목록
+        _match_excl = set(match.get("exclude_players", []))
 
         t1_codes = list(match["team1"])
         t2_codes = list(match["team2"])
-        t1_valid = [c for c in t1_codes if not _should_skip(c)]
-        t2_valid = [c for c in t2_codes if not _should_skip(c)]
+        t1_valid = [c for c in t1_codes if not _should_skip(c, _match_excl)]
+        t2_valid = [c for c in t2_codes if not _should_skip(c, _match_excl)]
         t1_keys  = [_clean_player_key(c) for c in t1_valid]
         t2_keys  = [_clean_player_key(c) for c in t2_valid]
 
@@ -3609,9 +3614,9 @@ if page == "📊 스코어보드":
     # ── 점수 입력 UI ─────────────────────────────────────────
     _can_edit = is_admin()   # 수정1: 저장·수정은 관리자만
 
-    def _save_score(idx, s1, s2, is_dup=False):
+    def _save_score(idx, s1, s2):
         """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
-        scores[str(idx)] = {"score1": int(s1), "score2": int(s2), "is_dup": is_dup}
+        scores[str(idx)] = {"score1": int(s1), "score2": int(s2)}
         st.session_state["sb_scores"] = scores
         st.session_state[f"locked_{idx}"] = True
         st.session_state.pop(f"editing_{idx}", None)
@@ -3681,6 +3686,24 @@ if page == "📊 스코어보드":
 [data-testid="stCheckbox"] label p { font-size: 0.72rem !important; }
 /* 경기카드 하단 Streamlit 여백 제거 */
 .stMarkdown { margin-bottom: 0 !important; }
+/* +/- 버튼 배경색 강조 (수정3) */
+[data-testid="stNumberInput"] button[aria-label="increment"],
+[data-testid="stNumberInput"] button[aria-label="decrement"] {
+    background-color: #e8f5e9 !important;
+    color: #2e7d32 !important;
+    border: 1px solid #a5d6a7 !important;
+    border-radius: 4px !important;
+    font-weight: 700 !important;
+}
+[data-testid="stNumberInput"] button[aria-label="increment"]:hover,
+[data-testid="stNumberInput"] button[aria-label="decrement"]:hover {
+    background-color: #c8e6c9 !important;
+}
+[data-testid="stNumberInput"] input {
+    background-color: #f9fbe7 !important;
+    border: 1px solid #c5e1a5 !important;
+    border-radius: 4px !important;
+}
 </style>""", unsafe_allow_html=True)
 
     league_list  = list(dict.fromkeys(m["league"] for m in schedule))
@@ -3782,8 +3805,7 @@ if page == "📊 스코어보드":
                                        use_container_width=True, help="저장"):
                             _save_score(idx,
                                         st.session_state.get(f"s1_{idx}", s1_new),
-                                        st.session_state.get(f"s2_{idx}", s2_new),
-                                        st.session_state.get(f"dup_{idx}", is_dup_saved))
+                                        st.session_state.get(f"s2_{idx}", s2_new))
                             st.rerun()
                         if _ic3.button("✖", key=f"cancel_{idx}",
                                        use_container_width=True, help="취소"):
@@ -3792,12 +3814,6 @@ if page == "📊 스코어보드":
                             else:
                                 st.session_state.pop(f"editing_{idx}", None)
                             st.rerun()
-                        # 중복 체크박스: 입력행 아래 별도 줄
-                        _dup_new = st.checkbox(
-                            "중복 경기 (기록 제외)",
-                            value=is_dup_saved,
-                            key=f"dup_{idx}"
-                        )
 
     st.markdown("---")
     # 점수 전체 초기화: 관리자만
@@ -4465,13 +4481,34 @@ elif page == "📋 대진표생성":
 
                     _all_4 = [_t1_new_a, _t1_new_b, _t2_new_a, _t2_new_b]
                     _dup_warn = len(set(_all_4)) < 4
-
                     if _dup_warn:
                         st.warning("⚠️ 4명 모두 달라야 합니다. 중복 선수가 있습니다.")
 
+                    # 수정2: 개인별 기록 제외 체크박스
+                    st.markdown("**기록실 제외 설정** (중복 참여 등 개인별 선택)")
+                    _code_map_pre = {base_name(p): p for p in _lg_players_all}
+                    _preview_players = [
+                        (_t1_new_a, _player_labels.get(_t1_new_a, _t1_new_a), "팀1A"),
+                        (_t1_new_b, _player_labels.get(_t1_new_b, _t1_new_b), "팀1B"),
+                        (_t2_new_a, _player_labels.get(_t2_new_a, _t2_new_a), "팀2A"),
+                        (_t2_new_b, _player_labels.get(_t2_new_b, _t2_new_b), "팀2B"),
+                    ]
+                    # 기존 저장된 exclude_players 불러오기
+                    _prev_excl = set(_sel_match.get("exclude_players", []))
+                    _excl_cc = st.columns(4)
+                    _new_excl = []
+                    for _ei, (_ek, _en, _elbl) in enumerate(_preview_players):
+                        _full_code = _code_map_pre.get(_ek, _ek)
+                        _is_excl = _excl_cc[_ei].checkbox(
+                            f"제외 {_en}", value=(base_name(_full_code) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_{_ei}",
+                            help=f"{_elbl}: {_en} 이 경기 기록 제외"
+                        )
+                        if _is_excl:
+                            _new_excl.append(base_name(_full_code))
+
                     if st.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
                                  disabled=_dup_warn):
-                        # 원래 코드(prefix 포함)를 복원
                         _code_map = {base_name(p): p for p in _lg_players_all}
                         _new_t1 = tuple([_code_map.get(_t1_new_a, _t1_new_a),
                                          _code_map.get(_t1_new_b, _t1_new_b)])
@@ -4483,14 +4520,15 @@ elif page == "📋 대진표생성":
                             "team1": _new_t1,
                             "team2": _new_t2,
                             "type":  _new_type,
+                            "exclude_players": _new_excl,  # 개인별 기록 제외
                         }
                         st.session_state["schedule"]    = _adj_matches
                         st.session_state["rp_schedule"] = _adj_matches
                         st.session_state["sb_schedule"] = _adj_matches
-                        # shelf 재저장
                         _ifr = st.session_state.get("last_gen_params",{}).get("is_fully_random", False)
                         shelf_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
-                        st.success(f"✅ #{_sel_mi+1} 경기 페어 조정 완료! 페이지가 갱신됩니다.")
+                        _excl_msg = f" (제외: {', '.join(_new_excl)})" if _new_excl else ""
+                        st.success(f"✅ #{_sel_mi+1} 경기 페어 조정 완료{_excl_msg}!")
                         st.rerun()
 
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
@@ -5284,7 +5322,13 @@ elif page == "🏆 기록실":
             st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
             _df_lg_disp = _df_lg_full.drop(columns=["리그"]).reset_index(drop=True)
-            st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True)
+            # 수정1: Streamlit 자동 배경색(숫자 gradient) 제거 → column_config으로 모든 컬럼 text화
+            import streamlit as _st_cc
+            _cc_cfg = {c: _st_cc.column_config.NumberColumn(c, format="%d")
+                       for c in ["출전경기","승","패","득점","실점","득실차"]
+                       if c in _df_lg_disp.columns}
+            st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
+                         column_config=_cc_cfg)
 
 elif page == "👥 회원명부":
     render_roster_page()
