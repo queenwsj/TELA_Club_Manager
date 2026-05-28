@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.3
+TELA CLUB Random Match Generator v5.4
 버전 이력: CHANGELOG.md 참고
 """
 
@@ -49,6 +49,14 @@ GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회
 SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
 RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
 EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
+SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 구글시트 탭명
+SETTINGS_SHEET_NAME  = "settings"                 # 앱 설정·계정·회원·게스트·제외 탭명
+# 컬럼 정의
+SCHED_COLS = [
+    "date_key","is_fully_random",
+    "match_idx","round","league","team1","team2","type","exclude_players",
+    "score1","score2","is_dup",
+]
 
 # ── 세션 토큰 헬퍼 (query_params 기반 로그인 유지) ─────────────
 SESSION_EXPIRE_DAYS = 30
@@ -103,6 +111,11 @@ def guest_load() -> list:
 def guest_save(guests: list):
     with shelve.open(GUEST_PATH) as db:
         db["guests"] = guests
+    # 구글시트 동기화
+    try:
+        _settings_gsheet_set("guests", guests)
+    except Exception:
+        pass
 
 def guest_add(name: str, gender: str, league: str, code: str):
     guests = guest_load()
@@ -130,6 +143,11 @@ def user_load_all() -> dict:
 def user_save_all(data: dict):
     with shelve.open(USER_PATH) as db:
         db["users"] = data
+    # 구글시트 동기화
+    try:
+        _settings_gsheet_set("users", data)
+    except Exception:
+        pass
 
 def user_ensure_admin():
     """secrets의 ADMIN_ID/ADMIN_PASSWORD로 최초 관리자 계정 보장"""
@@ -262,21 +280,302 @@ def is_admin() -> bool:
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool = False):
+    # ① 로컬 shelve (빠른 읽기 캐시)
     with shelve.open(SHELF_PATH) as db:
         db[date_key] = {"schedule": schedule, "scores": scores, "is_fully_random": is_fully_random}
+    # ② 구글시트 schedules 탭 (영구 저장 — 재시작 후 복원용)
+    try:
+        _gsheet_sched_save(date_key, schedule, scores, is_fully_random)
+    except Exception:
+        pass
 
 def shelf_load(date_key: str) -> Optional[dict]:
+    # ① 로컬 shelve 우선
     with shelve.open(SHELF_PATH) as db:
-        return db.get(date_key, None)
+        val = db.get(date_key, None)
+    if val is not None:
+        return val
+    # ② 없으면 구글시트에서 복원 (재시작 후)
+    try:
+        val = _gsheet_sched_load(date_key)
+        if val:
+            # 로컬 캐시에 다시 저장
+            with shelve.open(SHELF_PATH) as db:
+                db[date_key] = val
+        return val
+    except Exception:
+        return None
 
 def shelf_list_dates() -> List[str]:
+    # ① 로컬 shelve 우선
     with shelve.open(SHELF_PATH) as db:
-        return sorted(db.keys(), reverse=True)
+        local_keys = sorted(db.keys(), reverse=True)
+    if local_keys:
+        return local_keys
+    # ② 없으면 구글시트에서 목록 조회
+    try:
+        return _gsheet_sched_list()
+    except Exception:
+        return []
 
 def shelf_delete(date_key: str):
+    # ① 로컬 shelve
     with shelve.open(SHELF_PATH) as db:
         if date_key in db:
             del db[date_key]
+    # ② 구글시트
+    try:
+        _gsheet_sched_delete(date_key)
+    except Exception:
+        pass
+
+
+# ── 구글시트 schedules 탭 헬퍼 ────────────────────────────────
+
+@st.cache_resource
+def _get_schedules_sheet():
+    """schedules 워크시트. 없으면 자동 생성."""
+    try:
+        wb = _get_gsheet_connection()
+        try:
+            ws = wb.worksheet(SCHEDULES_SHEET_NAME)
+        except Exception:
+            ws = wb.add_worksheet(title=SCHEDULES_SHEET_NAME, rows=5000, cols=len(SCHED_COLS))
+            ws.append_row(SCHED_COLS)
+        # 헤더 보정
+        headers = ws.row_values(1)
+        if not headers or headers[0] != "date_key":
+            ws.insert_row(SCHED_COLS, 1)
+        return ws
+    except Exception:
+        return None
+
+
+def _gsheet_sched_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool):
+    """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return
+    # 기존 행 삭제
+    all_rows = ws.get_all_values()
+    del_rows = [i+1 for i, row in enumerate(all_rows)
+                if i > 0 and len(row) > 0 and row[0] == date_key]
+    for ri in sorted(del_rows, reverse=True):
+        ws.delete_rows(ri)
+    # 새 행 생성
+    new_rows = []
+    for idx, match in enumerate(schedule):
+        sc  = scores.get(str(idx), {})
+        new_rows.append([
+            date_key,
+            "1" if is_fully_random else "0",
+            str(idx),
+            str(match.get("round", "")),
+            str(match.get("league", "")),
+            "|".join(str(p) for p in match.get("team1", [])),
+            "|".join(str(p) for p in match.get("team2", [])),
+            str(match.get("type", "")),
+            ",".join(str(p) for p in match.get("exclude_players", [])),
+            str(sc.get("score1", "")) if sc else "",
+            str(sc.get("score2", "")) if sc else "",
+            "1" if sc.get("is_dup", False) else "0",
+        ])
+    if new_rows:
+        ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+
+
+def _gsheet_sched_load(date_key: str) -> Optional[dict]:
+    """구글시트에서 특정 date_key 로드."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return None
+    all_rows = ws.get_all_records()
+    rows = [r for r in all_rows if str(r.get("date_key","")) == date_key]
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda r: int(r.get("match_idx", 0)))
+    schedule = []
+    scores   = {}
+    is_fully_random = False
+    for r in rows:
+        t1 = tuple(r["team1"].split("|")) if r.get("team1") else ()
+        t2 = tuple(r["team2"].split("|")) if r.get("team2") else ()
+        ep = [p for p in r.get("exclude_players","").split(",") if p]
+        schedule.append({
+            "round":           str(r.get("round","")),
+            "league":          str(r.get("league","")),
+            "team1":           t1,
+            "team2":           t2,
+            "type":            str(r.get("type","")),
+            "exclude_players": ep,
+        })
+        s1 = r.get("score1","")
+        s2 = r.get("score2","")
+        if s1 != "" and s2 != "":
+            try:
+                scores[str(r["match_idx"])] = {
+                    "score1": int(s1), "score2": int(s2),
+                    "is_dup": str(r.get("is_dup","0")) == "1",
+                }
+            except (ValueError, TypeError):
+                pass
+        if str(r.get("is_fully_random","0")) == "1":
+            is_fully_random = True
+    return {"schedule": schedule, "scores": scores, "is_fully_random": is_fully_random}
+
+
+def _gsheet_sched_list() -> List[str]:
+    """구글시트에서 저장된 date_key 목록 조회."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return []
+    try:
+        all_vals = ws.get_all_values()
+        keys = []
+        seen = set()
+        for row in all_vals[1:]:
+            if row and row[0] and row[0] not in seen:
+                keys.append(row[0])
+                seen.add(row[0])
+        return sorted(keys, reverse=True)
+    except Exception:
+        return []
+
+
+def _gsheet_sched_delete(date_key: str):
+    """구글시트에서 특정 date_key 행 모두 삭제."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return
+    all_rows = ws.get_all_values()
+    del_rows = [i+1 for i, row in enumerate(all_rows)
+                if i > 0 and len(row) > 0 and row[0] == date_key]
+    for ri in sorted(del_rows, reverse=True):
+        ws.delete_rows(ri)
+
+
+def _restore_shelf_from_gsheet():
+    """앱 시작 시 구글시트 → 로컬 shelve 복원. session당 1회만 실행."""
+    if st.session_state.get("_shelf_restored"):
+        return
+    st.session_state["_shelf_restored"] = True
+    # ① 대진표·점수 복원
+    try:
+        with shelve.open(SHELF_PATH) as db:
+            local_keys = set(db.keys())
+        gsheet_keys = _gsheet_sched_list()
+        for dk in [k for k in gsheet_keys if k not in local_keys]:
+            val = _gsheet_sched_load(dk)
+            if val:
+                with shelve.open(SHELF_PATH) as db:
+                    db[dk] = val
+    except Exception:
+        pass
+    # ② 설정 데이터 복원 (회원·계정·게스트·제외선수)
+    _settings_restore_all()
+
+
+# ============================================================
+# 구글시트 settings 탭 — 범용 key-value 이중화
+# ============================================================
+# 구조: key | value (JSON 문자열)
+# key 예: "members", "users", "guests", "exclude"
+
+@st.cache_resource
+def _get_settings_sheet():
+    """settings 워크시트. 없으면 자동 생성."""
+    try:
+        wb = _get_gsheet_connection()
+        try:
+            ws = wb.worksheet(SETTINGS_SHEET_NAME)
+        except Exception:
+            ws = wb.add_worksheet(title=SETTINGS_SHEET_NAME, rows=200, cols=2)
+            ws.append_row(["key", "value"])
+        headers = ws.row_values(1)
+        if not headers or headers[0] != "key":
+            ws.insert_row(["key", "value"], 1)
+        return ws
+    except Exception:
+        return None
+
+
+def _settings_gsheet_get(key: str):
+    """구글시트 settings 탭에서 key에 해당하는 값 로드. JSON 역직렬화."""
+    try:
+        ws = _get_settings_sheet()
+        if ws is None:
+            return None
+        rows = ws.get_all_values()
+        for row in rows[1:]:
+            if len(row) >= 2 and row[0] == key:
+                return json.loads(row[1])
+        return None
+    except Exception:
+        return None
+
+
+def _settings_gsheet_set(key: str, value):
+    """구글시트 settings 탭에 key-value 저장. 기존 행 교체."""
+    try:
+        ws = _get_settings_sheet()
+        if ws is None:
+            return
+        rows = ws.get_all_values()
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) >= 1 and row[0] == key:
+                ws.update_cell(i, 2, json.dumps(value, ensure_ascii=False))
+                return
+        ws.append_row([key, json.dumps(value, ensure_ascii=False)])
+    except Exception:
+        pass
+
+
+def _settings_restore_all():
+    """앱 시작 시 구글시트 settings → 각 shelve 복원."""
+    # members
+    try:
+        with shelve.open(MEMBER_PATH) as db:
+            has = "members" in db and bool(db.get("members"))
+        if not has:
+            val = _settings_gsheet_get("members")
+            if val:
+                with shelve.open(MEMBER_PATH) as db:
+                    db["members"] = val
+    except Exception:
+        pass
+    # users
+    try:
+        with shelve.open(USER_PATH) as db:
+            has = "users" in db and bool(db.get("users"))
+        if not has:
+            val = _settings_gsheet_get("users")
+            if val:
+                with shelve.open(USER_PATH) as db:
+                    db["users"] = val
+    except Exception:
+        pass
+    # guests
+    try:
+        with shelve.open(GUEST_PATH) as db:
+            has = "guests" in db and bool(db.get("guests"))
+        if not has:
+            val = _settings_gsheet_get("guests")
+            if val:
+                with shelve.open(GUEST_PATH) as db:
+                    db["guests"] = val
+    except Exception:
+        pass
+    # exclude
+    try:
+        with shelve.open(EXCLUDE_PATH) as db:
+            has = "excluded" in db and bool(db.get("excluded"))
+        if not has:
+            val = _settings_gsheet_get("exclude")
+            if val is not None:
+                with shelve.open(EXCLUDE_PATH) as db:
+                    db["excluded"] = val
+    except Exception:
+        pass
 
 # ── 회원 관리 shelve 헬퍼 ─────────────────────────────────────
 def member_load_all() -> dict:
@@ -287,6 +586,11 @@ def member_load_all() -> dict:
 def member_save_all(data: dict):
     with shelve.open(MEMBER_PATH) as db:
         db["members"] = data
+    # 구글시트 동기화
+    try:
+        _settings_gsheet_set("members", data)
+    except Exception:
+        pass
 
 def member_add(league: str, name: str, gender: str):
     data = member_load_all()
@@ -1538,6 +1842,11 @@ def exclude_list_load() -> list:
 def exclude_list_save(names: list):
     with shelve.open(EXCLUDE_PATH) as db:
         db["excluded"] = sorted(list(set(names)))
+    # 구글시트 동기화
+    try:
+        _settings_gsheet_set("exclude", sorted(list(set(names))))
+    except Exception:
+        pass
 
 def exclude_list_add(name: str):
     names = exclude_list_load()
@@ -1685,7 +1994,10 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.3", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.4", page_icon="🎾", layout="wide")
+
+# 앱 시작 시 구글시트 → 로컬 shelve 복원 (재시작 후 데이터 유지)
+_restore_shelf_from_gsheet()
 
 
 # ============================================================
@@ -3486,7 +3798,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.3")
+st.sidebar.caption("v5.4")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5183,7 +5495,7 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.3 기능 안내
+                ### v5.4 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
