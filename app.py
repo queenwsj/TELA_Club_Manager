@@ -43,7 +43,6 @@ import secrets as _secrets
 SAVE_DIR   = os.path.join(os.path.dirname(__file__), ".tela_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
 SHELF_PATH   = os.path.join(SAVE_DIR, "scoreboard")
-MEMBER_PATH  = os.path.join(SAVE_DIR, "members")
 USER_PATH    = os.path.join(SAVE_DIR, "users")
 GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
 SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
@@ -532,17 +531,6 @@ def _settings_gsheet_set(key: str, value):
 
 def _settings_restore_all():
     """앱 시작 시 구글시트 settings → 각 shelve 복원."""
-    # members
-    try:
-        with shelve.open(MEMBER_PATH) as db:
-            has = "members" in db and bool(db.get("members"))
-        if not has:
-            val = _settings_gsheet_get("members")
-            if val:
-                with shelve.open(MEMBER_PATH) as db:
-                    db["members"] = val
-    except Exception:
-        pass
     # users
     try:
         with shelve.open(USER_PATH) as db:
@@ -576,149 +564,6 @@ def _settings_restore_all():
                     db["excluded"] = val
     except Exception:
         pass
-
-# ── 회원 관리 shelve 헬퍼 ─────────────────────────────────────
-def member_load_all() -> dict:
-    """전체 회원 데이터 로드. 구조: {league_name: [{name, gender}, ...]}"""
-    with shelve.open(MEMBER_PATH) as db:
-        return dict(db.get("members", {}))
-
-def member_save_all(data: dict):
-    with shelve.open(MEMBER_PATH) as db:
-        db["members"] = data
-    # 구글시트 동기화
-    try:
-        _settings_gsheet_set("members", data)
-    except Exception:
-        pass
-
-def member_add(league: str, name: str, gender: str):
-    data = member_load_all()
-    if league not in data:
-        data[league] = []
-    # 중복 방지
-    if not any(m["name"] == name for m in data[league]):
-        data[league].append({"name": name, "gender": gender})
-    member_save_all(data)
-
-def member_remove(league: str, name: str):
-    data = member_load_all()
-    if league in data:
-        data[league] = [m for m in data[league] if m["name"] != name]
-    member_save_all(data)
-
-
-# ── 구글 시트 회원 명부 연동 ──────────────────────────────────
-SHEET_ID = "1QjzPLZuXiE2BKt9lC-6Gzbi1mssYkosR12Q2tO4rVJk"
-UNASSIGNED_KEY = "미배정"   # 리그 미지정 회원 임시 버킷
-
-def _get_gspread_client():
-    """Streamlit secrets의 gcp_service_account로 gspread 인증"""
-    import gspread
-    from google.oauth2.service_account import Credentials
-    scopes = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    # private_key 개행 처리 (TOML에서 \\n → \n)
-    if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return gspread.authorize(creds)
-
-def sync_from_sheet(target_league: str) -> dict:
-    """
-    구글 시트에서 활성 회원 읽기.
-    컬럼 구조: id(A) category(B) name(C) cafe_id(D) birth_year(E)
-               gender(F) phone(G) region(H) join_date(I) dormant_period(J)
-               leave_date(K) email(L) application(M) memo(N)
-               updated_at(O) deleted_at(P)
-
-    상태 판별:
-      - deleted_at 값 있음         → 탈퇴 (완전 제외)
-      - leave_date 값 있음         → 탈퇴 (완전 제외)
-      - dormant_period 비어있음    → 정상
-      - dormant_period 종료일이 오늘 이전 → 정상 (휴면 종료)
-      - dormant_period 종료일이 오늘 이후 → 휴면
-      - dormant_period 종료일 없음  → 휴면 (진행 중)
-
-    반환: {"imported": int, "skipped": int, "added": int}
-    """
-    from datetime import date as _date
-    today = _date.today()
-
-    def _parse_dormant(dormant_str: str) -> str:
-        """dormant_period 문자열 → '정상' 또는 '휴면'"""
-        s = dormant_str.strip()
-        if not s:
-            return "정상"
-        # '2024-01-01~2024-06-30' 또는 '2024-01-01~' 형태
-        if "~" in s:
-            end_part = s.split("~", 1)[1].strip()
-            if end_part:
-                try:
-                    end_date = _date.fromisoformat(end_part[:10])
-                    return "정상" if end_date < today else "휴면"
-                except ValueError:
-                    pass
-            return "휴면"   # 종료일 없으면 진행 중
-        # 날짜 하나만 있을 때 (시작일로 간주 → 휴면 진행 중)
-        return "휴면"
-
-    gc   = _get_gspread_client()
-    sh   = gc.open_by_key(SHEET_ID)
-    ws   = sh.sheet1
-    rows = ws.get_all_records()
-
-    imported, skipped = 0, 0
-    new_members = []
-    for row in rows:
-        name         = str(row.get("name",           "")).strip()
-        gender_raw   = str(row.get("gender",          "")).strip().upper()
-        deleted_at   = str(row.get("deleted_at",      "")).strip()
-        leave_date   = str(row.get("leave_date",      "")).strip()
-        dormant      = str(row.get("dormant_period",  "")).strip()
-
-        if not name:
-            skipped += 1; continue
-        if deleted_at or leave_date:
-            skipped += 1; continue
-
-        if gender_raw in ("남", "M", "MALE", "1"):
-            gender = "M"
-        elif gender_raw in ("여", "F", "W", "FEMALE", "2"):
-            gender = "W"
-        else:
-            gender = "M"
-
-        status = _parse_dormant(dormant)
-        new_members.append({"name": name, "gender": gender, "status": status})
-        imported += 1
-
-    # 기존 shelve 머지 — status는 시트 기준으로 갱신, 수동 override는 유지 안 함
-    # (재가져오기 시 항상 시트가 최신 source of truth)
-    data = member_load_all()
-    existing_by_name: dict = {}
-    for lg, members in data.items():
-        for idx, m in enumerate(members):
-            existing_by_name[m["name"]] = (lg, idx)
-
-    added = 0
-    for m in new_members:
-        if m["name"] in existing_by_name:
-            lg, idx = existing_by_name[m["name"]]
-            data[lg][idx]["status"] = m["status"]
-        else:
-            bucket = target_league if target_league else UNASSIGNED_KEY
-            if bucket not in data:
-                data[bucket] = []
-            data[bucket].append(m)
-            added += 1
-
-    member_save_all(data)
-    return {"imported": imported, "skipped": skipped, "added": added}
-
 
 # [제거] ADMIN_PASSWORD: 어디서도 사용되지 않음.
 # 관리자 비밀번호는 RS_ADMIN_PASSWORD(섹션 R)로 별도 관리.
@@ -1860,11 +1705,6 @@ def exclude_list_remove(name: str):
     names = [n for n in names if n != name.strip()]
     exclude_list_save(names)
 
-def _is_excluded_player(player_key: str) -> bool:
-    """player_key(순수 이름)가 제외 목록에 있는지 확인."""
-    excluded = exclude_list_load()
-    return player_key.strip() in excluded
-
 
 @st.cache_data(ttl=120)
 def records_load_cached() -> list:
@@ -2168,27 +2008,6 @@ def _get_gsheet_connection():
     wb     = client.open_by_key(st.secrets["SHEET_ID"])
     return wb
 
-def get_sheet():
-    """sheet1 반환. 컬럼 마이그레이션은 최초 1회만 실행."""
-    wb    = _get_gsheet_connection()
-    sheet = wb.sheet1
-    # 마이그레이션은 세션당 1회만 (session_state 플래그)
-    if not st.session_state.get("_sheet_migrated"):
-        try:
-            existing_headers = sheet.row_values(1)
-            if not existing_headers or existing_headers[0] != "id":
-                sheet.insert_row(RS_COLUMNS, 1)
-            else:
-                missing = [c for c in RS_COLUMNS if c not in existing_headers]
-                for col_name in missing:
-                    next_col = len(existing_headers) + 1
-                    sheet.update_cell(1, next_col, col_name)
-                    existing_headers.append(col_name)
-        except Exception:
-            pass
-        st.session_state["_sheet_migrated"] = True
-    return sheet
-
 @st.cache_resource
 def get_audit_sheet():
     """변경 이력 시트 (audit_log 탭). 없으면 자동 생성."""
@@ -2268,30 +2087,6 @@ def save_league_to_sheet(member_id: int, league_value: str):
         st.error(f"시트에서 id={member_id}를 찾을 수 없습니다.")
         return False
     sheet.update_cell(idx + 1, league_col, league_value)
-    st.cache_data.clear()
-    return True
-
-def save_league_by_name(member_name: str, league_value: str) -> bool:
-    """구글 시트에서 이름으로 회원을 찾아 league 컬럼 업데이트."""
-    sheet   = _get_gsheet_connection().sheet1
-    headers = sheet.row_values(1)
-    if "league" not in headers:
-        st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
-        return False
-    if "name" not in headers:
-        st.error("구글 시트에 name 컬럼이 없습니다.")
-        return False
-    name_col   = headers.index("name") + 1
-    league_col = headers.index("league") + 1
-    # 이름 열 전체 읽기
-    all_names  = sheet.col_values(name_col)
-    # 헤더(1행) 제외하고 이름 검색
-    found_rows = [i+1 for i, n in enumerate(all_names) if i > 0 and n.strip() == member_name.strip()]
-    if not found_rows:
-        st.error(f"구글 시트에서 '{member_name}'을 찾을 수 없습니다.")
-        return False
-    # 첫 번째 매칭 행 업데이트
-    sheet.update_cell(found_rows[0], league_col, league_value)
     st.cache_data.clear()
     return True
 
@@ -2466,9 +2261,6 @@ def format_dormant_periods(periods):
         if not start: continue
         parts.append(f"{start}~{end}")
     return "; ".join(parts)
-
-def has_ongoing_dormant(s):
-    return any(not p["end"] for p in parse_dormant_periods(s))
 
 def check_dormant_overlap(periods):
     """휴면 기간 겹침 및 진행중 중복 검사. 문제 있으면 에러 문자열 반환, 없으면 None."""
