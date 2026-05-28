@@ -9,26 +9,69 @@
 ### 🔴 버그수정
 
 **Streamlit Cloud 재시작 시 모든 로컬 데이터 소실**
-- 원인: 비활성 상태에서 컨테이너 재시작 → `.tela_data/` 전체 초기화
-- 영향: 대진표·점수·참가자 선택·계정·게스트·제외 선수 모두 소실
+
+- 원인: Streamlit Cloud는 앱이 비활성 상태에서 컨테이너를 재시작하며 로컬 파일시스템 초기화
+- 결과: `.tela_data/` 폴더 전체 삭제 → 대진표·점수·계정·게스트·제외 선수 모두 소실
+- 구글시트 연동 데이터(records, 회원명부)는 영향 없음
+
 
 ### 🟢 신규
 
-**전체 shelve 데이터 구글시트 이중화**
+**전체 shelve 데이터 구글시트 이중화 (재시작 후 자동 복원)**
 
-`schedules` 탭 (대진표·점수):
-- `shelf_save/load/list/delete` 모두 구글시트 동기화
-- 저장 컬럼: date_key, is_fully_random, match_idx, round, league, team1, team2, type, exclude_players, score1, score2, is_dup
+저장 시 로컬 shelve + 구글시트에 동시 저장.
+앱 시작 시 `_restore_shelf_from_gsheet()` 자동 실행 → 구글시트에서 로컬 복원 (세션당 1회).
 
-`settings` 탭 (key-value JSON):
-- `members` — 리그별 참가자 선택
-- `users` — 계정·비밀번호 해시·권한
-- `guests` — 게스트 목록
-- `exclude` — 기록실 제외 선수
+**`schedules` 탭 — 대진표·점수 영구 저장**
 
-앱 시작 시 `_restore_shelf_from_gsheet()` 자동 실행:
-- 구글시트 → 로컬 shelve 자동 복원 (세션당 1회)
-- 이후 로컬 캐시로 빠르게 읽고, 변경 시 구글시트 즉시 동기화
+|함수                  |동작                                       |
+|--------------------|-----------------------------------------|
+|`shelf_save()`      |로컬 shelve 저장 후 `_gsheet_sched_save()` 동기화|
+|`shelf_load()`      |로컬 우선 조회 → 없으면 `_gsheet_sched_load()` 복원 |
+|`shelf_list_dates()`|로컬 우선 → 없으면 `_gsheet_sched_list()` 반환    |
+|`shelf_delete()`    |로컬 + `_gsheet_sched_delete()` 동시 삭제      |
+
+저장 컬럼:
+`date_key` · `is_fully_random` · `match_idx` · `round` · `league` ·
+`team1` · `team2` · `type` · `exclude_players` · `score1` · `score2` · `is_dup`
+
+**`settings` 탭 — key-value JSON 이중화**
+
+|key      |내용           |함수                   |
+|---------|-------------|---------------------|
+|`users`  |계정·비밀번호 해시·권한|`user_save_all()`    |
+|`guests` |게스트 목록       |`guest_save()`       |
+|`exclude`|기록실 제외 선수    |`exclude_list_save()`|
+
+헬퍼: `_settings_gsheet_get(key)` · `_settings_gsheet_set(key, value)`
+복원: `_settings_restore_all()` — 앱 시작 시 각 shelve에 자동 적재
+
+> **회원 데이터(members)는 이중화 미적용.**
+> 회원 데이터는 구글시트 `sheet1`이 원본이므로 shelve 복사본이 불필요.
+
+
+### 🛠 코드 정리 (죽은 코드 제거 — 5778줄 → 5570줄, **-208줄**)
+
+|제거 항목                                           |줄 수|제거 사유                             |
+|------------------------------------------------|---|----------------------------------|
+|`sync_from_sheet`                               |91 |회원 연동이 `load_df` 직접 방식으로 대체됨      |
+|`save_league_by_name`                           |23 |`save_league_to_sheet`(id 기준)로 대체 |
+|`get_sheet`                                     |20 |`load_df`가 컬럼 자동 보정 처리, 마이그레이션 불필요|
+|`_get_gspread_client`                           |14 |`_get_gsheet_connection`으로 통일됨    |
+|`member_save_all` / `member_load_all`           |13 |회원은 구글시트 sheet1에서 직접 관리           |
+|`member_add`                                    |8  |동일                                |
+|`member_remove`                                 |5  |동일                                |
+|`_is_excluded_player`                           |4  |`_excluded_set` 직접 조회로 대체됨        |
+|`has_ongoing_dormant`                           |2  |미사용                               |
+|`MEMBER_PATH` · `SHEET_ID` · `UNASSIGNED_KEY` 상수|3  |미사용                               |
+
+**점검 결과 이상 없음:**
+
+- 모듈 레벨 중복 함수 없음
+- `bare except:` 0개 (전부 구체적 예외 처리)
+- `print()` 디버그 잔재 없음
+- TODO / FIXME 없음
+- 중복 import 없음
 
 ---
 
