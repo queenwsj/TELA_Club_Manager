@@ -1,4 +1,35 @@
 # CHANGELOG — TELA CLUB Random Match Generator
+
+
+
+---
+
+## v5.4 — 2026-05-29
+
+### 🔴 버그수정
+
+**Streamlit Cloud 재시작 시 모든 로컬 데이터 소실**
+- 원인: 비활성 상태에서 컨테이너 재시작 → `.tela_data/` 전체 초기화
+- 영향: 대진표·점수·참가자 선택·계정·게스트·제외 선수 모두 소실
+
+### 🟢 신규
+
+**전체 shelve 데이터 구글시트 이중화**
+
+`schedules` 탭 (대진표·점수):
+- `shelf_save/load/list/delete` 모두 구글시트 동기화
+- 저장 컬럼: date_key, is_fully_random, match_idx, round, league, team1, team2, type, exclude_players, score1, score2, is_dup
+
+`settings` 탭 (key-value JSON):
+- `members` — 리그별 참가자 선택
+- `users` — 계정·비밀번호 해시·권한
+- `guests` — 게스트 목록
+- `exclude` — 기록실 제외 선수
+
+앱 시작 시 `_restore_shelf_from_gsheet()` 자동 실행:
+- 구글시트 → 로컬 shelve 자동 복원 (세션당 1회)
+- 이후 로컬 캐시로 빠르게 읽고, 변경 시 구글시트 즉시 동기화
+
 ---
 
 ## v5.3 — 2026-05-26
