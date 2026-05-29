@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.5
+TELA CLUB Random Match Generator v5.6
 버전 이력: CHANGELOG.md 참고
 """
 
@@ -1940,7 +1940,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.5", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.6", page_icon="🎾", layout="wide")
 
 
 # ============================================================
@@ -3704,7 +3704,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.5")
+st.sidebar.caption("v5.6")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5485,7 +5485,7 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.5 기능 안내
+                ### v5.6 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
