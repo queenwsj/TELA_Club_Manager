@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.6
+TELA CLUB Random Match Generator v5.7
 버전 이력: CHANGELOG.md 참고
 """
 
@@ -456,6 +456,11 @@ def is_logged_in() -> bool:
 def is_admin() -> bool:
     u = get_app_user()
     return bool(u and u.get("role") == "admin")
+
+def is_sub_admin() -> bool:
+    """부관리자 이상 여부 (관리자 포함)."""
+    u = get_app_user()
+    return bool(u and u.get("role") in ("admin", "sub_admin"))
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
@@ -1983,7 +1988,7 @@ def _build_matches_df(schedule):
         "매치종류": d["type"],
     } for d in schedule])
 
-def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict):
+def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict, schedule=None):
     """대진표 탭 공통 렌더러."""
     import streamlit as _st
     _st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
@@ -1999,9 +2004,32 @@ def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_p
     summary = df_matches["매치종류"].value_counts()
     _st.caption(f"총 {len(df_matches)}경기 | "
                 + " | ".join(f"{k}: {v}경기" for k,v in summary.items()))
-    total_players = sum(len(pl) for pl in league_players_dict.values())
-    per_league = " · ".join(f"{lg} {len(pl)}명" for lg,pl in league_players_dict.items() if pl)
-    _st.caption(f"👥 총 {total_players}명  ({per_league})")
+
+    # league_players_dict가 비어있으면 schedule에서 역산 (불러오기 직후 등)
+    if not league_players_dict or not any(league_players_dict.values()):
+        if schedule:
+            _rb: Dict[str, dict] = {}
+            for _m in schedule:
+                _lg = _m.get("league", "")
+                if _lg not in _rb:
+                    _rb[_lg] = {}
+                for _p in list(_m.get("team1", [])) + list(_m.get("team2", [])):
+                    _rb[_lg][base_name(_p)] = _p
+            league_players_dict = {lg: list(d.values()) for lg, d in _rb.items()}
+
+    total_m, total_w = 0, 0
+    per_parts = []
+    for lg, pl in league_players_dict.items():
+        if not pl:
+            continue
+        m_cnt = sum(1 for p in pl if get_gender(p) == "M")
+        w_cnt = sum(1 for p in pl if get_gender(p) == "W")
+        total_m += m_cnt
+        total_w += w_cnt
+        per_parts.append(f"{lg} {len(pl)}명(남{m_cnt}/여{w_cnt})")
+    total_players = total_m + total_w
+    per_league = " · ".join(per_parts)
+    _st.caption(f"👥 총 {total_players}명 (남 {total_m}명 · 여 {total_w}명)  {per_league}")
 
 def _render_basic_validation(df_full):
     """검증 리포트 공통 부분 (3경기 미달, 4경기 초과)."""
@@ -3192,7 +3220,7 @@ def render_roster_page():
             for uid, uinfo in list(all_users.items()):
                 ucols = st.columns([2, 2, 1, 1, 1])
                 ucols[0].write(uid)
-                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else '회원'})")
+                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else ('부관리자' if uinfo.get('role')=='sub_admin' else '일반회원')})")
                 # 비밀번호 변경
                 new_pw_key = f"chpw_{uid}"
                 new_pw = ucols[2].text_input("새PW", key=new_pw_key,
@@ -3219,7 +3247,7 @@ def render_roster_page():
             new_uid   = nc1.text_input("아이디", key="new_uid", label_visibility="collapsed", placeholder="아이디")
             new_upw   = nc2.text_input("비밀번호", key="new_upw", label_visibility="collapsed", placeholder="비밀번호")
             new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
-            new_urole = nc4.selectbox("권한", ["회원", "관리자"], key="new_urole", label_visibility="collapsed")
+            new_urole = nc4.selectbox("권한", ["일반회원", "부관리자", "관리자"], key="new_urole", label_visibility="collapsed")
             if nc5.button("➕ 추가", key="add_user_btn"):
                 import re as _re_uid
                 _uid_val = new_uid.strip()
@@ -3228,7 +3256,12 @@ def render_roster_page():
                     if not _re_uid.match(r'^[A-Za-z0-9]+$', _uid_val):
                         st.error("아이디는 영문과 숫자만 사용할 수 있습니다. (한글·특수문자 불가)")
                     else:
-                        role_val = "admin" if new_urole == "관리자" else "member"
+                        if new_urole == "관리자":
+                            role_val = "admin"
+                        elif new_urole == "부관리자":
+                            role_val = "sub_admin"
+                        else:
+                            role_val = "member"
                         ok = user_add(_uid_val, new_upw.strip(), role_val, new_uname.strip())
                         if ok:
                             st.success(f"계정 '{_uid_val}' 추가 완료")
@@ -3806,7 +3839,7 @@ if "app_user" not in st.session_state:
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
 _u = get_app_user()
 if _u:
-    role_label = "🔑 관리자" if _u["role"] == "admin" else "👤 회원"
+    role_label = "🔑 관리자" if _u["role"] == "admin" else ("🗝️ 부관리자" if _u["role"] == "sub_admin" else "👤 일반회원")
     st.sidebar.markdown(
         f'<div style="background:#d1fae5;border-radius:8px;padding:8px 10px;'
         f'font-size:0.8rem;color:#065f46;font-weight:700;margin-bottom:6px;">'
@@ -3886,6 +3919,11 @@ st.sidebar.markdown("---")
 if page == "📊 스코어보드":
 
     st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
+
+    # 스코어보드: 부관리자 이상 로그인 필요
+    if not is_sub_admin():
+        st.warning("🔐 스코어보드는 등록 계정(부관리자 이상)으로 로그인 후 이용할 수 있습니다.")
+        st.stop()
     # 구글시트 동기화 오류 표시 (디버깅용, 관리자만)
     if is_admin():
         _errs = st.session_state.pop("_gsheet_errors", [])
@@ -4639,11 +4677,21 @@ elif page == "📋 대진표생성":
                 for _m in _loaded_sched:
                     update_stats(_loaded_stats, _m["team1"], _m["team2"],
                                  _m["type"].replace("(중복)",""), _m["round"], _m["league"])
+                # 불러오기 시 league_players를 schedule에서 역산
+                # → 참여자 수 0 버그 & 색상 회색 버그 수정
+                _lp_rebuild: Dict[str, dict] = {}
+                for _m in _loaded_sched:
+                    _lg = _m.get("league", "")
+                    if _lg not in _lp_rebuild:
+                        _lp_rebuild[_lg] = {}
+                    for _p in list(_m.get("team1", [])) + list(_m.get("team2", [])):
+                        _lp_rebuild[_lg][base_name(_p)] = _p
+                _lp_final = {lg: list(d.values()) for lg, d in _lp_rebuild.items()}
                 st.session_state.update({
                     "rp_schedule":     _loaded_sched,
                     "stats":           _loaded_stats,
                     "last_gen_params": {
-                        "league_players":  {},
+                        "league_players":  _lp_final,
                         "is_fully_random": _loaded_is_fully_random,
                         "league_configs":  {},
                         "use_seed":        False,
@@ -4656,38 +4704,41 @@ elif page == "📋 대진표생성":
             else:
                 st.sidebar.error("불러오기 실패")
 
-        # 삭제 (2단계 확인)
-        if _lb2.button("🗑️ Del", key="sb_delete_btn", use_container_width=True):
-            st.session_state["_sb_confirm_del"] = _sel_key
+        # 삭제 (2단계 확인) — 관리자 전용
+        if is_admin():
+            if _lb2.button("🗑️ Del", key="sb_delete_btn", use_container_width=True):
+                st.session_state["_sb_confirm_del"] = _sel_key
 
-        if st.session_state.get("_sb_confirm_del") == _sel_key:
-            st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
-            _dc1, _dc2 = st.sidebar.columns([1, 1])
-            if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
-                shelf_delete(_sel_key)
-                # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
-                try:
-                    records_delete_by_date(_sel_key)
-                    st.cache_data.clear()
-                except Exception:
-                    pass
-                st.session_state.pop("_sb_confirm_del", None)
-                if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
-                    st.session_state.pop("rp_schedule", None)
-                    st.session_state.pop("stats", None)
-                    st.session_state.pop("last_gen_params", None)
-                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
-                st.rerun()
-            if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
-                st.session_state.pop("_sb_confirm_del", None)
-                st.rerun()
+            if st.session_state.get("_sb_confirm_del") == _sel_key:
+                st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
+                _dc1, _dc2 = st.sidebar.columns([1, 1])
+                if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
+                    shelf_delete(_sel_key)
+                    # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
+                    try:
+                        records_delete_by_date(_sel_key)
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
+                    st.session_state.pop("_sb_confirm_del", None)
+                    if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
+                        st.session_state.pop("rp_schedule", None)
+                        st.session_state.pop("stats", None)
+                        st.session_state.pop("last_gen_params", None)
+                    st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
+                    st.rerun()
+                if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
+                    st.session_state.pop("_sb_confirm_del", None)
+                    st.rerun()
+        else:
+            _lb2.caption("🔒 삭제 불가")
 
     # ── [5] 대진표 생성 ────────────────────────────────────────
     st.sidebar.markdown("---")
-    _admin_ok = is_admin()
+    _admin_ok = is_sub_admin()   # 관리자 + 부관리자 가능
     pw_ok = _admin_ok   # 호환성 유지
     if not _admin_ok:
-        st.sidebar.warning("🔒 대진표 생성은 관리자만 가능합니다.")
+        st.sidebar.warning("🔒 대진표 생성은 관리자 또는 부관리자만 가능합니다.")
 
     generate_btn = st.sidebar.button(
         "🎾 대진표 생성", type="primary", use_container_width=True,
@@ -4842,7 +4893,7 @@ elif page == "📋 대진표생성":
         tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
 
         with tab1:
-            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players)
+            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players, schedule=schedule)
 
             # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
             if is_admin():
@@ -5212,7 +5263,11 @@ function showMsg() {{
             league_players_r    = restored_params.get("league_players", {})
             use_seed_run        = restored_params.get("use_seed", False)
             seed_val_run        = restored_params.get("seed_val", None)
-            active_lgs          = list(league_players_r.keys())
+            # league_players_r가 비어있으면 schedule에서 리그 목록 추출
+            if league_players_r:
+                active_lgs = list(league_players_r.keys())
+            else:
+                active_lgs = list(dict.fromkeys(m["league"] for m in restored_schedule))
             mode_label          = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
             schedule            = restored_schedule
             stats               = restored_stats
@@ -5223,10 +5278,13 @@ function showMsg() {{
                 st.session_state["do_regen"] = True
             col_regen2, col_space2 = st.columns([1, 4])
             with col_regen2:
-                st.button("🔄 다시 생성", type="secondary", use_container_width=True,
-                          on_click=_set_regen2,
-                          help="동일 설정으로 새로운 랜덤 대진표를 생성합니다",
-                          key="regen2")
+                if is_admin():
+                    st.button("🔄 다시 생성", type="secondary", use_container_width=True,
+                              on_click=_set_regen2,
+                              help="동일 설정으로 새로운 랜덤 대진표를 생성합니다",
+                              key="regen2")
+                else:
+                    st.caption("🔒 대진표 수정은 관리자만 가능합니다.")
 
             seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
             # [다이어트] DataFrame 생성 및 매치 테이블/검증 렌더링 모두 공통 헬퍼 사용
@@ -5236,7 +5294,7 @@ function showMsg() {{
 
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
-                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r)
+                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r, schedule=schedule)
                 # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
                 if is_admin():
                     with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
