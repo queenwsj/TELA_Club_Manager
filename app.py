@@ -19,7 +19,6 @@ TELA CLUB Random Match Generator v5.8
 13. 페이지: 대진표 생성
 14. 페이지: 기록실
 15. 페이지: 회원명부
-16. 페이지: 이벤트 팀편성
 """
 
 # ========================================================================
@@ -2130,33 +2129,26 @@ RS_COLUMNS = [
     "email", "application", "memo", "updated_at",
     "deleted_at",   # 소프트 삭제: 삭제 시각. 비어있으면 정상 회원.
     "league",
-    "grade",        # 회원 등급: 1~5 (1=최상위, 5=입문)
+    "grade",        # 회원 등급 1~5 (1=최상위, 5=입문)
 ]
-
-# ── 등급 상수 ────────────────────────────────────────────────
-GRADE_OPTIONS = ["—", "1", "2", "3", "4", "5"]
-GRADE_LABELS  = {
-    "1": "1등급 ⭐⭐⭐⭐⭐",
-    "2": "2등급 ⭐⭐⭐⭐",
-    "3": "3등급 ⭐⭐⭐",
-    "4": "4등급 ⭐⭐",
-    "5": "5등급 ⭐",
-    "—": "미지정",
-    "":  "미지정",
-}
-GRADE_COLORS  = {
-    "1": "#7c3aed",  # 보라 (최상위)
-    "2": "#2563eb",  # 파랑
-    "3": "#16a34a",  # 초록
-    "4": "#d97706",  # 주황
-    "5": "#6b7280",  # 회색 (입문)
-}
 AUDIT_COLUMNS = ["timestamp", "action", "member_id", "member_name", "detail"]
 TRASH_DAYS    = 90   # 휴지통 보관 기간 (일)
 CATEGORIES   = ["마스터","고문","회장","총무","경기이사","홍보이사","정회원","휴면","탈퇴"]
 CAT_ORDER    = {c: i for i, c in enumerate(CATEGORIES)}
 OFFICER_CATS = ["마스터","고문","회장","총무","경기이사","홍보이사"]
 RS_FS = "font-size:12px"
+
+# ── 등급 상수 ────────────────────────────────────────────────
+GRADE_OPTIONS = ["—", "1", "2", "3", "4", "5"]
+GRADE_LABELS  = {
+    "1": "1등급 ⭐⭐⭐⭐⭐", "2": "2등급 ⭐⭐⭐⭐",
+    "3": "3등급 ⭐⭐⭐",    "4": "4등급 ⭐⭐",
+    "5": "5등급 ⭐",        "—": "미지정", "": "미지정",
+}
+GRADE_COLORS  = {
+    "1": "#7c3aed", "2": "#2563eb", "3": "#16a34a",
+    "4": "#d97706", "5": "#6b7280",
+}
 
 # ── CSS ───────────────────────────────────────────────────
 st.markdown("""
@@ -2194,7 +2186,6 @@ html, body, [class*="css"] { font-family:'Noto Sans KR',sans-serif !important; }
 .b-regular   { background:#e0f2fe; color:#0369a1; }
 .b-dormant   { background:#fef9c3; color:#854d0e; }
 .b-left      { background:#fee2e2; color:#991b1b; }
-/* 등급 배지 */
 .b-grade-1   { background:#ede9fe; color:#5b21b6; border:1px solid #c4b5fd; }
 .b-grade-2   { background:#dbeafe; color:#1d4ed8; border:1px solid #93c5fd; }
 .b-grade-3   { background:#dcfce7; color:#15803d; border:1px solid #86efac; }
@@ -2473,12 +2464,11 @@ def badge(cat):
     return f'<span class="badge {BADGE_CLS.get(cat,"b-regular")}">{cat}</span>'
 
 def grade_badge(g):
-    """등급 값을 컬러 배지 HTML로 반환."""
     gs = str(g).strip() if g else ""
     if gs in ("", "—", "nan"):
         return '<span class="badge b-grade-none">미지정</span>'
-    cls = f"b-grade-{gs}" if gs in ("1","2","3","4","5") else "b-grade-none"
-    lbl = {"1":"1등급","2":"2등급","3":"3등급","4":"4등급","5":"5등급"}.get(gs, gs)
+    cls   = f"b-grade-{gs}" if gs in ("1","2","3","4","5") else "b-grade-none"
+    lbl   = {"1":"1등급","2":"2등급","3":"3등급","4":"4등급","5":"5등급"}.get(gs, gs)
     stars = "⭐" * (6 - int(gs)) if gs.isdigit() else ""
     return f'<span class="badge {cls}">{lbl} {stars}</span>'
 
@@ -2769,19 +2759,17 @@ def dialog_detail(row):
         unsafe_allow_html=True)
 
     # ── 등급 표시 ──
-    _grd = str(row.get("grade","") or "").strip()
-    if _grd and _grd not in ("—","nan"):
-        _grd_color = GRADE_COLORS.get(_grd, "#6b7280")
-        _grd_lbl   = GRADE_LABELS.get(_grd, _grd)
+    _det_grade = str(row.get("grade","") or "").strip()
+    if _det_grade and _det_grade not in ("—","nan"):
+        _det_gc  = GRADE_COLORS.get(_det_grade, "#6b7280")
+        _det_lbl = GRADE_LABELS.get(_det_grade, _det_grade)
         st.markdown(
             f"<div style='display:flex;align-items:center;gap:10px;padding:8px 14px;"
-            f"background:{_grd_color}11;border-left:4px solid {_grd_color};"
+            f"background:{_det_gc}11;border-left:4px solid {_det_gc};"
             f"border-radius:6px;margin-top:6px;{RS_FS}'>"
-            f"<span style='font-weight:700;color:{_grd_color}'>🏅 등급</span>"
-            f"<span style='font-weight:900;color:{_grd_color};font-size:14px'>{_grd_lbl}</span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+            f"<span style='font-weight:700;color:{_det_gc}'>🏅 등급</span>"
+            f"<span style='font-weight:900;color:{_det_gc};font-size:14px'>{_det_lbl}</span>"
+            f"</div>", unsafe_allow_html=True)
 
     # ── 휴면 기간 타임라인 ──
     dorm_raw = str(row.get("dormant_period","") or "").strip()
@@ -2887,7 +2875,7 @@ def dialog_form(df, existing=None):
     st.markdown(f"#### {title}")
 
     # 행1: 구분 / 성명 / 성별 / 등급
-    c1,c2,c3,c_grade = st.columns([1,1,1,1])
+    c1,c2,c3,c_grd = st.columns([1,1,1,1])
     with c1:
         cat = st.selectbox("구분 *", CATEGORIES,
             index=CATEGORIES.index(existing["category"]) if existing else 6)
@@ -2897,15 +2885,15 @@ def dialog_form(df, existing=None):
     with c3:
         gender = st.selectbox("성별 *", ["남","여"],
             index=0 if not existing else (0 if existing["gender"]=="남" else 1))
-    with c_grade:
-        existing_grade = str(existing.get("grade","") or "").strip() if existing else ""
-        grade_idx = GRADE_OPTIONS.index(existing_grade) if existing_grade in GRADE_OPTIONS else 0
+    with c_grd:
+        _ex_grade = str(existing.get("grade","") or "").strip() if existing else ""
+        _grd_idx  = GRADE_OPTIONS.index(_ex_grade) if _ex_grade in GRADE_OPTIONS else 0
         grade_sel = st.selectbox(
-            "등급 (1=최상위 / 5=입문)",
+            "등급 (1=최상위/5=입문)",
             GRADE_OPTIONS,
-            index=grade_idx,
+            index=_grd_idx,
             format_func=lambda x: GRADE_LABELS.get(x, x),
-            help="1~5등급: 1이 가장 높음. 월례회 팀 편성에 활용됩니다."
+            help="1~5등급: 1이 가장 높음. 이벤트 팀편성에 활용됩니다."
         )
 
     # 행2: 카페ID / 생년 / 연락처 / 거주지
@@ -3789,22 +3777,20 @@ def render_roster_page():
         with ba2:
             bag1, bag2 = st.columns([2, 1])
             with bag1:
-                new_grade = st.selectbox(
-                    "등급 일괄변경",
-                    ["—"] + ["1","2","3","4","5"],
-                    key="bulk_grade_sel",
-                    label_visibility="collapsed",
+                new_grade_bulk = st.selectbox(
+                    "등급 일괄변경", ["—"] + ["1","2","3","4","5"],
+                    key="bulk_grade_sel", label_visibility="collapsed",
                     format_func=lambda x: GRADE_LABELS.get(x, x)
                 )
             with bag2:
                 if st.button("✅ 적용", key="bulk_grade_apply", use_container_width=True):
-                    if new_grade != "—" and st.session_state.admin_authed:
+                    if new_grade_bulk != "—" and st.session_state.admin_authed:
                         with st.spinner(f"{sel_count}명 등급 변경 중…"):
                             for _, r in df[df["id"].isin(sel_ids)].iterrows():
                                 row_d = r.to_dict()
-                                row_d["grade"] = new_grade
+                                row_d["grade"] = new_grade_bulk
                                 save_row(df, row_d, is_new=False,
-                                         action_detail=f"벌크 등급 변경 → {new_grade}등급")
+                                         action_detail=f"벌크 등급 변경 → {new_grade_bulk}등급")
                         for sid in list(sel_ids):
                             k = f"chk_{sid}"
                             if k in st.session_state:
@@ -3814,7 +3800,7 @@ def render_roster_page():
                         st.rerun()
                     elif not st.session_state.admin_authed:
                         st.warning("관리자 인증이 필요합니다.")
-    
+
         # 연락처 추출
         with ba3:
             sel_rows   = df[df["id"].isin(sel_ids)].copy()
@@ -6149,20 +6135,20 @@ elif page == "🎯 이벤트 팀편성":
 
     # ── 등급 안내 ────────────────────────────────────────────
     with st.expander("📌 등급 기준 안내", expanded=False):
-        gi_cols = st.columns(5)
+        _gi_cols = st.columns(5)
         _gi_data = [
-            ("1등급 ⭐⭐⭐⭐⭐", "#7c3aed", "최상위 실력자"),
-            ("2등급 ⭐⭐⭐⭐",   "#2563eb", "상급 · 안정적"),
-            ("3등급 ⭐⭐⭐",     "#16a34a", "중급 · 기본기 완성"),
-            ("4등급 ⭐⭐",       "#d97706", "초중급 · 성장 중"),
-            ("5등급 ⭐",         "#6b7280", "입문 · 기초 단계"),
+            ("1등급 ⭐⭐⭐⭐⭐","#7c3aed","최상위 실력자"),
+            ("2등급 ⭐⭐⭐⭐",  "#2563eb","상급 · 안정적"),
+            ("3등급 ⭐⭐⭐",    "#16a34a","중급 · 기본기 완성"),
+            ("4등급 ⭐⭐",      "#d97706","초중급 · 성장 중"),
+            ("5등급 ⭐",        "#6b7280","입문 · 기초 단계"),
         ]
-        for i, (lbl, col, desc) in enumerate(_gi_data):
-            gi_cols[i].markdown(
-                f"<div style='text-align:center;padding:10px 6px;background:{col}11;"
-                f"border:2px solid {col}44;border-radius:10px;'>"
-                f"<div style='font-weight:900;color:{col};font-size:13px'>{lbl}</div>"
-                f"<div style='font-size:10px;color:#6b7280;margin-top:4px'>{desc}</div>"
+        for _i, (_lbl, _col, _desc) in enumerate(_gi_data):
+            _gi_cols[_i].markdown(
+                f"<div style='text-align:center;padding:10px 6px;background:{_col}11;"
+                f"border:2px solid {_col}44;border-radius:10px;'>"
+                f"<div style='font-weight:900;color:{_col};font-size:13px'>{_lbl}</div>"
+                f"<div style='font-size:10px;color:#6b7280;margin-top:4px'>{_desc}</div>"
                 f"</div>", unsafe_allow_html=True)
 
     # ── 회원 데이터 로드 ─────────────────────────────────────
@@ -6176,13 +6162,10 @@ elif page == "🎯 이벤트 팀편성":
         st.error(f"회원 데이터 로드 오류: {_e}")
         st.stop()
 
-    # ════════════════════════════════════════════════════════
-    # 수정3: 등급 직접 수정 기능 (이벤트 팀편성 내)
-    # ════════════════════════════════════════════════════════
+    # ── 등급 직접 수정 (관리자) ──────────────────────────────
     if is_admin():
         with st.expander("✏️ 등급 일괄 수정 (관리자)", expanded=False):
             st.caption("회원 등급을 직접 수정합니다. 저장 시 구글 시트에 즉시 반영됩니다.")
-
             _edit_df = _team_df[_team_df["category"].isin(
                 ["마스터","고문","회장","총무","경기이사","홍보이사","정회원","휴면"]
             )].copy().sort_values(["grade","name"]).reset_index(drop=True)
@@ -6190,74 +6173,64 @@ elif page == "🎯 이벤트 팀편성":
             if _edit_df.empty:
                 st.info("수정 가능한 회원이 없습니다.")
             else:
-                # 등급 수정 UI — 4컬럼씩 그리드
                 _GE_COLS = 4
-                _ge_rows = [_edit_df.iloc[i:i+_GE_COLS] for i in range(0, len(_edit_df), _GE_COLS)]
-
-                for _ge_row in _ge_rows:
-                    _ge_cols = st.columns(_GE_COLS)
-                    for _ge_ci, (_, _ge_member) in enumerate(zip(_ge_cols, _ge_row.iterrows())):
-                        _ge_mid   = int(_ge_member[1]["id"])
-                        _ge_name  = _ge_member[1]["name"]
-                        _ge_grade = str(_ge_member[1].get("grade","") or "").strip()
+                for _ge_i in range(0, len(_edit_df), _GE_COLS):
+                    _ge_chunk = _edit_df.iloc[_ge_i:_ge_i+_GE_COLS]
+                    _ge_col_objs = st.columns(_GE_COLS)
+                    for _ge_ci, (_, _ge_mem) in enumerate(_ge_chunk.iterrows()):
+                        _ge_mid   = int(_ge_mem["id"])
+                        _ge_name  = _ge_mem["name"]
+                        _ge_grade = str(_ge_mem.get("grade","") or "").strip()
                         _ge_cur   = _ge_grade if _ge_grade in ["1","2","3","4","5"] else "—"
                         _ge_color = GRADE_COLORS.get(_ge_cur, "#9ca3af")
-
-                        with _ge_cols[_ge_ci]:
+                        with _ge_col_objs[_ge_ci]:
                             st.markdown(
-                                f"<div style='font-size:12px;font-weight:700;color:#1a2e4a;"
-                                f"margin-bottom:2px'>{_ge_name}</div>"
+                                f"<div style='font-size:12px;font-weight:700;color:#1a2e4a;margin-bottom:2px'>"
+                                f"{_ge_name}</div>"
                                 f"<div style='font-size:10px;color:{_ge_color};margin-bottom:2px'>"
                                 f"현재: {GRADE_LABELS.get(_ge_cur,'미지정')}</div>",
-                                unsafe_allow_html=True
-                            )
-                            _new_g = st.selectbox(
-                                f"등급_{_ge_mid}",
-                                GRADE_OPTIONS,
+                                unsafe_allow_html=True)
+                            st.selectbox(
+                                f"등급_{_ge_mid}", GRADE_OPTIONS,
                                 index=GRADE_OPTIONS.index(_ge_cur) if _ge_cur in GRADE_OPTIONS else 0,
                                 format_func=lambda x: GRADE_LABELS.get(x, x),
                                 label_visibility="collapsed",
                                 key=f"ge_grade_{_ge_mid}"
                             )
 
-                # 저장 버튼
                 if st.button("💾 등급 전체 저장", type="primary", key="ge_save_all"):
                     if not st.session_state.get("admin_authed"):
                         st.warning("관리자 인증이 필요합니다. 회원명부에서 먼저 인증해주세요.")
                     else:
-                        _df_full_for_save = load_df(include_deleted=False)
-                        _ge_ok = 0
-                        _ge_fail = 0
+                        _df_full_save = load_df(include_deleted=False)
+                        _ge_ok = 0; _ge_fail = 0
                         with st.spinner("등급 저장 중…"):
-                            for _, _ge_member in _edit_df.iterrows():
-                                _ge_mid = int(_ge_member["id"])
-                                _new_grade_val = st.session_state.get(f"ge_grade_{_ge_mid}", "—")
-                                _new_grade_save = "" if _new_grade_val == "—" else _new_grade_val
+                            for _, _ge_mem in _edit_df.iterrows():
+                                _ge_mid = int(_ge_mem["id"])
+                                _nv = st.session_state.get(f"ge_grade_{_ge_mid}", "—")
                                 try:
-                                    _row_to_save = _df_full_for_save[
-                                        _df_full_for_save["id"] == _ge_mid
-                                    ].iloc[0].to_dict()
-                                    _row_to_save["grade"] = _new_grade_save
-                                    save_row(_df_full_for_save, _row_to_save, is_new=False,
-                                             action_detail=f"이벤트팀편성 등급수정 → {_new_grade_save or '미지정'}")
+                                    _r2s = _df_full_save[_df_full_save["id"]==_ge_mid].iloc[0].to_dict()
+                                    _r2s["grade"] = "" if _nv == "—" else _nv
+                                    save_row(_df_full_save, _r2s, is_new=False,
+                                             action_detail=f"이벤트팀편성 등급수정 → {_nv}")
                                     _ge_ok += 1
                                 except Exception:
                                     _ge_fail += 1
                         st.cache_data.clear()
                         if _ge_fail:
-                            st.warning(f"✅ {_ge_ok}명 저장 완료, ⚠️ {_ge_fail}명 실패")
+                            st.warning(f"✅ {_ge_ok}명 완료, ⚠️ {_ge_fail}명 실패")
                         else:
-                            st.success(f"✅ {_ge_ok}명 등급 저장 완료! 페이지를 새로고침합니다.")
+                            st.success(f"✅ {_ge_ok}명 등급 저장 완료!")
                         st.rerun()
 
-    # ── 등급별 통계 ──────────────────────────────────────────
+    # ── 등급별 현황 ──────────────────────────────────────────
     st.markdown("### 📊 등급별 현황")
-    _grade_stat_cols = st.columns(6)
+    _gsc = st.columns(6)
     for _gi, _gv in enumerate(["1","2","3","4","5","미지정"]):
         _cnt = len(_team_df[_team_df["grade"] == _gv])
         _gc  = GRADE_COLORS.get(_gv, "#9ca3af")
         _glbl = f"{_gv}등급" if _gv.isdigit() else _gv
-        _grade_stat_cols[_gi].markdown(
+        _gsc[_gi].markdown(
             f"<div style='text-align:center;padding:10px;background:{_gc}11;"
             f"border-left:4px solid {_gc};border-radius:8px;'>"
             f"<div style='font-size:22px;font-weight:900;color:{_gc}'>{_cnt}</div>"
@@ -6268,21 +6241,18 @@ elif page == "🎯 이벤트 팀편성":
 
     # ── 팀 편성 설정 ─────────────────────────────────────────
     st.markdown("### ⚙️ 팀 편성 설정")
-
     _tc1, _tc2, _tc3 = st.columns([1, 1, 2])
     with _tc1:
-        # 수정2: 기본값 2팀
         _num_teams = st.number_input("팀 수", min_value=2, max_value=20, value=2, step=1,
-                                      help="몇 팀으로 나눌지 선택하세요. (기본 2팀)")
+                                      help="기본 2팀. 대진표 생성 시 팀1→A리그, 팀2→B리그…로 매핑됩니다.")
     with _tc2:
-        _include_ungraded = st.checkbox("미지정 등급 포함", value=True,
-                                         help="등급이 없는 회원도 팀 편성에 포함합니다.")
+        _include_ungraded = st.checkbox("미지정 등급 포함", value=True)
     with _tc3:
         _balance_method = st.radio(
             "팀 균형 방식",
             ["등급 균등분배 (뱀방식)", "등급 합산 균등"],
             horizontal=True,
-            help="뱀방식: 등급 순서로 팀에 배정 (1→N→1…). 합산균등: 팀 등급 합이 비슷하게."
+            help="뱀방식: 1→N→1 순 배정. 합산균등: 팀 등급 합이 비슷하게."
         )
 
     # ── 참가 회원 선택 ───────────────────────────────────────
@@ -6295,53 +6265,42 @@ elif page == "🎯 이벤트 팀편성":
         _all_active = _all_active[_all_active["grade"].isin(["1","2","3","4","5"])].copy()
 
     if _all_active.empty:
-        st.warning("참가 가능한 회원이 없습니다. 먼저 회원명부에서 등급을 설정해주세요.")
+        st.warning("참가 가능한 회원이 없습니다.")
         st.stop()
 
     # 옵션 목록 구성
     _member_options = []
-    for _, _mrow in _all_active.sort_values(["grade","name"]).iterrows():
-        _g = _mrow["grade"]
+    for _, _mr in _all_active.sort_values(["grade","name"]).iterrows():
+        _g = _mr["grade"]
         _stars = "⭐" * (6 - int(_g)) if _g.isdigit() else "○"
-        _member_options.append(f"{_mrow['name']} [{_g}등급 {_stars}]")
+        _member_options.append(f"{_mr['name']} [{_g}등급 {_stars}]")
 
     _name_to_row = {}
-    for _, _mrow in _all_active.iterrows():
-        _g = _mrow["grade"]
+    for _, _mr in _all_active.iterrows():
+        _g = _mr["grade"]
         _stars = "⭐" * (6 - int(_g)) if _g.isdigit() else "○"
-        _key = f"{_mrow['name']} [{_g}등급 {_stars}]"
-        _name_to_row[_key] = _mrow
+        _name_to_row[f"{_mr['name']} [{_g}등급 {_stars}]"] = _mr
 
-    # 수정4: 참가자 전체 선택/해제를 session_state로 제어해 페이지 이동 방지
-    # multiselect default를 session_state로 관리
-    if "ev_sel_members" not in st.session_state:
-        st.session_state["ev_sel_members"] = list(_member_options)
-
-    # 옵션 목록이 바뀌면(데이터 갱신) 세션 정리
-    _prev_opts_key = "ev_member_options_hash"
-    _cur_opts_hash = str(sorted(_member_options))
-    if st.session_state.get(_prev_opts_key) != _cur_opts_hash:
+    # 수정4: session_state로 선택 관리 → 전체 해제 시 페이지 이동 방지
+    _opts_hash = str(sorted(_member_options))
+    if st.session_state.get("_ev_opts_hash") != _opts_hash:
         st.session_state["ev_sel_members"]  = list(_member_options)
-        st.session_state[_prev_opts_key]    = _cur_opts_hash
+        st.session_state["_ev_opts_hash"]   = _opts_hash
 
-    # 전체 선택/해제 버튼 (수정4: rerun 대신 session_state 조작)
-    _ev_btn_c1, _ev_btn_c2, _ev_btn_c3 = st.columns([1, 1, 4])
-    with _ev_btn_c1:
+    _ev_b1, _ev_b2, _ev_b3 = st.columns([1, 1, 5])
+    with _ev_b1:
         if st.button("☑️ 전체 선택", key="ev_sel_all", use_container_width=True):
             st.session_state["ev_sel_members"] = list(_member_options)
-    with _ev_btn_c2:
+    with _ev_b2:
         if st.button("☐ 전체 해제", key="ev_sel_none", use_container_width=True):
             st.session_state["ev_sel_members"] = []
 
-    # 수정4: multiselect key 고정, default=session_state 값
     _sel_members = st.multiselect(
-        f"참가 회원 선택 (현재 {len(_member_options)}명 가능)",
+        f"참가 회원 ({len(_member_options)}명 가능)",
         options=_member_options,
-        default=[m for m in st.session_state["ev_sel_members"] if m in _member_options],
+        default=[m for m in st.session_state.get("ev_sel_members",[]) if m in _member_options],
         key="ev_multiselect",
-        help="팀 편성에 포함할 회원을 선택하세요. 전체 해제 버튼 사용 시 페이지가 이동하지 않습니다."
     )
-    # multiselect 변경 시 session_state 동기화
     st.session_state["ev_sel_members"] = list(_sel_members)
 
     if not _sel_members:
@@ -6357,234 +6316,176 @@ elif page == "🎯 이벤트 팀편성":
 
     if st.session_state.get("_team_run"):
         import random as _rand
-
-        _participants = [_name_to_row[k].to_dict() for k in _sel_members]
+        _parts = [_name_to_row[k].to_dict() for k in _sel_members]
         _n_teams = int(_num_teams)
-
-        for _p in _participants:
+        for _p in _parts:
             _gv = str(_p.get("grade","")).strip()
             _p["_grade_num"] = int(_gv) if _gv.isdigit() else 3
-
-        _participants.sort(key=lambda x: (x["_grade_num"], x["name"]))
+        _parts.sort(key=lambda x: (x["_grade_num"], x["name"]))
         _teams = [[] for _ in range(_n_teams)]
 
         if "뱀방식" in _balance_method:
-            _forward = True; _team_idx = 0
-            for _p in _participants:
-                _teams[_team_idx].append(_p)
-                if _forward:
-                    _team_idx += 1
-                    if _team_idx >= _n_teams: _team_idx = _n_teams - 1; _forward = False
+            _fwd = True; _ti = 0
+            for _p in _parts:
+                _teams[_ti].append(_p)
+                if _fwd:
+                    _ti += 1
+                    if _ti >= _n_teams: _ti = _n_teams - 1; _fwd = False
                 else:
-                    _team_idx -= 1
-                    if _team_idx < 0: _team_idx = 0; _forward = True
+                    _ti -= 1
+                    if _ti < 0: _ti = 0; _fwd = True
         else:
-            _team_sums = [0] * _n_teams
-            for _p in _participants:
-                _min_idx = _team_sums.index(min(_team_sums))
-                _teams[_min_idx].append(_p)
-                _team_sums[_min_idx] += _p["_grade_num"]
+            _tsums = [0] * _n_teams
+            for _p in _parts:
+                _mi = _tsums.index(min(_tsums))
+                _teams[_mi].append(_p)
+                _tsums[_mi] += _p["_grade_num"]
 
         for _t in _teams: _rand.shuffle(_t)
+        st.session_state["_team_result"] = _teams
+        st.session_state["_team_run"]    = False
 
-        st.session_state["_team_result"]   = _teams
-        st.session_state["_team_run"]      = False
-        # 대진표 연동을 위해 팀 데이터 저장
-        st.session_state["_event_teams"]   = _teams
-
-    # ── 팀 편성 결과 표시 ────────────────────────────────────
+    # ── 결과 표시 ─────────────────────────────────────────────
     _res = st.session_state.get("_team_result")
     if _res:
         st.markdown("---")
         st.markdown("### 🏅 팀 편성 결과")
 
-        _team_colors = ["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed",
-                        "#0891b2","#be185d","#065f46","#92400e","#1d4ed8",
-                        "#15803d","#b91c1c","#b45309","#6d28d9","#0e7490",
-                        "#9d174d","#064e3b","#78350f","#3730a3","#0c4a6e"]
+        _tcolors = ["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed",
+                    "#0891b2","#be185d","#065f46","#92400e","#1d4ed8",
+                    "#15803d","#b91c1c","#b45309","#6d28d9","#0e7490",
+                    "#9d174d","#064e3b","#78350f","#3730a3","#0c4a6e"]
 
-        _n_res   = len(_res)
+        _n_res    = len(_res)
         _max_cols = min(_n_res, 4)
-        _rows_needed = (_n_res + _max_cols - 1) // _max_cols
-
-        for _row_i in range(_rows_needed):
-            _cols_in_row = st.columns(_max_cols)
-            for _col_i in range(_max_cols):
-                _ti = _row_i * _max_cols + _col_i
+        for _row_i in range((_n_res + _max_cols - 1) // _max_cols):
+            _cols_row = st.columns(_max_cols)
+            for _ci in range(_max_cols):
+                _ti = _row_i * _max_cols + _ci
                 if _ti >= _n_res: break
                 _t  = _res[_ti]
-                _tc = _team_colors[_ti % len(_team_colors)]
-                _avg_g   = sum(p["_grade_num"] for p in _t) / len(_t) if _t else 0
-                _avg_lbl = f"평균 {_avg_g:.1f}등급"
-
-                _members_html = ""
+                _tc = _tcolors[_ti % len(_tcolors)]
+                _avg_g = sum(p["_grade_num"] for p in _t) / len(_t) if _t else 0
+                _mhtml = ""
                 for _pm in _t:
-                    _pg       = str(_pm.get("grade","")).strip()
-                    _pstars   = "⭐" * (6 - int(_pg)) if _pg.isdigit() else "○"
-                    _pg_color = GRADE_COLORS.get(_pg, "#9ca3af")
-                    _gender_icon = "🔵" if str(_pm.get("gender","")).strip() == "남" else "🔴"
-                    _members_html += (
-                        f"<div style='display:flex;justify-content:space-between;"
-                        f"align-items:center;padding:5px 8px;margin:3px 0;"
-                        f"background:#fff;border-radius:6px;border-left:3px solid {_pg_color};'>"
-                        f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>"
-                        f"{_gender_icon} {_pm['name']}</span>"
-                        f"<span style='font-size:11px;color:{_pg_color};font-weight:700'>{_pstars}</span>"
+                    _pg    = str(_pm.get("grade","")).strip()
+                    _pstar = "⭐" * (6 - int(_pg)) if _pg.isdigit() else "○"
+                    _pgc   = GRADE_COLORS.get(_pg, "#9ca3af")
+                    _gico  = "🔵" if str(_pm.get("gender","")).strip() == "남" else "🔴"
+                    _mhtml += (
+                        f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                        f"padding:5px 8px;margin:3px 0;background:#fff;border-radius:6px;"
+                        f"border-left:3px solid {_pgc};'>"
+                        f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>{_gico} {_pm['name']}</span>"
+                        f"<span style='font-size:11px;color:{_pgc};font-weight:700'>{_pstar}</span>"
                         f"</div>"
                     )
-
-                _cols_in_row[_col_i].markdown(
+                _cols_row[_ci].markdown(
                     f"<div style='background:{_tc}0d;border:2px solid {_tc}44;"
                     f"border-radius:12px;padding:14px;margin-bottom:8px;'>"
                     f"<div style='font-weight:900;color:{_tc};font-size:16px;margin-bottom:4px'>"
                     f"🏸 팀 {_ti+1}</div>"
                     f"<div style='font-size:11px;color:#9ca3af;margin-bottom:8px'>"
-                    f"{len(_t)}명 · {_avg_lbl}</div>"
-                    f"{_members_html}</div>",
-                    unsafe_allow_html=True
-                )
+                    f"{len(_t)}명 · 평균 {_avg_g:.1f}등급</div>{_mhtml}</div>",
+                    unsafe_allow_html=True)
 
-        # ── 팀별 요약 테이블 ──────────────────────────────────
+        # 요약 테이블
         st.markdown("#### 📋 팀별 등급 요약")
-        _summary_rows = []
+        _srows = []
         for _ti, _t in enumerate(_res):
-            _gd = {str(g): 0 for g in range(1,6)}; _gd["미지정"] = 0
+            _gd = {str(g):0 for g in range(1,6)}; _gd["미지정"]=0
             for _p in _t:
                 _gv = str(_p.get("grade","")).strip()
                 if _gv in _gd: _gd[_gv] += 1
                 else: _gd["미지정"] += 1
             _avg_g = sum(_p["_grade_num"] for _p in _t) / len(_t) if _t else 0
-            _summary_rows.append({
-                "팀": f"팀 {_ti+1}", "인원": len(_t),
-                "1등급": _gd["1"], "2등급": _gd["2"], "3등급": _gd["3"],
-                "4등급": _gd["4"], "5등급": _gd["5"], "미지정": _gd["미지정"],
-                "평균등급": round(_avg_g, 2),
-            })
-        st.dataframe(pd.DataFrame(_summary_rows), use_container_width=True, hide_index=True)
+            _srows.append({"팀":f"팀 {_ti+1}","인원":len(_t),
+                "1등급":_gd["1"],"2등급":_gd["2"],"3등급":_gd["3"],
+                "4등급":_gd["4"],"5등급":_gd["5"],"미지정":_gd["미지정"],
+                "평균등급":round(_avg_g,2)})
+        st.dataframe(pd.DataFrame(_srows), use_container_width=True, hide_index=True)
 
-        # ── CSV 다운로드 ──────────────────────────────────────
-        _dl_rows = []
+        # CSV 다운로드
+        _dlrows = []
         for _ti, _t in enumerate(_res):
             for _p in _t:
-                _dl_rows.append({
-                    "팀": f"팀 {_ti+1}", "성명": _p.get("name",""),
-                    "등급": _p.get("grade",""), "성별": _p.get("gender",""),
-                    "리그": _p.get("league",""), "카테고리": _p.get("category",""),
-                })
-        _dl_csv = pd.DataFrame(_dl_rows).to_csv(index=False, encoding="utf-8-sig")
-        st.download_button(
-            "⬇️ 팀편성 결과 CSV",
-            data=_dl_csv.encode("utf-8-sig"),
-            file_name=f"team_result_{date.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-        )
+                _dlrows.append({"팀":f"팀 {_ti+1}","성명":_p.get("name",""),
+                    "등급":_p.get("grade",""),"성별":_p.get("gender",""),
+                    "리그":_p.get("league",""),"카테고리":_p.get("category","")})
+        _dlcsv = pd.DataFrame(_dlrows).to_csv(index=False, encoding="utf-8-sig")
+        st.download_button("⬇️ 팀편성 결과 CSV", data=_dlcsv.encode("utf-8-sig"),
+            file_name=f"team_result_{date.today().strftime('%Y%m%d')}.csv", mime="text/csv")
 
         if st.button("🔄 다시 편성 (랜덤 재배치)", key="re_team"):
             st.session_state["_team_run"] = True
             st.rerun()
 
-        # ════════════════════════════════════════════════════
-        # 수정2: 팀 → 대진표 생성 연동
-        # ════════════════════════════════════════════════════
+        # ── 대진표 생성 연동 ──────────────────────────────────
         st.markdown("---")
         st.markdown("### 📋 대진표 생성 연동")
-        st.info(
-            "팀 편성 결과를 대진표 생성에 직접 활용합니다. "
-            "각 팀이 하나의 리그(팀1→A리그, 팀2→B리그…)로 매핑됩니다."
-        )
+        st.info("팀 편성 결과를 대진표에 직접 연동합니다. 팀1→A리그, 팀2→B리그… (최대 5팀)")
 
         if len(_res) > 5:
-            st.warning(f"현재 {len(_res)}팀이지만 대진표 리그는 최대 5개(A~E리그)까지 지원됩니다. "
-                       f"처음 5팀만 연동됩니다.")
+            st.warning(f"{len(_res)}팀 중 처음 5팀만 연동됩니다.")
 
-        # 대진표 생성 설정
         _ev_c1, _ev_c2 = st.columns([1, 2])
         with _ev_c1:
-            _ev_rp_date = st.text_input(
-                "대진표 날짜 (YYYY-MM-DD)",
-                value=date.today().strftime("%Y-%m-%d"),
-                key="ev_rp_date"
-            )
-            _ev_rp_num = st.text_input("일련번호", value="001", key="ev_rp_num")
+            _ev_rp_date = st.text_input("날짜 (YYYY-MM-DD)",
+                value=date.today().strftime("%Y-%m-%d"), key="ev_rp_date")
+            _ev_rp_num  = st.text_input("일련번호", value="001", key="ev_rp_num")
         with _ev_c2:
-            _ev_pairing = st.radio(
-                "페어링 방식",
-                ["🔴 완전 랜덤페어", "🔵 조건부 랜덤페어"],
-                horizontal=True, key="ev_pairing_mode"
-            )
+            _ev_pairing = st.radio("페어링 방식",
+                ["🔴 완전 랜덤페어","🔵 조건부 랜덤페어"],
+                horizontal=True, key="ev_pairing_mode")
 
         if st.button("🏸 이 팀으로 대진표 생성", type="primary", key="ev_gen_schedule"):
             if not is_logged_in():
                 st.error("대진표 생성은 로그인 후 이용할 수 있습니다.")
             else:
-                # 팀 → league_players 변환
-                # 플레이어 코드: {리그접두사}{M/W}{이름}  예) AM홍길동, BW김영희
-                _ev_teams_to_use = _res[:5]
-                _ev_league_players = {}
-                _ev_league_configs = {}
-
-                for _ti, _t in enumerate(_ev_teams_to_use):
-                    _lg  = LEAGUE_NAMES[_ti]   # "A리그","B리그"…
-                    _pfx = LEAGUE_PREFIXES[_ti] # "A","B"…
+                _ev_teams_use = _res[:5]
+                _ev_lp = {}; _ev_lc = {}
+                for _ti, _t in enumerate(_ev_teams_use):
+                    _lg  = LEAGUE_NAMES[_ti]
+                    _pfx = LEAGUE_PREFIXES[_ti]
                     _codes = []
                     for _p in _t:
-                        _gnd = str(_p.get("gender","")).strip()
-                        _g_code = "M" if _gnd == "남" else "W"
-                        _name   = str(_p.get("name","")).strip()
-                        _codes.append(f"{_pfx}{_g_code}{_name}")
-                    _ev_league_players[_lg] = _codes
-                    _ev_league_configs[_lg] = {
-                        "priority": "동성우선",
-                        "mixed_max": None,
-                        "dong_min": None,
-                    }
+                        _gnd  = str(_p.get("gender","")).strip()
+                        _gc   = "M" if _gnd == "남" else "W"
+                        _codes.append(f"{_pfx}{_gc}{str(_p.get('name','')).strip()}")
+                    _ev_lp[_lg] = _codes
+                    _ev_lc[_lg] = {"priority":"동성우선","mixed_max":None,"dong_min":None}
 
-                # 유효성 검사
-                _ev_errors = []
-                for _lg, _pl in _ev_league_players.items():
+                _ev_errs = []
+                for _lg, _pl in _ev_lp.items():
                     if 0 < len(_pl) < 4:
-                        _ev_errors.append(f"{_lg} 인원 {len(_pl)}명 (최소 4명 필요)")
-                if not any(len(_pl) >= 4 for _pl in _ev_league_players.values()):
-                    _ev_errors.append("최소 한 팀에 4명 이상이 필요합니다.")
+                        _ev_errs.append(f"{_lg} 인원 {len(_pl)}명 (최소 4명 필요)")
+                if not any(len(_pl) >= 4 for _pl in _ev_lp.values()):
+                    _ev_errs.append("최소 한 팀에 4명 이상이 필요합니다.")
 
-                if _ev_errors:
-                    for _e in _ev_errors: st.error(_e)
+                if _ev_errs:
+                    for _e in _ev_errs: st.error(_e)
                 else:
-                    _ev_date_str = _ev_rp_date.strip()
-                    _ev_key = f"{_date_with_weekday(_ev_date_str)}_{_ev_rp_num.strip()}"
-                    _ev_is_random = (_ev_pairing == "🔴 완전 랜덤페어")
-
+                    _ev_key    = f"{_date_with_weekday(_ev_rp_date.strip())}_{_ev_rp_num.strip()}"
+                    _ev_is_ran = (_ev_pairing == "🔴 완전 랜덤페어")
                     with st.spinner("이벤트 대진표 생성 중…"):
-                        if _ev_is_random:
-                            _ev_sched, _ev_stats = generate_schedule_fully_random(_ev_league_players)
+                        if _ev_is_ran:
+                            _ev_sched, _ev_stats = generate_schedule_fully_random(_ev_lp)
                         else:
-                            _ev_sched, _ev_stats = generate_schedule_from_leagues(
-                                _ev_league_players, _ev_league_configs)
+                            _ev_sched, _ev_stats = generate_schedule_from_leagues(_ev_lp, _ev_lc)
 
                     if not _ev_sched:
                         st.error("대진표를 생성할 수 없습니다.")
                     else:
-                        shelf_save(_ev_key, serialize_schedule(_ev_sched), {}, _ev_is_random)
+                        shelf_save(_ev_key, serialize_schedule(_ev_sched), {}, _ev_is_ran)
                         st.session_state.update({
-                            "rp_schedule":    _ev_sched,
-                            "rp_key":         _ev_key,
-                            "sb_schedule":    _ev_sched,
-                            "sb_scores":      {},
-                            "sb_key":         "",
+                            "rp_schedule": _ev_sched, "rp_key": _ev_key,
+                            "sb_schedule": _ev_sched, "sb_scores": {}, "sb_key": "",
                             "last_gen_params": {
-                                "league_players":  _ev_league_players,
-                                "is_fully_random": _ev_is_random,
-                                "league_configs":  _ev_league_configs,
-                                "use_seed": False,
-                                "seed_val": None,
-                                "rp_key":   _ev_key,
+                                "league_players": _ev_lp, "is_fully_random": _ev_is_ran,
+                                "league_configs": _ev_lc, "use_seed": False,
+                                "seed_val": None, "rp_key": _ev_key,
                             },
                         })
-                        st.success(
-                            f"✅ 이벤트 대진표가 **{_ev_key}** 키로 저장되었습니다! "
-                            f"📋 대진표생성 메뉴에서 확인하세요."
-                        )
-                        # 대진표생성 페이지로 이동
+                        st.success(f"✅ 대진표 **{_ev_key}** 저장 완료! 📋 대진표생성 메뉴에서 확인하세요.")
                         st.session_state["current_page"] = "📋 대진표생성"
                         st.rerun()
-
