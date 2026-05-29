@@ -2,6 +2,32 @@
 
 ---
 
+## v5.6 — 2026-05-30
+
+### 🔴 버그수정
+
+**`_get_gsheet_connection is not defined` 오류**
+- 원인: `_restore_shelf_from_gsheet()` 호출이 `set_page_config` 직후(1946줄)에 있었는데,
+  내부에서 사용하는 `_get_gsheet_connection`은 2107줄에 정의됨
+  → 모듈을 위→아래로 실행하는 Python 특성상 함수 정의 전 호출로 `NameError` 발생
+- 수정: `_restore_shelf_from_gsheet()` 호출을 `_get_gsheet_connection` 정의 직후로 이동
+
+### 🟢 신규
+
+**스코어보드 잠금 기능**
+- 확정된 대진표·점수를 잠금하여 수정 불가 상태로 전환
+- 잠금 상태는 `schedules` 탭 `is_locked` 컬럼에 저장 (앱 재시작 후에도 유지)
+
+| 동작 | 조건 |
+|------|------|
+| 잠금 | 관리자 로그인 → `🔒 스코어보드 잠금 관리` expander → `🔒 잠금` 버튼 1클릭 |
+| 잠금 해제 | 관리자 비밀번호 재입력 필수 → `🔓 잠금 해제` 버튼 |
+| 잠금 중 표시 | 상단 빨간 배너 "🔒 이 스코어보드는 잠금 상태입니다." |
+| 잠금 중 제한 | 점수 입력·수정·초기화 버튼 전체 숨김 (`_can_edit = False`) |
+| 비관리자 | 잠금 관련 UI 아예 미표시 |
+
+---
+
 ## v5.5 — 2026-05-29
 
 ### 🔴 버그수정
@@ -11,20 +37,32 @@
 - 수정: `session_state["_adj_success_msg"]`에 저장 → rerun 후 표시 → 자동 삭제
 
 **휴면 시작 전 회원이 참가자 선택에서 차단되는 문제**
-- 원인: `category == "휴면"` 이면 날짜 무관하게 참가 차단
-- 수정: `parse_dormant_periods()`로 기간 파싱, 경기 날짜 기준으로 시작일~종료일 범위 내에 있을 때만 차단
-- 경기 날짜: 대진표 생성 날짜 입력값(`rp_date_inp`) 자동 참조
+- 원인1: `rp_date_inp` (존재하지 않는 키) → 오늘 날짜 fallback → 경기일 기준 판단 불가
+- 원인2: `category == "휴면"` 이면 날짜 무관하게 참가 차단
+- 수정: 실제 위젯 key `"rp_date"` 로 수정, `parse_dormant_periods()` 로 기간 파싱하여 경기일 기준 판단
 
-🔴 버그1 (주요) — 회원 정보 수정 시 league 초기화
-row_data에 "league" 키가 없어서 수정할 때마다 league가 "" (미배정)으로 덮어써졌습니다. 휴면 등록뿐 아니라 연락처, 이름 등 모든 수정 시 league가 지워지는 심각한 버그였습니다.
-수정: "league": existing.get("league", "") 추가 — 기존 league 값 보존
+| 상황 | 처리 |
+|------|------|
+| 6/1 휴면, 경기일 5/23 | ✅ 참가 가능 (시작 전) |
+| 5/1 휴면, 경기일 5/23 | ❌ 참가 불가 (기간 중) |
+| 무기한 휴면, 시작일 이후 | ❌ 참가 불가 |
+| dormant_period 없고 category=휴면 | ❌ 참가 불가 (레거시 호환) |
 
-🔴 버그2 — category 자동 판단 시 미래 휴면도 "휴면"으로 설정
-종료일 없는 휴면 기간을 등록하면 시작일이 미래여도 has_ongoing=True → category="휴면" 으로 설정됐습니다.
-수정: 시작일이 오늘 이하일 때만 has_ongoing=True 처리
+**회원 정보 수정 시 league 초기화 버그**
+- 원인: `dialog_form`의 `row_data`에 `"league"` 키 누락 → 수정 저장 시 항상 `""` 덮어씀
+- 수정: `"league": existing.get("league", "")` 추가 — 기존 값 보존
 
-🟡 버그3 — 참가자 선택에서 rp_date_inp 키 오류 (v5.5에서 수정됨)
-"rp_date_inp" → "rp_date" 로 이미 수정 완료
+**미래 휴면 등록 시 category 즉시 "휴면"으로 설정**
+- 원인: `has_ongoing` 판단 시 시작일이 미래여도 종료일 없으면 `True`
+- 수정: 시작일 ≤ 오늘인 경우만 `has_ongoing = True` 처리
+
+**참가자 인원 카운트 오류**
+- 원인: `selected_members` dict(누적 오염) 기준으로 카운트 → 실제 체크와 불일치
+- 수정: 실제 위젯 키 `mchk_{lg}_{id}` / `gchk_{lg}_{name}` 직접 조회로 교체
+
+**전체선택·전체해제 시 팝업 닫힘**
+- 원인: `@st.dialog` 내부에서 `st.rerun()` 호출 → 팝업 닫힘
+- 수정: `st.rerun()` 제거, `session_state` 위젯 키 직접 설정으로 즉시 반영
 
 ---
 
