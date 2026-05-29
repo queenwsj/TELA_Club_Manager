@@ -18,9 +18,11 @@
 🔴 버그1 (주요) — 회원 정보 수정 시 league 초기화
 row_data에 "league" 키가 없어서 수정할 때마다 league가 "" (미배정)으로 덮어써졌습니다. 휴면 등록뿐 아니라 연락처, 이름 등 모든 수정 시 league가 지워지는 심각한 버그였습니다.
 수정: "league": existing.get("league", "") 추가 — 기존 league 값 보존
+
 🔴 버그2 — category 자동 판단 시 미래 휴면도 "휴면"으로 설정
 종료일 없는 휴면 기간을 등록하면 시작일이 미래여도 has_ongoing=True → category="휴면" 으로 설정됐습니다.
 수정: 시작일이 오늘 이하일 때만 has_ongoing=True 처리
+
 🟡 버그3 — 참가자 선택에서 rp_date_inp 키 오류 (v5.5에서 수정됨)
 "rp_date_inp" → "rp_date" 로 이미 수정 완료
 
