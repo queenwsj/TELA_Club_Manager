@@ -45,6 +45,16 @@ from datetime import date
 # ── 날짜 → 요일 포함 문자열 헬퍼 ────────────────────────────
 _WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
 
+def kst_today() -> date:
+    """한국 표준시(KST, UTC+9) 기준 오늘 날짜.
+    서버가 UTC로 동작해도 한국 날짜가 정확히 나오도록 보정."""
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).date()
+
+def kst_today_str(fmt: str = "%Y-%m-%d") -> str:
+    """KST 기준 오늘 날짜 문자열."""
+    return kst_today().strftime(fmt)
+
 def _date_with_weekday(date_str: str) -> str:
     """'2026-05-23' → '2026-05-23(토)'. 파싱 실패 시 원본 반환."""
     try:
@@ -1580,7 +1590,7 @@ def generate_schedule_fully_random(league_players, num_rounds=3):
 def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None,
                                  max_games_per_player=3):
     """
-    이벤트 팀 대결 대진표 생성 (잡복 최소화 + 출전 횟수 제한).
+    이벤트 팀 대결 대진표 생성 (남복·여복·혼복 균형 + 출전 횟수 제한 + 잡복 0).
 
     teams: [[player_code,...], ...]  각 팀 = 플레이어 코드 리스트
     team_labels: 각 팀 표시 이름 (없으면 '팀1','팀2'…)
@@ -1588,10 +1598,9 @@ def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None,
 
     규칙:
     - 모든 팀쌍이 맞대결. 각 매치 = (팀A 2명) vs (팀B 2명) 복식.
-    - 각 선수 출전 횟수를 추적해 max_games_per_player를 초과하지 않음.
-    - 출전 횟수가 적은 선수를 우선 투입(균등). 인원 사정상 일부는 2경기만 뛸 수 있음.
-    - 페어는 같은 성별끼리 우선 묶고, 팀A페어 vs 팀B페어도 성별 구성을 맞춰
-      잡복(남3여1·남1여3)을 최소화.
+    - 매치 유형은 남복(MM vs MM)·여복(WW vs WW)·혼복(MW vs MW)만 생성 → 잡복 0.
+    - 매 경기 생성 시 '지금까지 가장 적게 나온 유형'을 우선 선택해 세 유형을 고르게 분배.
+    - 각 선수 출전 횟수를 추적해 max_games_per_player 초과 금지, 적게 뛴 선수 우선 투입.
     """
     all_results = []
     all_stats   = {}
@@ -1604,97 +1613,91 @@ def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None,
             return team_labels[i]
         return f"팀{i+1}"
 
-    # 출전 횟수 추적
     game_counts = {}
     for t in teams:
         for p in t:
             game_counts[base_name(p)] = 0
 
-    def _avail(team):
-        """아직 max 미만으로 출전 가능한 선수만 (출전 적은 순 + 랜덤)."""
-        cand = [p for p in team if game_counts[base_name(p)] < max_games_per_player]
-        random.shuffle(cand)
-        cand.sort(key=lambda p: game_counts[base_name(p)])
-        return cand
-
-    def _make_pairs(players):
+    def _pick_two(players, gender):
         """
-        같은 성별끼리 우선 묶어 페어(2명) 리스트 생성.
-        남자끼리, 여자끼리 먼저 페어링 → 남은 1명씩만 혼합.
-        반환: [(p1,p2), ...]
+        해당 성별 선수 중 출전 횟수가 적은 2명을 골라 (선택목록, 나머지)로 반환.
+        2명 미만이면 None.
         """
-        men   = [p for p in players if get_gender(p) == "M"]
-        women = [p for p in players if get_gender(p) == "W"]
-        others= [p for p in players if get_gender(p) not in ("M", "W")]
-        pairs = []
-        for grp in (men, women):
-            i = 0
-            while i + 1 < len(grp):
-                pairs.append((grp[i], grp[i+1]))
-                i += 2
-            if i < len(grp):
-                others.append(grp[i])  # 짝 없는 1명은 others로
-        # 남은 인원(혼성 또는 미상) 2명씩
-        i = 0
-        while i + 1 < len(others):
-            pairs.append((others[i], others[i+1]))
-            i += 2
-        return pairs
+        pool = [p for p in players
+                if get_gender(p) == gender
+                and game_counts[base_name(p)] < max_games_per_player]
+        if len(pool) < 2:
+            return None
+        # 출전 적은 순 + 랜덤 타이브레이크
+        random.shuffle(pool)
+        pool.sort(key=lambda p: game_counts[base_name(p)])
+        return pool[0], pool[1]
 
-    def _pair_gender(pair):
-        gs = {get_gender(pair[0]), get_gender(pair[1])}
-        if gs == {"M"}: return "MM"
-        if gs == {"W"}: return "WW"
-        return "MX"  # 혼합/기타
+    def _pick_one(players, gender, exclude):
+        pool = [p for p in players
+                if get_gender(p) == gender
+                and p not in exclude
+                and game_counts[base_name(p)] < max_games_per_player]
+        if not pool:
+            return None
+        random.shuffle(pool)
+        pool.sort(key=lambda p: game_counts[base_name(p)])
+        return pool[0]
 
+    def _try_build(team_a, team_b, mtype):
+        """
+        주어진 유형(남복/여복/혼복)으로 (팀A페어, 팀B페어) 구성 시도.
+        성공 시 (ap, bp), 실패 시 None.
+        """
+        if mtype == "남복":
+            a = _pick_two(team_a, "M"); b = _pick_two(team_b, "M")
+            if a and b: return a, b
+        elif mtype == "여복":
+            a = _pick_two(team_a, "W"); b = _pick_two(team_b, "W")
+            if a and b: return a, b
+        else:  # 혼복: 각 팀 남1 여1
+            am = _pick_one(team_a, "M", set())
+            aw = _pick_one(team_a, "W", set())
+            bm = _pick_one(team_b, "M", set())
+            bw = _pick_one(team_b, "W", set())
+            if am and aw and bm and bw:
+                return (am, aw), (bm, bw)
+        return None
+
+    # 유형별 누적 카운트 (전체 균형 추적)
+    type_count = {"남복": 0, "여복": 0, "혼복": 0}
+
+    # 라운드/팀쌍을 돌며, 매 슬롯마다 '가장 적게 나온 유형' 우선 생성
     for r in range(1, num_rounds + 1):
         rname = f"{r}R"
         for ti in range(n):
             for tj in range(ti + 1, n):
-                a_avail = _avail(teams[ti])
-                b_avail = _avail(teams[tj])
-                if len(a_avail) < 2 or len(b_avail) < 2:
-                    continue
+                team_a = teams[ti]
+                team_b = teams[tj]
                 vs_label = f"{_label(ti)} vs {_label(tj)}"
 
-                a_pairs = _make_pairs(a_avail)
-                b_pairs = _make_pairs(b_avail)
-                if not a_pairs or not b_pairs:
-                    continue
+                # 이 팀쌍에서 만들 수 있는 만큼 경기 생성 (출전 한도 도달 시 자동 종료)
+                while True:
+                    # 현재 가용 인원으로 만들 수 있는 유형 후보
+                    # 유형 우선순위 = 누적 카운트가 적은 순 (균형)
+                    order = sorted(type_count.keys(), key=lambda k: (type_count[k], random.random()))
+                    built = None
+                    chosen_type = None
+                    for cand_type in order:
+                        res = _try_build(team_a, team_b, cand_type)
+                        if res:
+                            built = res
+                            chosen_type = cand_type
+                            break
+                    if built is None:
+                        break  # 더 만들 수 있는 매치 없음
 
-                # 성별 구성이 같은 페어끼리 매칭해 잡복 최소화
-                # (MM↔MM=남복, WW↔WW=여복, MX↔MX=혼복)
-                b_by_g = {"MM": [], "WW": [], "MX": []}
-                for bp in b_pairs:
-                    b_by_g[_pair_gender(bp)].append(bp)
-
-                num_possible = min(len(a_pairs), len(b_pairs))
-                used_matches = 0
-
-                for ap in a_pairs:
-                    if used_matches >= num_possible:
-                        break
-                    ag = _pair_gender(ap)
-                    # 같은 성별 구성 우선, 없으면 아무 페어
-                    bp = None
-                    if b_by_g[ag]:
-                        bp = b_by_g[ag].pop()
-                    else:
-                        for g2 in ("MM", "WW", "MX"):
-                            if b_by_g[g2]:
-                                bp = b_by_g[g2].pop()
-                                break
-                    if bp is None:
-                        break
-
-                    # 출전 가능 재확인(이미 이 라운드 다른 매치서 찼을 수 있음)
+                    ap, bp = built
                     quartet = list(ap) + list(bp)
-                    if any(game_counts[base_name(p)] >= max_games_per_player for p in quartet):
-                        continue
-
                     mt = classify_match([base_name(p) for p in quartet])
                     for p in quartet:
                         game_counts[base_name(p)] += 1
+                    type_count[mt] = type_count.get(mt, 0) + 1
                     update_stats(all_stats, ap, bp, mt, rname, vs_label)
                     all_results.append({
                         "round":  rname,
@@ -1703,7 +1706,6 @@ def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None,
                         "team2":  tuple(bp),
                         "type":   mt,
                     })
-                    used_matches += 1
 
     return all_results, all_stats
 
@@ -3657,7 +3659,7 @@ def render_roster_page():
     with c_dl:
         # CSV 백업 다운로드 (BOM 추가로 엑셀 한글 깨짐 방지)
         csv_data = df.to_csv(index=False).encode("utf-8-sig") if not df.empty else "".encode("utf-8-sig")
-        today_str = date.today().strftime("%Y%m%d")
+        today_str = kst_today_str("%Y%m%d")
         st.download_button(
             "📥 백업",
             data=csv_data,
@@ -3946,7 +3948,7 @@ def render_roster_page():
                              f"{str(r.get('name','') or '').strip()}\t"
                              f"{str(r.get('phone','') or '').strip()}")
             phone_text = "\n".join(lines)
-            today_str  = date.today().strftime("%Y%m%d")
+            today_str  = kst_today_str("%Y%m%d")
             st.download_button(
                 "📋 연락처 추출",
                 data=phone_text.encode("utf-8-sig"),
@@ -4225,7 +4227,7 @@ if page == "📊 스코어보드":
                 for _e in _errs:
                     st.error(_e)
 
-    today_str  = date.today().strftime("%Y-%m-%d")
+    today_str  = kst_today_str("%Y-%m-%d")
     saved_keys = shelf_list_dates()
 
     # 수정3: 이벤트 팀편성에서 막 생성한 대진표가 있으면 안내 + 기본 선택
@@ -4971,7 +4973,7 @@ elif page == "📋 대진표생성":
     # ── [4] 날짜·번호 (가로 배치) + 비밀번호 + 생성 버튼 ────
     st.sidebar.markdown("---")
     _d1, _d2 = st.sidebar.columns([3, 2])
-    rp_date = _d1.text_input("📅 날짜", value=date.today().strftime("%Y-%m-%d"), key="rp_date")
+    rp_date = _d1.text_input("📅 날짜", value=kst_today_str("%Y-%m-%d"), key="rp_date")
     rp_num  = _d2.text_input("번호", value="001", key="rp_num", placeholder="001")
     rp_key  = f"{_date_with_weekday(rp_date)}_{rp_num}"
     st.sidebar.caption(f"저장키: {rp_key}")
@@ -6711,7 +6713,7 @@ elif page == "🎯 이벤트 팀편성":
                     "리그":_p.get("league",""),"카테고리":_p.get("category","")})
         _dlcsv = pd.DataFrame(_dlrows).to_csv(index=False, encoding="utf-8-sig")
         st.download_button("⬇️ 팀편성 결과 CSV", data=_dlcsv.encode("utf-8-sig"),
-            file_name=f"team_result_{date.today().strftime('%Y%m%d')}.csv", mime="text/csv")
+            file_name=f"team_result_{kst_today_str('%Y%m%d')}.csv", mime="text/csv")
 
         if st.button("🔄 다시 편성 (랜덤 재배치)", key="re_team"):
             st.session_state["_team_run"] = True
@@ -6729,7 +6731,7 @@ elif page == "🎯 이벤트 팀편성":
         _ev_c1, _ev_c2 = st.columns([1, 2])
         with _ev_c1:
             _ev_rp_date = st.text_input("날짜 (YYYY-MM-DD)",
-                value=date.today().strftime("%Y-%m-%d"), key="ev_rp_date")
+                value=kst_today_str("%Y-%m-%d"), key="ev_rp_date")
             _ev_rp_num  = st.text_input("일련번호", value="001", key="ev_rp_num")
         with _ev_c2:
             _ev_max_games = st.number_input(
