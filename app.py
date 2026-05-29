@@ -4360,13 +4360,11 @@ elif page == "📋 대진표생성":
                 normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
                 dormant_df = lg_df[lg_df.apply(_is_dorm, axis=1)]
 
-                # 선택 현황 카운트 (영구 저장소 기준)
-                _sel_store_view = st.session_state.get("selected_members", {})
-                _gsel_store_view = st.session_state.get("selected_guests", {})
-                sel_cnt   = sum(1 for _, r in lg_df.iterrows()
-                                if _sel_store_view.get(f"{lg}_{int(r['id'])}", False))
+                # 선택 현황 카운트: 실제 위젯 상태(mchk_/gchk_) 기준
+                sel_cnt   = sum(1 for _, r in normal_df.iterrows()
+                                if st.session_state.get(f"mchk_{lg}_{int(r['id'])}", False))
                 g_sel_cnt = sum(1 for gm in _guests_lg
-                                if _gsel_store_view.get(f"{lg}_{gm['name']}", False))
+                                if st.session_state.get(f"gchk_{lg}_{gm['name']}", False))
                 total_sel = sel_cnt + g_sel_cnt
 
                 col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
