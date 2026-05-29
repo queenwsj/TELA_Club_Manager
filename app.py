@@ -232,7 +232,7 @@ def _settings_restore_all():
         pass
 # 컬럼 정의
 SCHED_COLS = [
-    "date_key","is_fully_random",
+    "date_key","is_fully_random","is_locked",
     "match_idx","round","league","team1","team2","type","exclude_players",
     "score1","score2","is_dup",
 ]
@@ -458,13 +458,15 @@ def is_admin() -> bool:
     return bool(u and u.get("role") == "admin")
 
 
-def shelf_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool = False):
+def shelf_save(date_key: str, schedule: list, scores: dict,
+               is_fully_random: bool = False, is_locked: bool = False):
     # ① 로컬 shelve (빠른 읽기 캐시)
     with shelve.open(SHELF_PATH) as db:
-        db[date_key] = {"schedule": schedule, "scores": scores, "is_fully_random": is_fully_random}
+        db[date_key] = {"schedule": schedule, "scores": scores,
+                        "is_fully_random": is_fully_random, "is_locked": is_locked}
     # ② 구글시트 schedules 탭 (영구 저장 — 재시작 후 복원용)
     try:
-        _gsheet_sched_save(date_key, schedule, scores, is_fully_random)
+        _gsheet_sched_save(date_key, schedule, scores, is_fully_random, is_locked)
     except Exception as _e:
         st.session_state.setdefault("_gsheet_errors", []).append(
             f"schedules 저장 예외 (key={date_key}): {_e}")
@@ -526,7 +528,8 @@ def _get_schedules_sheet():
         return None
 
 
-def _gsheet_sched_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool):
+def _gsheet_sched_save(date_key: str, schedule: list, scores: dict,
+                       is_fully_random: bool, is_locked: bool = False):
     """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입."""
     ws = _get_schedules_sheet()
     if ws is None:
@@ -546,6 +549,7 @@ def _gsheet_sched_save(date_key: str, schedule: list, scores: dict, is_fully_ran
         new_rows.append([
             date_key,
             "1" if is_fully_random else "0",
+            "1" if is_locked else "0",
             str(idx),
             str(match.get("round", "")),
             str(match.get("league", "")),
@@ -574,6 +578,7 @@ def _gsheet_sched_load(date_key: str) -> Optional[dict]:
     schedule = []
     scores   = {}
     is_fully_random = False
+    is_locked       = False
     for r in rows:
         t1 = tuple(r["team1"].split("|")) if r.get("team1") else ()
         t2 = tuple(r["team2"].split("|")) if r.get("team2") else ()
@@ -598,7 +603,10 @@ def _gsheet_sched_load(date_key: str) -> Optional[dict]:
                 pass
         if str(r.get("is_fully_random","0")) == "1":
             is_fully_random = True
-    return {"schedule": schedule, "scores": scores, "is_fully_random": is_fully_random}
+        if str(r.get("is_locked","0")) == "1":
+            is_locked = True
+    return {"schedule": schedule, "scores": scores,
+            "is_fully_random": is_fully_random, "is_locked": is_locked}
 
 
 def _gsheet_sched_list() -> List[str]:
@@ -1934,9 +1942,6 @@ from datetime import datetime, date, timedelta
 
 st.set_page_config(page_title="TELA CLUB v5.5", page_icon="🎾", layout="wide")
 
-# 앱 시작 시 구글시트 → 로컬 shelve 복원 (재시작 후 데이터 유지)
-_restore_shelf_from_gsheet()
-
 
 # ============================================================
 # 섹션 R: 회원명부 함수 (rostor_app.py 통합)
@@ -2105,6 +2110,9 @@ def _get_gsheet_connection():
     client = gspread.authorize(creds)
     wb     = client.open_by_key(st.secrets["SHEET_ID"])
     return wb
+
+# 앱 시작 시 구글시트 → 로컬 shelve 복원 (_get_gsheet_connection 정의 직후 호출)
+_restore_shelf_from_gsheet()
 
 def get_audit_sheet():
     """변경 이력 시트 (audit_log 탭). 매번 새 연결. 없으면 자동 생성."""
@@ -3820,9 +3828,8 @@ if page == "📊 스코어보드":
         loaded = shelf_load(selected_key)
         if loaded:
             st.session_state["sb_schedule"] = deserialize_schedule(loaded["schedule"])
-            # [수정1] shelf에서 점수 정확히 복원 (새로고침 후 데이터 유지)
             st.session_state["sb_scores"]   = loaded.get("scores", {})
-            # locked 상태도 복원
+            st.session_state["sb_is_locked"] = loaded.get("is_locked", False)
             for k, v in loaded.get("scores", {}).items():
                 if v:
                     st.session_state[f"locked_{k}"] = True
@@ -3832,15 +3839,66 @@ if page == "📊 스코어보드":
             if rp_sched and rp_key == selected_key:
                 st.session_state["sb_schedule"] = rp_sched
                 st.session_state["sb_scores"]   = {}
+                st.session_state["sb_is_locked"] = False
             else:
                 st.session_state["sb_schedule"] = None
                 st.session_state["sb_scores"]   = {}
+                st.session_state["sb_is_locked"] = False
 
     schedule = st.session_state.get("sb_schedule")
     if not schedule:
         st.warning("⚠️ 이 키에 저장된 대진표가 없습니다.")
         st.info("👈 **📋 대진표생성**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
         st.stop()
+
+    # ── 잠금 상태 ─────────────────────────────────────────────
+    _sb_locked = st.session_state.get("sb_is_locked", False)
+
+    # 잠금 배너
+    if _sb_locked:
+        st.markdown(
+            '<div style="background:#b71c1c;color:#fff;font-weight:700;'
+            'text-align:center;padding:8px;border-radius:8px;margin-bottom:8px;'
+            'font-size:0.9rem;">🔒 이 스코어보드는 잠금 상태입니다. 수정이 불가합니다.</div>',
+            unsafe_allow_html=True)
+
+    # 잠금/해제 버튼 (관리자만)
+    if is_admin():
+        with st.expander("🔒 스코어보드 잠금 관리 (관리자)", expanded=False):
+            if not _sb_locked:
+                if st.button("🔒 잠금", type="primary", key="sb_lock_btn",
+                             help="대진표·점수를 잠금하면 수정이 불가합니다."):
+                    _cur_scores = st.session_state.get("sb_scores", {})
+                    _cur_sched  = st.session_state.get("sb_schedule", [])
+                    _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                    shelf_save(selected_key, serialize_schedule(_cur_sched),
+                               _cur_scores, _ifr, is_locked=True)
+                    st.session_state["sb_is_locked"] = True
+                    st.success("🔒 잠금 완료. 스코어보드가 잠겼습니다.")
+                    st.rerun()
+            else:
+                st.caption("잠금 해제 시 관리자 비밀번호를 입력해야 합니다.")
+                _unlock_pw = st.text_input("비밀번호", type="password",
+                                           key="sb_unlock_pw",
+                                           label_visibility="collapsed",
+                                           placeholder="관리자 비밀번호 입력")
+                if st.button("🔓 잠금 해제", type="secondary", key="sb_unlock_btn"):
+                    _app_user = get_app_user()
+                    _uid = _app_user.get("id","") if _app_user else ""
+                    _users = user_load_all()
+                    _pw_hash = _users.get(_uid, {}).get("pw_hash","")
+                    if _pw_hash and _pw_hash == _hash_pw(_unlock_pw):
+                        _cur_scores = st.session_state.get("sb_scores", {})
+                        _cur_sched  = st.session_state.get("sb_schedule", [])
+                        _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                        shelf_save(selected_key, serialize_schedule(_cur_sched),
+                                   _cur_scores, _ifr, is_locked=False)
+                        st.session_state["sb_is_locked"] = False
+                        st.session_state.pop("sb_unlock_pw", None)
+                        st.success("🔓 잠금 해제되었습니다.")
+                        st.rerun()
+                    else:
+                        st.error("❌ 비밀번호가 틀렸습니다.")
 
     scores = st.session_state.setdefault("sb_scores", {})
     rounds = []
@@ -3857,7 +3915,8 @@ if page == "📊 스코어보드":
         f'{disp_date} · {disp_num}</div>', unsafe_allow_html=True)
 
     # ── 점수 입력 UI ─────────────────────────────────────────
-    _can_edit = is_admin()   # 수정1: 저장·수정은 관리자만
+    # 잠금 중이면 편집 불가
+    _can_edit = is_admin() and not _sb_locked
 
     def _save_score(idx, s1, s2):
         """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
