@@ -1,24 +1,8 @@
 """
-TELA CLUB Random Match Generator v5.00
-======================================
-변경사항 (v4.01):
-  [버그수정] 완전 랜덤페어 여복 미출현 버그 수정
-      · 문제: 남자 10명 여자 5명 등 특정 비율에서 여복이 나오지 않음
-      · 원인: _build_jabbok_minimized_groups의 동점 후보 수집 방식이
-              dong_w=0인 조합만 동점으로 묶어 여복 선택 기회 원천 차단
-      · 수정: best_score + threshold(15점) 이내 모든 유효 조합을 candidates로
-              확장하여 여복/남복 그룹이 골고루 등장하도록 개선
-
-변경사항 (v4.00):
-  [1] 페어링 방식 선택 섹션 추가 (v3.01 내용 통합)
-      · 조건부 랜덤페어: 리그별 우선순위·쿼터 적용
-      · 완전 랜덤페어: 완전 무작위 (남성 vs 여성 대결 제한)
-  [2] 리그 수 변동 설정 기능 추가
-      · 1~5개 리그 자유 설정
-      · 리그명: A리그, B리그, C리그, D리그, E리그 순 자동 부여
-      · 리그별 독립적으로 우선순위(동성우선/혼복우선) 및 쿼터 설정
-      · 인원 입력 UI, 색상, 검증 리포트 모두 리그 수에 따라 동적 생성
+TELA CLUB Random Match Generator v5.6
+버전 이력: CHANGELOG.md 참고
 """
+
 
 import streamlit as st
 import pandas as pd
@@ -59,10 +43,199 @@ import secrets as _secrets
 SAVE_DIR   = os.path.join(os.path.dirname(__file__), ".tela_data")
 os.makedirs(SAVE_DIR, exist_ok=True)
 SHELF_PATH   = os.path.join(SAVE_DIR, "scoreboard")
-MEMBER_PATH  = os.path.join(SAVE_DIR, "members")
 USER_PATH    = os.path.join(SAVE_DIR, "users")
 GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
 SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
+RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
+EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
+SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 구글시트 탭명
+GUESTS_SHEET_NAME  = "guests"   # 게스트 목록 탭
+EXCLUDE_SHEET_NAME = "exclude"  # 기록 제외 선수 탭
+USERS_SHEET_NAME   = "users"    # 계정 탭
+
+GUESTS_COLS  = ["name", "gender", "league", "code"]
+EXCLUDE_COLS = ["player_name"]
+USERS_COLS   = ["user_id", "pw_hash", "role", "name"]
+
+
+# ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
+
+def _get_tab(sheet_name: str, headers: list):
+    """범용 탭 getter. 없으면 자동 생성."""
+    try:
+        wb = _get_gsheet_connection()
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"{sheet_name} 탭: 연결 실패 → {_e}")
+        return None
+    try:
+        return wb.worksheet(sheet_name)
+    except Exception:
+        pass
+    try:
+        ws = wb.add_worksheet(title=sheet_name, rows=500, cols=len(headers))
+        ws.append_row(headers)
+        return ws
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"{sheet_name} 탭 생성 실패 → {_e}")
+        return None
+
+
+# ── guests 탭 ─────────────────────────────────────────────────
+
+def _gsheet_guests_save(guests: list):
+    """guests 탭 전체 덮어쓰기. 행 1개 = 게스트 1명."""
+    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
+    if ws is None:
+        return
+    try:
+        # 헤더 제외 기존 데이터 행 모두 삭제
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if guests:
+            rows = [[
+                str(g.get("name","")),
+                str(g.get("gender","")),
+                str(g.get("league","")),
+                str(g.get("code","")),
+            ] for g in guests]
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"guests 저장 오류 → {_e}")
+
+
+def _gsheet_guests_load() -> list:
+    """guests 탭에서 게스트 목록 로드."""
+    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
+    if ws is None:
+        return []
+    try:
+        return ws.get_all_records()
+    except Exception:
+        return []
+
+
+# ── exclude 탭 ────────────────────────────────────────────────
+
+def _gsheet_exclude_save(names: list):
+    """exclude 탭 전체 덮어쓰기. 행 1개 = 제외 선수 1명."""
+    ws = _get_tab(EXCLUDE_SHEET_NAME, EXCLUDE_COLS)
+    if ws is None:
+        return
+    try:
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if names:
+            ws.append_rows([[n] for n in sorted(set(names))],
+                           value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"exclude 저장 오류 → {_e}")
+
+
+def _gsheet_exclude_load() -> list:
+    """exclude 탭에서 제외 선수 목록 로드."""
+    ws = _get_tab(EXCLUDE_SHEET_NAME, EXCLUDE_COLS)
+    if ws is None:
+        return []
+    try:
+        rows = ws.get_all_records()
+        return [str(r.get("player_name","")).strip()
+                for r in rows if r.get("player_name","").strip()]
+    except Exception:
+        return []
+
+
+# ── users 탭 ──────────────────────────────────────────────────
+
+def _gsheet_users_save(users: dict):
+    """users 탭 전체 덮어쓰기. 행 1개 = 계정 1개."""
+    ws = _get_tab(USERS_SHEET_NAME, USERS_COLS)
+    if ws is None:
+        return
+    try:
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if users:
+            rows = [[
+                str(uid),
+                str(udata.get("pw_hash","")),
+                str(udata.get("role","")),
+                str(udata.get("name","")),
+            ] for uid, udata in users.items()]
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"users 저장 오류 → {_e}")
+
+
+def _gsheet_users_load() -> dict:
+    """users 탭에서 계정 목록 로드. {user_id: {pw_hash, role, name}}"""
+    ws = _get_tab(USERS_SHEET_NAME, USERS_COLS)
+    if ws is None:
+        return {}
+    try:
+        rows = ws.get_all_records()
+        return {
+            str(r["user_id"]): {
+                "pw_hash": str(r.get("pw_hash","")),
+                "role":    str(r.get("role","member")),
+                "name":    str(r.get("name","")),
+            }
+            for r in rows if r.get("user_id","")
+        }
+    except Exception:
+        return {}
+
+
+# ── 앱 시작 시 복원 ───────────────────────────────────────────
+
+def _settings_restore_all():
+    """앱 시작 시 구글시트 각 탭 → shelve 복원."""
+    # users
+    try:
+        with shelve.open(USER_PATH) as db:
+            has = "users" in db and bool(db.get("users"))
+        if not has:
+            val = _gsheet_users_load()
+            if val:
+                with shelve.open(USER_PATH) as db:
+                    db["users"] = val
+    except Exception:
+        pass
+    # guests
+    try:
+        with shelve.open(GUEST_PATH) as db:
+            has = "guests" in db and bool(db.get("guests"))
+        if not has:
+            val = _gsheet_guests_load()
+            if val:
+                with shelve.open(GUEST_PATH) as db:
+                    db["guests"] = val
+    except Exception:
+        pass
+    # exclude
+    try:
+        with shelve.open(EXCLUDE_PATH) as db:
+            has = "excluded" in db and bool(db.get("excluded"))
+        if not has:
+            val = _gsheet_exclude_load()
+            if val is not None:
+                with shelve.open(EXCLUDE_PATH) as db:
+                    db["excluded"] = val
+    except Exception:
+        pass
+# 컬럼 정의
+SCHED_COLS = [
+    "date_key","is_fully_random","is_locked",
+    "match_idx","round","league","team1","team2","type","exclude_players",
+    "score1","score2","is_dup",
+]
 
 # ── 세션 토큰 헬퍼 (query_params 기반 로그인 유지) ─────────────
 SESSION_EXPIRE_DAYS = 30
@@ -117,6 +290,11 @@ def guest_load() -> list:
 def guest_save(guests: list):
     with shelve.open(GUEST_PATH) as db:
         db["guests"] = guests
+    # 구글시트 동기화
+    try:
+        _gsheet_guests_save(guests)
+    except Exception:
+        pass
 
 def guest_add(name: str, gender: str, league: str, code: str):
     guests = guest_load()
@@ -144,6 +322,11 @@ def user_load_all() -> dict:
 def user_save_all(data: dict):
     with shelve.open(USER_PATH) as db:
         db["users"] = data
+    # 구글시트 동기화
+    try:
+        _gsheet_users_save(data)
+    except Exception:
+        pass
 
 def user_ensure_admin():
     """secrets의 ADMIN_ID/ADMIN_PASSWORD로 최초 관리자 계정 보장"""
@@ -275,161 +458,313 @@ def is_admin() -> bool:
     return bool(u and u.get("role") == "admin")
 
 
-def shelf_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool = False):
+def shelf_save(date_key: str, schedule: list, scores: dict,
+               is_fully_random: bool = False, is_locked: bool = False):
+    # ① 로컬 shelve (빠른 읽기 캐시)
     with shelve.open(SHELF_PATH) as db:
-        db[date_key] = {"schedule": schedule, "scores": scores, "is_fully_random": is_fully_random}
+        db[date_key] = {"schedule": schedule, "scores": scores,
+                        "is_fully_random": is_fully_random, "is_locked": is_locked}
+    # ② 구글시트 schedules 탭 (영구 저장 — 재시작 후 복원용)
+    try:
+        _gsheet_sched_save(date_key, schedule, scores, is_fully_random, is_locked)
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"schedules 저장 예외 (key={date_key}): {_e}")
+
+def _is_valid_loaded(val: dict) -> bool:
+    """로드된 데이터가 정상인지 검증 (컬럼 밀림 손상 감지)."""
+    if not val or not isinstance(val, dict):
+        return False
+    sched = val.get("schedule", [])
+    if not sched:
+        return False
+    # round 값이 1R/2R 같은 정상 형태인지, team이 2명인지 확인
+    for m in sched:
+        rnd = str(m.get("round", ""))
+        t1  = m.get("team1", [])
+        t2  = m.get("team2", [])
+        # round가 순수 숫자(0,1,2…)면 손상 (정상은 "1R","2R","4R(이벤트)")
+        if rnd.isdigit():
+            return False
+        if len(t1) < 2 or len(t2) < 2:
+            return False
+    return True
 
 def shelf_load(date_key: str) -> Optional[dict]:
+    # ① 로컬 shelve 우선
     with shelve.open(SHELF_PATH) as db:
-        return db.get(date_key, None)
+        val = db.get(date_key, None)
+    if val is not None and _is_valid_loaded(val):
+        return val
+    # ② 로컬에 없거나 손상됐으면 구글시트에서 재로드
+    try:
+        val = _gsheet_sched_load(date_key)
+        if val and _is_valid_loaded(val):
+            with shelve.open(SHELF_PATH) as db:
+                db[date_key] = val
+            return val
+        # 구글시트 데이터도 손상이면 그대로 반환 (없는 것보다 나음)
+        return val
+    except Exception:
+        return None
 
 def shelf_list_dates() -> List[str]:
+    # ① 로컬 shelve 우선
     with shelve.open(SHELF_PATH) as db:
-        return sorted(db.keys(), reverse=True)
+        local_keys = sorted(db.keys(), reverse=True)
+    if local_keys:
+        return local_keys
+    # ② 없으면 구글시트에서 목록 조회
+    try:
+        return _gsheet_sched_list()
+    except Exception:
+        return []
 
 def shelf_delete(date_key: str):
+    # ① 로컬 shelve
     with shelve.open(SHELF_PATH) as db:
         if date_key in db:
             del db[date_key]
-
-# ── 회원 관리 shelve 헬퍼 ─────────────────────────────────────
-def member_load_all() -> dict:
-    """전체 회원 데이터 로드. 구조: {league_name: [{name, gender}, ...]}"""
-    with shelve.open(MEMBER_PATH) as db:
-        return dict(db.get("members", {}))
-
-def member_save_all(data: dict):
-    with shelve.open(MEMBER_PATH) as db:
-        db["members"] = data
-
-def member_add(league: str, name: str, gender: str):
-    data = member_load_all()
-    if league not in data:
-        data[league] = []
-    # 중복 방지
-    if not any(m["name"] == name for m in data[league]):
-        data[league].append({"name": name, "gender": gender})
-    member_save_all(data)
-
-def member_remove(league: str, name: str):
-    data = member_load_all()
-    if league in data:
-        data[league] = [m for m in data[league] if m["name"] != name]
-    member_save_all(data)
+    # ② 구글시트
+    try:
+        _gsheet_sched_delete(date_key)
+    except Exception:
+        pass
 
 
-# ── 구글 시트 회원 명부 연동 ──────────────────────────────────
-SHEET_ID = "1QjzPLZuXiE2BKt9lC-6Gzbi1mssYkosR12Q2tO4rVJk"
-UNASSIGNED_KEY = "미배정"   # 리그 미지정 회원 임시 버킷
+# ── 구글시트 schedules 탭 헬퍼 ────────────────────────────────
 
-def _get_gspread_client():
-    """Streamlit secrets의 gcp_service_account로 gspread 인증"""
-    import gspread
-    from google.oauth2.service_account import Credentials
-    scopes = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    # private_key 개행 처리 (TOML에서 \\n → \n)
-    if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return gspread.authorize(creds)
-
-def sync_from_sheet(target_league: str) -> dict:
-    """
-    구글 시트에서 활성 회원 읽기.
-    컬럼 구조: id(A) category(B) name(C) cafe_id(D) birth_year(E)
-               gender(F) phone(G) region(H) join_date(I) dormant_period(J)
-               leave_date(K) email(L) application(M) memo(N)
-               updated_at(O) deleted_at(P)
-
-    상태 판별:
-      - deleted_at 값 있음         → 탈퇴 (완전 제외)
-      - leave_date 값 있음         → 탈퇴 (완전 제외)
-      - dormant_period 비어있음    → 정상
-      - dormant_period 종료일이 오늘 이전 → 정상 (휴면 종료)
-      - dormant_period 종료일이 오늘 이후 → 휴면
-      - dormant_period 종료일 없음  → 휴면 (진행 중)
-
-    반환: {"imported": int, "skipped": int, "added": int}
-    """
-    from datetime import date as _date
-    today = _date.today()
-
-    def _parse_dormant(dormant_str: str) -> str:
-        """dormant_period 문자열 → '정상' 또는 '휴면'"""
-        s = dormant_str.strip()
-        if not s:
-            return "정상"
-        # '2024-01-01~2024-06-30' 또는 '2024-01-01~' 형태
-        if "~" in s:
-            end_part = s.split("~", 1)[1].strip()
-            if end_part:
-                try:
-                    end_date = _date.fromisoformat(end_part[:10])
-                    return "정상" if end_date < today else "휴면"
-                except ValueError:
-                    pass
-            return "휴면"   # 종료일 없으면 진행 중
-        # 날짜 하나만 있을 때 (시작일로 간주 → 휴면 진행 중)
-        return "휴면"
-
-    gc   = _get_gspread_client()
-    sh   = gc.open_by_key(SHEET_ID)
-    ws   = sh.sheet1
-    rows = ws.get_all_records()
-
-    imported, skipped = 0, 0
-    new_members = []
-    for row in rows:
-        name         = str(row.get("name",           "")).strip()
-        gender_raw   = str(row.get("gender",          "")).strip().upper()
-        deleted_at   = str(row.get("deleted_at",      "")).strip()
-        leave_date   = str(row.get("leave_date",      "")).strip()
-        dormant      = str(row.get("dormant_period",  "")).strip()
-
-        if not name:
-            skipped += 1; continue
-        if deleted_at or leave_date:
-            skipped += 1; continue
-
-        if gender_raw in ("남", "M", "MALE", "1"):
-            gender = "M"
-        elif gender_raw in ("여", "F", "W", "FEMALE", "2"):
-            gender = "W"
-        else:
-            gender = "M"
-
-        status = _parse_dormant(dormant)
-        new_members.append({"name": name, "gender": gender, "status": status})
-        imported += 1
-
-    # 기존 shelve 머지 — status는 시트 기준으로 갱신, 수동 override는 유지 안 함
-    # (재가져오기 시 항상 시트가 최신 source of truth)
-    data = member_load_all()
-    existing_by_name: dict = {}
-    for lg, members in data.items():
-        for idx, m in enumerate(members):
-            existing_by_name[m["name"]] = (lg, idx)
-
-    added = 0
-    for m in new_members:
-        if m["name"] in existing_by_name:
-            lg, idx = existing_by_name[m["name"]]
-            data[lg][idx]["status"] = m["status"]
-        else:
-            bucket = target_league if target_league else UNASSIGNED_KEY
-            if bucket not in data:
-                data[bucket] = []
-            data[bucket].append(m)
-            added += 1
-
-    member_save_all(data)
-    return {"imported": imported, "skipped": skipped, "added": added}
+def _get_schedules_sheet():
+    """schedules 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
+    try:
+        wb = _get_gsheet_connection()
+    except Exception:
+        return None
+    try:
+        ws = wb.worksheet(SCHEDULES_SHEET_NAME)
+    except Exception:
+        try:
+            ws = wb.add_worksheet(title=SCHEDULES_SHEET_NAME, rows=5000, cols=len(SCHED_COLS))
+            ws.append_row(SCHED_COLS)
+        except Exception:
+            return None
+        return ws
+    # 헤더 마이그레이션: 신규 컬럼(is_locked 등) 없으면 추가
+    try:
+        headers = ws.row_values(1)
+        for col in SCHED_COLS:
+            if col not in headers:
+                ws.update_cell(1, len(headers) + 1, col)
+                headers.append(col)
+    except Exception:
+        pass
+    return ws
 
 
+def _gsheet_sched_save(date_key: str, schedule: list, scores: dict,
+                       is_fully_random: bool, is_locked: bool = False):
+    """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입.
+    실제 시트 헤더 순서에 맞춰 저장 (헤더-데이터 컬럼 불일치 방지)."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"schedules sheet 연결 실패 (key={date_key})")
+        return
+    all_rows = ws.get_all_values()
+    # 실제 헤더 순서 확인 (없으면 SCHED_COLS 기본)
+    headers = all_rows[0] if all_rows else SCHED_COLS
+    # 기존 date_key 행 삭제
+    del_rows = [i+1 for i, row in enumerate(all_rows)
+                if i > 0 and len(row) > 0 and row[0] == date_key]
+    for ri in sorted(del_rows, reverse=True):
+        ws.delete_rows(ri)
+    # 새 행 생성 — 각 경기를 dict로 만든 뒤 헤더 순서대로 정렬
+    new_rows = []
+    for idx, match in enumerate(schedule):
+        sc  = scores.get(str(idx), {})
+        rowmap = {
+            "date_key":        date_key,
+            "is_fully_random": "1" if is_fully_random else "0",
+            "is_locked":       "1" if is_locked else "0",
+            "match_idx":       str(idx),
+            "round":           str(match.get("round", "")),
+            "league":          str(match.get("league", "")),
+            "team1":           "|".join(str(p) for p in match.get("team1", [])),
+            "team2":           "|".join(str(p) for p in match.get("team2", [])),
+            "type":            str(match.get("type", "")),
+            "exclude_players": ",".join(str(p) for p in match.get("exclude_players", [])),
+            "score1":          str(sc.get("score1", "")) if sc else "",
+            "score2":          str(sc.get("score2", "")) if sc else "",
+            "is_dup":          "1" if sc.get("is_dup", False) else "0",
+        }
+        # 실제 헤더 순서대로 값 배열 구성
+        new_rows.append([rowmap.get(h, "") for h in headers])
+    if new_rows:
+        ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+
+
+def _gsheet_sched_load(date_key: str) -> Optional[dict]:
+    """구글시트에서 특정 date_key 로드. 헤더 기반 파싱으로 컬럼 순서 변경에 강건."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return None
+    try:
+        all_vals = ws.get_all_values()
+    except Exception:
+        return None
+    if not all_vals:
+        return None
+    headers = all_vals[0]
+
+    # 헤더 → 인덱스 매핑 헬퍼 (클로저 캡처 버그 방지: default 인자로 i 고정)
+    def _get_col(name, default=""):
+        try:
+            idx = headers.index(name)
+        except ValueError:
+            idx = -1
+        def _getter(row, _i=idx, _d=default):
+            return row[_i] if _i >= 0 and _i < len(row) else _d
+        return _getter
+
+    _dk   = _get_col("date_key")
+    _ifr  = _get_col("is_fully_random", "0")
+    _ilk  = _get_col("is_locked", "0")
+    _midx = _get_col("match_idx", "0")
+    _rnd  = _get_col("round")
+    _lg   = _get_col("league")
+    _t1   = _get_col("team1")
+    _t2   = _get_col("team2")
+    _tp   = _get_col("type")
+    _ep   = _get_col("exclude_players")
+    _s1   = _get_col("score1")
+    _s2   = _get_col("score2")
+    _idup = _get_col("is_dup", "0")
+
+    data_rows = [row for row in all_vals[1:] if len(row) > 0 and _dk(row) == date_key]
+    if not data_rows:
+        return None
+    try:
+        data_rows = sorted(data_rows, key=lambda r: int(_midx(r) or 0))
+    except Exception:
+        pass
+    rows = []
+    for row in data_rows:
+        rows.append({
+            "date_key":        _dk(row),
+            "is_fully_random": _ifr(row),
+            "is_locked":       _ilk(row),
+            "match_idx":       _midx(row),
+            "round":           _rnd(row),
+            "league":          _lg(row),
+            "team1":           _t1(row),
+            "team2":           _t2(row),
+            "type":            _tp(row),
+            "exclude_players": _ep(row),
+            "score1":          _s1(row),
+            "score2":          _s2(row),
+            "is_dup":          _idup(row),
+        })
+    schedule = []
+    scores   = {}
+    is_fully_random = False
+    is_locked       = False
+    for r in rows:
+        t1 = tuple(r["team1"].split("|")) if r.get("team1") else ()
+        t2 = tuple(r["team2"].split("|")) if r.get("team2") else ()
+        ep = [p for p in r.get("exclude_players","").split(",") if p]
+        schedule.append({
+            "round":           str(r.get("round","")),
+            "league":          str(r.get("league","")),
+            "team1":           t1,
+            "team2":           t2,
+            "type":            str(r.get("type","")),
+            "exclude_players": ep,
+        })
+        s1 = r.get("score1","")
+        s2 = r.get("score2","")
+        if s1 != "" and s2 != "":
+            try:
+                scores[str(r["match_idx"])] = {
+                    "score1": int(s1), "score2": int(s2),
+                    "is_dup": str(r.get("is_dup","0")) == "1",
+                }
+            except (ValueError, TypeError):
+                pass
+        if str(r.get("is_fully_random","0")) == "1":
+            is_fully_random = True
+        if str(r.get("is_locked","0")) == "1":
+            is_locked = True
+    return {"schedule": schedule, "scores": scores,
+            "is_fully_random": is_fully_random, "is_locked": is_locked}
+
+
+def _gsheet_sched_list() -> List[str]:
+    """구글시트에서 저장된 date_key 목록 조회."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return []
+    try:
+        all_vals = ws.get_all_values()
+        keys = []
+        seen = set()
+        for row in all_vals[1:]:
+            if row and row[0] and row[0] not in seen:
+                keys.append(row[0])
+                seen.add(row[0])
+        return sorted(keys, reverse=True)
+    except Exception:
+        return []
+
+
+def _gsheet_sched_delete(date_key: str):
+    """구글시트에서 특정 date_key 행 모두 삭제."""
+    ws = _get_schedules_sheet()
+    if ws is None:
+        return
+    all_rows = ws.get_all_values()
+    del_rows = [i+1 for i, row in enumerate(all_rows)
+                if i > 0 and len(row) > 0 and row[0] == date_key]
+    for ri in sorted(del_rows, reverse=True):
+        ws.delete_rows(ri)
+
+
+def _restore_shelf_from_gsheet():
+    """앱 시작 시 구글시트 → 로컬 shelve 복원. session당 1회만 실행."""
+    if st.session_state.get("_shelf_restored"):
+        return
+    st.session_state["_shelf_restored"] = True
+    # ① schedules / settings 탭 없으면 미리 생성 (저장 전에 탭이 반드시 있어야 함)
+    try:
+        _get_schedules_sheet()
+    except Exception:
+        pass
+    for _tn, _tc in [(GUESTS_SHEET_NAME, GUESTS_COLS),
+                     (EXCLUDE_SHEET_NAME, EXCLUDE_COLS),
+                     (USERS_SHEET_NAME, USERS_COLS)]:
+        try:
+            _get_tab(_tn, _tc)
+        except Exception:
+            pass
+    # ② 대진표·점수 복원
+    try:
+        with shelve.open(SHELF_PATH) as db:
+            local_keys = set(db.keys())
+        gsheet_keys = _gsheet_sched_list()
+        for dk in [k for k in gsheet_keys if k not in local_keys]:
+            val = _gsheet_sched_load(dk)
+            if val:
+                with shelve.open(SHELF_PATH) as db:
+                    db[dk] = val
+    except Exception:
+        pass
+    # ③ 설정 데이터 복원 (계정·게스트·제외선수)
+    _settings_restore_all()
+
+
+# ============================================================
+# 구글시트 settings 탭 — 범용 key-value 이중화
+# ============================================================
+# 구조: key | value (JSON 문자열)
 # [제거] ADMIN_PASSWORD: 어디서도 사용되지 않음.
 # 관리자 비밀번호는 RS_ADMIN_PASSWORD(섹션 R)로 별도 관리.
 
@@ -1233,14 +1568,36 @@ def stats_to_df(all_stats):
 # ============================================================
 
 def compute_scoreboard_stats(schedule, scores):
+    """
+    선수별 현황 계산.
+    - (중복) 태그 선수: 출전수 포함하되 승/패/득점/실점 제외
+    - 제외 목록 선수(코치 등): 완전 제외
+    - 게스트(★ prefix): 완전 제외
+    """
+    _excluded = set(exclude_list_load())
+
+    def _skip_player(code: str) -> bool:
+        """True이면 집계에서 완전 제외"""
+        raw = base_name(code)
+        # 게스트: 코드 내 ★ 포함
+        if "★" in raw:
+            return True
+        # 제외 목록
+        pkey = _clean_player_key(code)
+        if pkey in _excluded:
+            return True
+        return False
+
     player_stats = {}
 
     def ensure_player(code, league):
+        if _skip_player(code):
+            return
         key = base_name(code)
         if key not in player_stats:
             player_stats[key] = {
-                "이름": pname(code), "리그": league,
-                "출전":0,"승":0,"패":0,"승점":0,"실점":0,
+                "이름": display_name(code), "리그": league,
+                "출전":0,"승":0,"패":0,"득점":0,"실점":0,
                 "1R출전":0,"2R출전":0,"3R출전":0,"4R출전":0,
             }
 
@@ -1249,38 +1606,63 @@ def compute_scoreboard_stats(schedule, scores):
         s1  = sc.get("score1", None)
         s2  = sc.get("score2", None)
         league = match["league"]
-        t1  = [base_name(p) for p in match["team1"]]
-        t2  = [base_name(p) for p in match["team2"]]
+
+        # (중복) 여부 분리
+        t1_all = list(match["team1"])
+        t2_all = list(match["team2"])
+
+        # 정상 선수만 등록
+        for code in t1_all + t2_all:
+            ensure_player(code, league)
+
         rnd = match["round"]
         rnd_num = (1 if rnd=="1R" else 2 if rnd=="2R" else 3 if rnd=="3R"
                    else 4 if ("4R" in rnd or "이벤트" in rnd) else None)
 
-        for code in match["team1"]: ensure_player(code, league)
-        for code in match["team2"]: ensure_player(code, league)
+        # 출전 카운트: 중복·제외·게스트 제외한 선수만
+        for code in t1_all + t2_all:
+            if _skip_player(code) or _is_duplicate_player(code):
+                continue
+            key = base_name(code)
+            if key in player_stats:
+                player_stats[key]["출전"] += 1
+                if rnd_num==1: player_stats[key]["1R출전"]+=1
+                elif rnd_num==2: player_stats[key]["2R출전"]+=1
+                elif rnd_num==3: player_stats[key]["3R출전"]+=1
+                elif rnd_num==4: player_stats[key]["4R출전"]+=1
 
-        for p in t1+t2:
-            player_stats[p]["출전"] += 1
-            if rnd_num==1: player_stats[p]["1R출전"]+=1
-            elif rnd_num==2: player_stats[p]["2R출전"]+=1
-            elif rnd_num==3: player_stats[p]["3R출전"]+=1
-            elif rnd_num==4: player_stats[p]["4R출전"]+=1
+        # 승/패/득점/실점: 중복·제외·게스트 제외한 선수만
+        t1_valid = [base_name(c) for c in t1_all
+                    if not _skip_player(c) and not _is_duplicate_player(c)]
+        t2_valid = [base_name(c) for c in t2_all
+                    if not _skip_player(c) and not _is_duplicate_player(c)]
 
-        if s1 is not None and s2 is not None and (s1+s2)>0:
-            if s1>s2: winners,losers,ws,ls=t1,t2,s1,s2
-            elif s2>s1: winners,losers,ws,ls=t2,t1,s2,s1
+        if s1 is not None and s2 is not None and (s1+s2) > 0:
+            if s1 > s2:
+                winners, losers, ws, ls = t1_valid, t2_valid, s1, s2
+            elif s2 > s1:
+                winners, losers, ws, ls = t2_valid, t1_valid, s2, s1
             else:
-                for p in t1+t2:
-                    player_stats[p]["승점"]+=s1; player_stats[p]["실점"]+=s2
+                for p in t1_valid + t2_valid:
+                    if p in player_stats:
+                        player_stats[p]["득점"] += s1
+                        player_stats[p]["실점"] += s2
                 continue
             for p in winners:
-                player_stats[p]["승"]+=1; player_stats[p]["승점"]+=ws; player_stats[p]["실점"]+=ls
+                if p in player_stats:
+                    player_stats[p]["승"]+=1
+                    player_stats[p]["득점"]+=ws
+                    player_stats[p]["실점"]+=ls
             for p in losers:
-                player_stats[p]["패"]+=1; player_stats[p]["승점"]+=ls; player_stats[p]["실점"]+=ws
+                if p in player_stats:
+                    player_stats[p]["패"]+=1
+                    player_stats[p]["득점"]+=ls
+                    player_stats[p]["실점"]+=ws
 
     if not player_stats: return pd.DataFrame()
     df = pd.DataFrame(list(player_stats.values()))
-    df = df[["리그","이름","출전","승","패","승점","실점","1R출전","2R출전","3R출전","4R출전"]]
-    return df.sort_values(["리그","승","승점"],ascending=[True,False,False]).reset_index(drop=True)
+    df = df[["리그","이름","출전","승","패","득점","실점","1R출전","2R출전","3R출전","4R출전"]]
+    return df.sort_values(["리그","승","득점"],ascending=[True,False,False]).reset_index(drop=True)
 
 
 # ============================================================
@@ -1291,13 +1673,301 @@ def serialize_schedule(schedule):
     return [{
         "round": m["round"], "league": m["league"],
         "team1": list(m["team1"]), "team2": list(m["team2"]), "type": m["type"],
+        "exclude_players": m.get("exclude_players", []),
     } for m in schedule]
 
 def deserialize_schedule(schedule):
     return [{
         "round": m["round"], "league": m["league"],
         "team1": tuple(m["team1"]), "team2": tuple(m["team2"]), "type": m["type"],
+        "exclude_players": m.get("exclude_players", []),
     } for m in schedule]
+
+
+# ============================================================
+# 섹션 12-B: 누적 기록실 (구글시트 저장)
+# ============================================================
+# 구글시트 "records" 워크시트 구조:
+# date_key | year_month | year | player_key | display_name | league | wins | losses | pf | pa
+
+RECORDS_SHEET_NAME = "records"
+RECORDS_COLUMNS = ["date_key","year_month","year","player_key","display_name","league",
+                   "wins","losses","pf","pa"]
+
+def _get_records_sheet():
+    """records 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
+    try:
+        wb = _get_gsheet_connection()
+        try:
+            return wb.worksheet(RECORDS_SHEET_NAME)
+        except Exception:
+            ws = wb.add_worksheet(title=RECORDS_SHEET_NAME,
+                                  rows=5000, cols=len(RECORDS_COLUMNS))
+            ws.append_row(RECORDS_COLUMNS)
+            return ws
+    except Exception:
+        return None
+
+
+def _records_sheet_load_all() -> list:
+    """records 시트 전체 행 로드. [{date_key, year_month, ...}, ...]"""
+    try:
+        ws = _get_records_sheet()
+        if ws is None:
+            return []
+        rows = ws.get_all_records()
+        return rows
+    except Exception:
+        return []
+
+
+def _clean_player_key(raw_code: str) -> str:
+    """
+    player_key 정제: 리그+성별 접두사(AM/AW/BM/BW 등) 제거 → 순수 이름만 반환.
+    예) 'AM윤지수' → '윤지수', 'AW최선화' → '최선화', 'AM★조원찬' → '★조원찬'
+    """
+    b = base_name(raw_code)
+    if is_custom_code(b):
+        return b[2:]  # 접두사 2글자 제거
+    return b
+
+
+def _is_duplicate_player(code: str) -> bool:
+    """(중복) 태그가 있는 이벤트 라운드 중복 선수 여부"""
+    return "(중복)" in code
+
+
+def _records_build_session_stats(date_key: str, schedule: list, scores: dict) -> dict:
+    """
+    date_key 세션의 선수별 통계 계산.
+    - (중복) 태그 선수: 기록 집계 제외
+    - 제외 목록 선수(코치 등) / 게스트(★): 완전 제외
+    - player_key: 리그+성별 접두사 제거, 순수 이름만 사용
+    """
+    from datetime import datetime as _dt
+    try:
+        year_month = _dt.strptime(date_key[:7], "%Y-%m").strftime("%Y-%m")
+        year_str   = date_key[:4]
+    except Exception:
+        year_month = "unknown"
+        year_str   = "unknown"
+
+    # 제외 목록 1회만 로드 (경기 수만큼 반복 호출 방지)
+    _excluded_set = set(exclude_list_load())
+
+    def _should_skip(code: str, _me: set = None) -> bool:
+        raw = base_name(code)
+        if "★" in raw: return True
+        if _is_duplicate_player(code): return True
+        if _clean_player_key(code) in _excluded_set: return True
+        if _me and base_name(code) in _me: return True
+        return False
+
+    session_stats = {}
+    for idx, match in enumerate(schedule):
+        sc = scores.get(str(idx), {})
+        s1 = sc.get("score1", None)
+        s2 = sc.get("score2", None)
+        if s1 is None or s2 is None:
+            continue
+        # 경기 전체 중복 처리(스코어보드 is_dup) → 기록실 제외
+        if sc.get("is_dup", False):
+            continue
+        # 대진표 수동조정의 개인별 제외 목록
+        _match_excl = set(match.get("exclude_players", []))
+
+        t1_codes = list(match["team1"])
+        t2_codes = list(match["team2"])
+        t1_valid = [c for c in t1_codes if not _should_skip(c, _match_excl)]
+        t2_valid = [c for c in t2_codes if not _should_skip(c, _match_excl)]
+        t1_keys  = [_clean_player_key(c) for c in t1_valid]
+        t2_keys  = [_clean_player_key(c) for c in t2_valid]
+
+        # 정상 선수만 session_stats 등록
+        for code, pkey in zip(t1_valid + t2_valid, t1_keys + t2_keys):
+            if pkey not in session_stats:
+                session_stats[pkey] = {
+                    "date_key":    date_key,
+                    "year_month":  year_month,
+                    "year":        year_str,
+                    "player_key":  pkey,
+                    "display_name": pname(code),
+                    "league":      match["league"],
+                    "wins": 0, "losses": 0, "pf": 0, "pa": 0,
+                }
+            session_stats[pkey]["display_name"] = pname(code)
+            session_stats[pkey]["league"] = match["league"]
+
+        if s1 > s2:
+            for k in t1_keys:
+                session_stats[k]["wins"]+=1; session_stats[k]["pf"]+=s1; session_stats[k]["pa"]+=s2
+            for k in t2_keys:
+                session_stats[k]["losses"]+=1; session_stats[k]["pf"]+=s2; session_stats[k]["pa"]+=s1
+        elif s2 > s1:
+            for k in t2_keys:
+                session_stats[k]["wins"]+=1; session_stats[k]["pf"]+=s2; session_stats[k]["pa"]+=s1
+            for k in t1_keys:
+                session_stats[k]["losses"]+=1; session_stats[k]["pf"]+=s1; session_stats[k]["pa"]+=s2
+        else:
+            for k in t1_keys + t2_keys:
+                session_stats[k]["pf"] += s1
+                session_stats[k]["pa"] += s2
+    return session_stats
+
+
+def records_commit(date_key: str, schedule: list, scores: dict):
+    """
+    구글시트 records 탭에 세션 점수 반영.
+    1) 동일 date_key 기존 행 무조건 삭제 (제외/삭제 등으로 비어도 정정)
+    2) session_stats가 있으면 새 행 삽입
+    """
+    try:
+        ws = _get_records_sheet()
+        if ws is None:
+            return
+
+        # ① 기존 동일 date_key 행 삭제 (집계가 비어있어도 반드시 실행)
+        all_rows = ws.get_all_values()
+        del_rows = [i+1 for i, row in enumerate(all_rows)
+                    if i > 0 and len(row) > 0 and row[0] == date_key]
+        for ri in sorted(del_rows, reverse=True):
+            ws.delete_rows(ri)
+
+        # ② session_stats 새로 계산해 삽입
+        session_stats = _records_build_session_stats(date_key, schedule, scores)
+        if not session_stats:
+            return  # 삭제만 하고 종료 (점수 없거나 전원 제외인 경우)
+
+        new_rows = []
+        for pkey, pdata in session_stats.items():
+            new_rows.append([
+                str(pdata.get("date_key","")),
+                str(pdata.get("year_month","")),
+                str(pdata.get("year","")),
+                str(pdata.get("player_key","")),
+                str(pdata.get("display_name","")),
+                str(pdata.get("league","")),
+                int(pdata.get("wins",0)),
+                int(pdata.get("losses",0)),
+                int(pdata.get("pf",0)),
+                int(pdata.get("pa",0)),
+            ])
+        if new_rows:
+            ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+    except Exception:
+        pass
+
+
+def records_delete_by_date(date_key: str):
+    """구글시트 records 탭에서 특정 date_key의 모든 행을 삭제."""
+    try:
+        ws = _get_records_sheet()
+        if ws is None:
+            return
+        all_rows = ws.get_all_values()
+        del_rows = [i+1 for i, row in enumerate(all_rows)
+                    if i > 0 and len(row) > 0 and row[0] == date_key]
+        for ri in sorted(del_rows, reverse=True):
+            ws.delete_rows(ri)
+    except Exception:
+        pass
+
+
+# ── 기록실 제외 선수 관리 (shelve 저장) ──────────────────────
+def exclude_list_load() -> list:
+    """제외 선수 이름 목록 로드. ['윤지수', '홍길동', ...]"""
+    with shelve.open(EXCLUDE_PATH) as db:
+        return list(db.get("excluded", []))
+
+def exclude_list_save(names: list):
+    with shelve.open(EXCLUDE_PATH) as db:
+        db["excluded"] = sorted(list(set(names)))
+    # 구글시트 동기화
+    try:
+        _gsheet_exclude_save(sorted(list(set(names))))
+    except Exception:
+        pass
+
+def exclude_list_add(name: str):
+    names = exclude_list_load()
+    name = name.strip()
+    if name and name not in names:
+        names.append(name)
+        exclude_list_save(names)
+
+def exclude_list_remove(name: str):
+    names = exclude_list_load()
+    names = [n for n in names if n != name.strip()]
+    exclude_list_save(names)
+
+
+@st.cache_data(ttl=120)
+def records_load_cached() -> list:
+    """records 시트 캐시 로드 (120초 TTL)."""
+    return _records_sheet_load_all()
+
+
+def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
+    """
+    filter_type: 'monthly' 또는 'yearly'
+    filter_value: 'YYYY-MM' 또는 'YYYY'
+    제외 선수 목록에 있는 player_key는 조회에서도 제외.
+    """
+    all_rows = records_load_cached()
+    col = "year_month" if filter_type == "monthly" else "year"
+    excluded = set(exclude_list_load())  # 제외 선수 이름 세트
+    filtered = [r for r in all_rows
+                if str(r.get(col,"")).strip() == filter_value
+                and str(r.get("player_key","")).strip() not in excluded]
+    if not filtered:
+        return pd.DataFrame()
+
+    # 선수별 집계
+    agg = {}
+    for r in filtered:
+        pkey = str(r.get("player_key","")).strip()
+        if not pkey:
+            continue
+        if pkey not in agg:
+            agg[pkey] = {
+                "리그":    str(r.get("league","")),
+                "이름":    str(r.get("display_name", pkey)),
+                "승":      0, "패": 0, "득점": 0, "실점": 0, "출전경기": 0,
+            }
+        _w = int(r.get("wins",0)  or 0)
+        _l = int(r.get("losses",0) or 0)
+        agg[pkey]["승"]       += _w
+        agg[pkey]["패"]       += _l
+        agg[pkey]["출전경기"] += _w + _l
+        agg[pkey]["득점"]     += int(r.get("pf",0) or 0)
+        agg[pkey]["실점"]     += int(r.get("pa",0) or 0)
+        agg[pkey]["이름"]  = str(r.get("display_name", pkey))
+        agg[pkey]["리그"]  = str(r.get("league",""))
+
+    rows = []
+    for pkey, rec in agg.items():
+        total = rec["승"] + rec["패"]
+        rate  = f"{rec['승']/total*100:.1f}%" if total > 0 else "-"
+        rows.append({
+            "리그":     rec["리그"],
+            "이름":     rec["이름"],
+            "출전경기": rec["출전경기"],
+            "승":       rec["승"],
+            "패":       rec["패"],
+            "득점":     rec["득점"],
+            "실점":     rec["실점"],
+            "득실차":   rec["득점"] - rec["실점"],
+            "승률":     rate,
+        })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df = df.sort_values(["리그","득점","득실차","승"], ascending=[True,False,False,False]).reset_index(drop=True)
+    df["순위"] = df.groupby("리그").cumcount() + 1
+    df["순위"] = df["순위"].apply(lambda x: f"{x}위")
+    cols = ["리그","순위","이름","출전경기","승","패","득점","실점","득실차","승률"]
+    return df[cols]
+
 
 
 # ── [다이어트] 랜덤페어 렌더링 공통 헬퍼 ─────────────────────
@@ -1359,7 +2029,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.00", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.6", page_icon="🎾", layout="wide")
 
 
 # ============================================================
@@ -1522,45 +2192,26 @@ if st.session_state.admin_authed and st.session_state.auth_time:
         st.toast("⏰ 관리자 세션이 만료되었습니다. 다시 인증해 주세요.", icon="🔒")
 
 # ── Google Sheets ─────────────────────────────────────────
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def _get_gsheet_connection():
-    """구글 시트 연결 객체만 캐싱 (API 호출 없음)."""
+    """구글 시트 연결 객체 캐싱 (1시간 TTL로 토큰 만료 방지)."""
     creds  = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=RS_SCOPES)
     client = gspread.authorize(creds)
     wb     = client.open_by_key(st.secrets["SHEET_ID"])
     return wb
 
-def get_sheet():
-    """sheet1 반환. 컬럼 마이그레이션은 최초 1회만 실행."""
-    wb    = _get_gsheet_connection()
-    sheet = wb.sheet1
-    # 마이그레이션은 세션당 1회만 (session_state 플래그)
-    if not st.session_state.get("_sheet_migrated"):
-        try:
-            existing_headers = sheet.row_values(1)
-            if not existing_headers or existing_headers[0] != "id":
-                sheet.insert_row(RS_COLUMNS, 1)
-            else:
-                missing = [c for c in RS_COLUMNS if c not in existing_headers]
-                for col_name in missing:
-                    next_col = len(existing_headers) + 1
-                    sheet.update_cell(1, next_col, col_name)
-                    existing_headers.append(col_name)
-        except Exception:
-            pass
-        st.session_state["_sheet_migrated"] = True
-    return sheet
+# 앱 시작 시 구글시트 → 로컬 shelve 복원 (_get_gsheet_connection 정의 직후 호출)
+_restore_shelf_from_gsheet()
 
-@st.cache_resource
 def get_audit_sheet():
-    """변경 이력 시트 (audit_log 탭). 없으면 자동 생성."""
+    """변경 이력 시트 (audit_log 탭). 매번 새 연결. 없으면 자동 생성."""
     wb = _get_gsheet_connection()
     try:
-        asheet = wb.worksheet("audit_log")
+        return wb.worksheet("audit_log")
     except gspread.exceptions.WorksheetNotFound:
         asheet = wb.add_worksheet(title="audit_log", rows=2000, cols=len(AUDIT_COLUMNS))
         asheet.insert_row(AUDIT_COLUMNS, 1)
-    return asheet
+        return asheet
 
 def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except."""
@@ -1630,30 +2281,6 @@ def save_league_to_sheet(member_id: int, league_value: str):
         st.error(f"시트에서 id={member_id}를 찾을 수 없습니다.")
         return False
     sheet.update_cell(idx + 1, league_col, league_value)
-    st.cache_data.clear()
-    return True
-
-def save_league_by_name(member_name: str, league_value: str) -> bool:
-    """구글 시트에서 이름으로 회원을 찾아 league 컬럼 업데이트."""
-    sheet   = _get_gsheet_connection().sheet1
-    headers = sheet.row_values(1)
-    if "league" not in headers:
-        st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
-        return False
-    if "name" not in headers:
-        st.error("구글 시트에 name 컬럼이 없습니다.")
-        return False
-    name_col   = headers.index("name") + 1
-    league_col = headers.index("league") + 1
-    # 이름 열 전체 읽기
-    all_names  = sheet.col_values(name_col)
-    # 헤더(1행) 제외하고 이름 검색
-    found_rows = [i+1 for i, n in enumerate(all_names) if i > 0 and n.strip() == member_name.strip()]
-    if not found_rows:
-        st.error(f"구글 시트에서 '{member_name}'을 찾을 수 없습니다.")
-        return False
-    # 첫 번째 매칭 행 업데이트
-    sheet.update_cell(found_rows[0], league_col, league_value)
     st.cache_data.clear()
     return True
 
@@ -1828,9 +2455,6 @@ def format_dormant_periods(periods):
         if not start: continue
         parts.append(f"{start}~{end}")
     return "; ".join(parts)
-
-def has_ongoing_dormant(s):
-    return any(not p["end"] for p in parse_dormant_periods(s))
 
 def check_dormant_overlap(periods):
     """휴면 기간 겹침 및 진행중 중복 검사. 문제 있으면 에러 문자열 반환, 없으면 None."""
@@ -2379,7 +3003,14 @@ def dialog_form(df, existing=None):
         else:
             # ── 카테고리 자동 결정 ──
             had_dormant = bool(dorm_str)
-            has_ongoing = had_dormant and any(not p["end"] for p in clean_dorm_list)
+            # 오늘 기준으로 실제 휴면 중인지 판단 (시작일 <= 오늘, 종료일 없거나 오늘 이후)
+            today_dt = date.today()
+            has_ongoing = had_dormant and any(
+                (not p["end"])
+                and (not p["start"] or date.fromisoformat(p["start"]) <= today_dt)
+                for p in clean_dorm_list
+                if p.get("start")
+            )
             if ld_str:
                 final_cat = "탈퇴"
             elif has_ongoing:
@@ -2407,6 +3038,8 @@ def dialog_form(df, existing=None):
                 "region":         region.strip(),
                 "memo":           memo.strip(),
                 "deleted_at":     "",
+                # league: 기존 값 보존 (수정 시 league가 지워지는 버그 방지)
+                "league":         existing.get("league", "") if existing else "",
             }
             with st.spinner("구글 시트에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None), action_detail=action_detail)
@@ -2432,7 +3065,7 @@ def render_roster_page():
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">🎾</span>
-      <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v5.00)</span></h1>
+      <div><h1>테라클럽 회원 명부</h1>
       <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
@@ -2442,7 +3075,7 @@ def render_roster_page():
         _authed_guest = st.session_state.get("guest_auth_ok", False)
 
         if not _authed_guest:
-            st.warning("🔒 회원명부는 등록된 본인 이름과 연락처를 입력해야 열람할 수 있습니다.")
+            st.warning("🔒 회원명부는 등록된 본인 이름과 연락처를 입력해야 열람할 수 있습니다.\n\n운영진이 아닌 일반 회원은 제한된 열람만 가능합니다.")
             st.markdown("**본인 확인**")
             _gc1, _gc2 = st.columns(2)
             _auth_name  = _gc1.text_input("이름", placeholder="홍길동", key="guest_auth_name")
@@ -2588,14 +3221,20 @@ def render_roster_page():
             new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
             new_urole = nc4.selectbox("권한", ["회원", "관리자"], key="new_urole", label_visibility="collapsed")
             if nc5.button("➕ 추가", key="add_user_btn"):
-                if new_uid.strip() and new_upw.strip() and new_uname.strip():
-                    role_val = "admin" if new_urole == "관리자" else "member"
-                    ok = user_add(new_uid.strip(), new_upw.strip(), role_val, new_uname.strip())
-                    if ok:
-                        st.success(f"계정 '{new_uid}' 추가 완료")
-                        st.rerun()
+                import re as _re_uid
+                _uid_val = new_uid.strip()
+                if _uid_val and new_upw.strip() and new_uname.strip():
+                    # 수정3: ID는 영문+숫자만 허용
+                    if not _re_uid.match(r'^[A-Za-z0-9]+$', _uid_val):
+                        st.error("아이디는 영문과 숫자만 사용할 수 있습니다. (한글·특수문자 불가)")
                     else:
-                        st.error(f"이미 존재하는 아이디입니다: {new_uid}")
+                        role_val = "admin" if new_urole == "관리자" else "member"
+                        ok = user_add(_uid_val, new_upw.strip(), role_val, new_uname.strip())
+                        if ok:
+                            st.success(f"계정 '{_uid_val}' 추가 완료")
+                            st.rerun()
+                        else:
+                            st.error(f"이미 존재하는 아이디입니다: {_uid_val}")
                 else:
                     st.warning("아이디, 비밀번호, 이름을 모두 입력해주세요.")
 
@@ -3154,6 +3793,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
+st.sidebar.caption("v5.6")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -3202,7 +3842,7 @@ else:
                 else:
                     st.session_state["_login_fail"] = True
 
-        _lid = st.text_input("아이디", key="login_id", placeholder="ID 입력")
+        _lid = st.text_input("아이디", key="login_id", placeholder="영문+숫자 ID")
         _lpw = st.text_input("비밀번호", type="password", key="login_pw",
                               placeholder="입력 후 엔터", on_change=_on_login_enter)
 
@@ -3229,8 +3869,13 @@ else:
         st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
 
 st.sidebar.markdown("---")
-page = st.sidebar.radio("메뉴", ["📊 점수판", "🎲 랜덤페어", "👥 회원명부"],
-                         index=0, label_visibility="collapsed")
+# session_state key로 radio 상태 직접 관리 → 1클릭으로 즉시 반영
+_menu_opts = ["🏆 기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부"]
+if "current_page" not in st.session_state:
+    st.session_state["current_page"] = "🏆 기록실"
+page = st.sidebar.radio("메뉴", _menu_opts,
+                         key="current_page",
+                         label_visibility="collapsed")
 st.sidebar.markdown("---")
 
 
@@ -3238,22 +3883,29 @@ st.sidebar.markdown("---")
 # 페이지 A: 점수판
 # ============================================================
 
-if page == "📊 점수판":
+if page == "📊 스코어보드":
 
-    st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
+    st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
+    # 구글시트 동기화 오류 표시 (디버깅용, 관리자만)
+    if is_admin():
+        _errs = st.session_state.pop("_gsheet_errors", [])
+        if _errs:
+            with st.expander(f"⚠️ 구글시트 동기화 오류 {len(_errs)}건", expanded=True):
+                for _e in _errs:
+                    st.error(_e)
 
     today_str  = date.today().strftime("%Y-%m-%d")
     saved_keys = shelf_list_dates()
 
-    sb_mode = st.radio("모드", ["새 점수판 (날짜+번호 입력)", "저장된 점수판 불러오기"],
+    sb_mode = st.radio("모드", ["저장된 스코어보드 불러오기", "새 스코어보드 (날짜+번호 입력)"],
                        index=0, horizontal=True, label_visibility="collapsed")
-    if sb_mode == "새 점수판 (날짜+번호 입력)":
+    if sb_mode == "새 스코어보드 (날짜+번호 입력)":
         sb_date = st.text_input("날짜 (YYYY-MM-DD)", value=today_str, key="sb_date_inp")
         sb_num  = st.text_input("일련번호 (예: 001)", value="001", key="sb_num_inp")
         selected_key = f"{_date_with_weekday(sb_date)}_{sb_num}"
     else:
         if saved_keys:
-            selected_key = st.selectbox("저장된 점수판 선택", saved_keys)
+            selected_key = st.selectbox("저장된 스코어보드 선택", saved_keys)
         else:
             st.info("저장된 데이터가 없습니다.")
             selected_key = f"{_date_with_weekday(today_str)}_001"
@@ -3265,22 +3917,77 @@ if page == "📊 점수판":
         loaded = shelf_load(selected_key)
         if loaded:
             st.session_state["sb_schedule"] = deserialize_schedule(loaded["schedule"])
-            st.session_state["sb_scores"]   = loaded["scores"]
+            st.session_state["sb_scores"]   = loaded.get("scores", {})
+            st.session_state["sb_is_locked"] = loaded.get("is_locked", False)
+            for k, v in loaded.get("scores", {}).items():
+                if v:
+                    st.session_state[f"locked_{k}"] = True
         else:
             rp_sched = st.session_state.get("rp_schedule")
             rp_key   = st.session_state.get("rp_key", "")
             if rp_sched and rp_key == selected_key:
                 st.session_state["sb_schedule"] = rp_sched
                 st.session_state["sb_scores"]   = {}
+                st.session_state["sb_is_locked"] = False
             else:
                 st.session_state["sb_schedule"] = None
                 st.session_state["sb_scores"]   = {}
+                st.session_state["sb_is_locked"] = False
 
     schedule = st.session_state.get("sb_schedule")
     if not schedule:
         st.warning("⚠️ 이 키에 저장된 대진표가 없습니다.")
-        st.info("👈 **🎲 랜덤페어**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
+        st.info("👈 **📋 대진표생성**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
         st.stop()
+
+    # ── 잠금 상태 ─────────────────────────────────────────────
+    _sb_locked = st.session_state.get("sb_is_locked", False)
+
+    # 잠금 배너
+    if _sb_locked:
+        st.markdown(
+            '<div style="background:#b71c1c;color:#fff;font-weight:700;'
+            'text-align:center;padding:8px;border-radius:8px;margin-bottom:8px;'
+            'font-size:0.9rem;">🔒 이 스코어보드는 잠금 상태입니다. 수정이 불가합니다.</div>',
+            unsafe_allow_html=True)
+
+    # 잠금/해제 버튼 (관리자만)
+    if is_admin():
+        with st.expander("🔒 스코어보드 잠금 관리 (관리자)", expanded=False):
+            if not _sb_locked:
+                if st.button("🔒 잠금", type="primary", key="sb_lock_btn",
+                             help="대진표·점수를 잠금하면 수정이 불가합니다."):
+                    _cur_scores = st.session_state.get("sb_scores", {})
+                    _cur_sched  = st.session_state.get("sb_schedule", [])
+                    _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                    shelf_save(selected_key, serialize_schedule(_cur_sched),
+                               _cur_scores, _ifr, is_locked=True)
+                    st.session_state["sb_is_locked"] = True
+                    st.success("🔒 잠금 완료. 스코어보드가 잠겼습니다.")
+                    st.rerun()
+            else:
+                st.caption("잠금 해제 시 관리자 비밀번호를 입력해야 합니다.")
+                _unlock_pw = st.text_input("비밀번호", type="password",
+                                           key="sb_unlock_pw",
+                                           label_visibility="collapsed",
+                                           placeholder="관리자 비밀번호 입력")
+                if st.button("🔓 잠금 해제", type="secondary", key="sb_unlock_btn"):
+                    _app_user = get_app_user()
+                    _uid = _app_user.get("id","") if _app_user else ""
+                    _users = user_load_all()
+                    _pw_hash = _users.get(_uid, {}).get("pw_hash","")
+                    if _pw_hash and _pw_hash == _hash_pw(_unlock_pw):
+                        _cur_scores = st.session_state.get("sb_scores", {})
+                        _cur_sched  = st.session_state.get("sb_schedule", [])
+                        _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                        shelf_save(selected_key, serialize_schedule(_cur_sched),
+                                   _cur_scores, _ifr, is_locked=False)
+                        st.session_state["sb_is_locked"] = False
+                        st.session_state.pop("sb_unlock_pw", None)
+                        st.success("🔓 잠금 해제되었습니다.")
+                        st.rerun()
+                    else:
+                        st.error("❌ 비밀번호가 틀렸습니다.")
 
     scores = st.session_state.setdefault("sb_scores", {})
     rounds = []
@@ -3296,244 +4003,276 @@ if page == "📊 점수판":
         f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:8px;">'
         f'{disp_date} · {disp_num}</div>', unsafe_allow_html=True)
 
-    qp  = st.query_params
-    act = qp.get("act", None)
-    if act is not None:
-        try:
-            pidx = int(qp.get("idx", -1))
-            if act == "save" and pidx >= 0:
-                s1v = int(qp.get("s1", 0))
-                s2v = int(qp.get("s2", 0))
-                scores[str(pidx)] = {"score1": s1v, "score2": s2v}
-                st.session_state["sb_scores"] = scores
-                st.session_state[f"locked_{pidx}"] = True
-                # [버그수정] 기존 저장 데이터의 is_fully_random 모드 유지
-                # 기존엔 누락되어 항상 False로 덮어쓰여 모드 정보가 손실됨
-                _prev = shelf_load(selected_key) or {}
-                _ifr  = _prev.get("is_fully_random", False)
-                shelf_save(selected_key,
-                           serialize_schedule(st.session_state["sb_schedule"]),
-                           scores, _ifr)
-            elif act == "edit" and pidx >= 0:
-                st.session_state[f"locked_{pidx}"] = False
-        except Exception:
-            pass
-        st.query_params.clear()
-        st.rerun()
+    # ── 점수 입력 UI ─────────────────────────────────────────
+    # 잠금 중이면 편집 불가
+    _can_edit = is_admin() and not _sb_locked
 
-    # [다이어트] import json 별칭 제거 - 파일 상단의 json 모듈 직접 사용
+    def _save_score(idx, s1, s2):
+        """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
+        scores[str(idx)] = {"score1": int(s1), "score2": int(s2)}
+        st.session_state["sb_scores"] = scores
+        st.session_state[f"locked_{idx}"] = True
+        st.session_state.pop(f"editing_{idx}", None)
+        _cur_schedule = st.session_state.get("sb_schedule")
+        if _cur_schedule:
+            _prev = shelf_load(selected_key) or {}
+            _ifr  = _prev.get("is_fully_random", False)
+            shelf_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
+            import threading as _threading
+            def _bg_commit(_dk, _sched, _sc):
+                try:
+                    records_commit(_dk, _sched, dict(_sc))
+                except Exception:
+                    pass
+            _threading.Thread(
+                target=_bg_commit,
+                args=(selected_key, list(_cur_schedule), dict(scores)),
+                daemon=True
+            ).start()
 
-    # [다이어트] pname_short 제거. pname()이 동일 동작.
+    def _unlock_score(idx):
+        st.session_state[f"locked_{idx}"] = False
+        st.session_state[f"editing_{idx}"] = True
 
-    def build_full_html(schedule, rounds, scores, session_state):
-        # 리그별 색상 동적 생성
-        league_list = list(dict.fromkeys(m["league"] for m in schedule))
-        lg_color_map = {lg: get_league_color(lg) for lg in league_list}
+    def _cancel_edit(idx, s1_orig, s2_orig):
+        st.session_state[f"locked_{idx}"] = True
+        st.session_state.pop(f"editing_{idx}", None)
 
-        matches_data = []
-        for idx, match in enumerate(schedule):
-            sc        = scores.get(str(idx), {})
-            is_locked = session_state.get(f"locked_{idx}", bool(sc))
-            matches_data.append({
-                "idx":    idx,
-                "round":  match["round"],
-                "league": match["league"],
-                "lc":     lg_color_map.get(match["league"], "#555"),
-                "t1a":    pname(match["team1"][0]),
-                "t1b":    pname(match["team1"][1]),
-                "t2a":    pname(match["team2"][0]),
-                "t2b":    pname(match["team2"][1]),
-                "type":   match["type"],
-                "s1":     sc.get("score1", 0),
-                "s2":     sc.get("score2", 0),
-                "locked": is_locked,
-            })
-
-        mj = json.dumps(matches_data, ensure_ascii=False)
-        rj = json.dumps(rounds, ensure_ascii=False)
-
-        return f"""<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+    # 모바일 레이아웃 CSS — columns 줄바꿈 완전 방지
+    st.markdown("""
 <style>
-*{{box-sizing:border-box;margin:0;padding:0;}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
-      background:#f5f5f5;padding:4px;font-size:14px;}}
-.rnd-hdr{{background:#1a1a2e;color:#fff;font-weight:700;font-size:0.88rem;
-           text-align:center;padding:7px 4px;border-radius:6px;margin:8px 0 5px;letter-spacing:1px;}}
-.lg-lbl{{font-size:0.72rem;font-weight:700;padding:2px 0 3px 6px;margin:3px 0 2px;}}
-.mc{{border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;background:#fff;margin-bottom:4px;}}
-.mc.lk{{background:#f0fff0;border-color:#a5d6a7;}}
-.mc-body{{display:flex;align-items:stretch;}}
-.mc-tl{{flex:3;padding:5px 2px 3px 6px;min-width:0;}}
-.mc-tr{{flex:3;padding:5px 6px 3px 2px;text-align:right;min-width:0;}}
-.mc-sc{{flex:0 0 26px;background:#f0f0f0;display:flex;align-items:center;
-         justify-content:center;font-size:0.9rem;font-weight:800;color:#222;}}
-.mc-vs{{flex:0 0 14px;display:flex;align-items:center;justify-content:center;
-         font-size:0.55rem;color:#bbb;}}
-.mc-ft{{background:#fafafa;font-size:0.6rem;color:#aaa;text-align:right;padding:1px 6px;}}
-.mc-bj{{font-size:0.62rem;color:#2e7d32;font-weight:700;text-align:right;padding:1px 6px;}}
-.pn{{font-size:0.75rem;font-weight:600;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}
-.pw{{color:#b71c1c!important;font-weight:800!important;}}
-.inp-row{{display:flex;flex-direction:row;align-items:center;gap:3px;padding:3px 3px 4px;width:100%;}}
-.inp-box{{flex:1;display:flex;flex-direction:row;align-items:center;border:1px solid #ccc;
-           border-radius:5px;overflow:hidden;background:#f8f8f8;height:34px;min-width:0;}}
-.ibtn{{width:28px;height:34px;border:none;background:#e5e5e5;font-size:1rem;font-weight:700;
-        color:#333;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent;
-        touch-action:manipulation;display:flex;align-items:center;justify-content:center;}}
-.ibtn:active{{background:#ccc;}}
-.inum{{flex:1;min-width:0;text-align:center;font-size:0.95rem;font-weight:700;
-        border:none;background:transparent;-moz-appearance:textfield;}}
-.inum::-webkit-inner-spin-button,.inum::-webkit-outer-spin-button{{-webkit-appearance:none;}}
-.sbtn{{flex:0 0 52px;height:34px;background:#e53935;color:#fff;border:none;
-        border-radius:5px;font-size:0.78rem;font-weight:700;cursor:pointer;
-        white-space:nowrap;-webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
-.sbtn:active{{background:#b71c1c;}}
-.ebtn{{flex:0 0 52px;height:34px;background:#1565c0;color:#fff;border:none;
-        border-radius:5px;font-size:0.78rem;font-weight:700;cursor:pointer;
-        white-space:nowrap;-webkit-tap-highlight-color:transparent;touch-action:manipulation;}}
-.ebtn:active{{background:#0d47a1;}}
-.scr-disp{{flex:1;height:34px;background:#ebebeb;display:flex;align-items:center;
-            justify-content:center;font-size:0.95rem;font-weight:700;color:#444;
-            border-radius:5px;border:1px solid #ddd;}}
-</style></head><body>
-<div id="root"></div>
-<script>
-(function(){{
-  const matches={mj};
-  const rounds={rj};
-  const MAX=6,MIN=0;
-  const scores={{}};const locked={{}};
-  matches.forEach(m=>{{scores[m.idx]={{s1:m.s1,s2:m.s2}};locked[m.idx]=m.locked;}});
+/* 모든 horizontal block: 줄바꿈 없이 한 줄 고정 */
+[data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 4px !important;
+    align-items: center !important;
+}
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 0 !important;
+    flex-shrink: 1 !important;
+    padding-left: 2px !important;
+    padding-right: 2px !important;
+}
+/* number_input 최소 너비 제거 */
+[data-testid="stNumberInput"] { min-width: 0 !important; }
+[data-testid="stNumberInput"] > div { min-width: 0 !important; }
+[data-testid="stNumberInput"] input {
+    min-width: 0 !important;
+    font-size: 0.9rem !important;
+    padding: 4px 2px !important;
+    text-align: center !important;
+}
+/* +/- 버튼 */
+[data-testid="stNumberInput"] button {
+    min-width: 0 !important;
+    padding: 2px !important;
+    width: 24px !important;
+}
+/* 저장/취소/수정 버튼 텍스트 줄바꿈 방지 */
+[data-testid="stHorizontalBlock"] [data-testid="stBaseButton-primary"] p,
+[data-testid="stHorizontalBlock"] [data-testid="stBaseButton-secondary"] p {
+    white-space: nowrap !important;
+    font-size: 0.78rem !important;
+}
+/* 체크박스 여백 최소화 */
+[data-testid="stCheckbox"] { margin: 0 0 4px 0 !important; }
+[data-testid="stCheckbox"] label p { font-size: 0.72rem !important; }
+/* 경기카드 하단 Streamlit 여백 제거 */
+.stMarkdown { margin-bottom: 0 !important; }
+/* +/- 버튼 배경색 강조 (수정3) */
+[data-testid="stNumberInput"] button[aria-label="increment"],
+[data-testid="stNumberInput"] button[aria-label="decrement"] {
+    background-color: #e8f5e9 !important;
+    color: #2e7d32 !important;
+    border: 1px solid #a5d6a7 !important;
+    border-radius: 4px !important;
+    font-weight: 700 !important;
+}
+[data-testid="stNumberInput"] button[aria-label="increment"]:hover,
+[data-testid="stNumberInput"] button[aria-label="decrement"]:hover {
+    background-color: #c8e6c9 !important;
+}
+[data-testid="stNumberInput"] input {
+    background-color: #f9fbe7 !important;
+    border: 1px solid #c5e1a5 !important;
+    border-radius: 4px !important;
+}
+</style>""", unsafe_allow_html=True)
 
-  function pWin(a,b){{return (a+b)>0&&a>b;}}
-  function render(){{
-    const root=document.getElementById('root');root.innerHTML='';
-    rounds.forEach(rnd=>{{
-      const ms=matches.filter(m=>m.round===rnd);if(!ms.length)return;
-      const lbl=rnd.replace('(이벤트)','')+(rnd.includes('이벤트')?' ⭐':'');
-      const h=document.createElement('div');h.className='rnd-hdr';h.textContent=lbl;root.appendChild(h);
-      const lgs=[...new Set(ms.map(m=>m.league))];
-      lgs.forEach(lg=>{{
-        const lc=ms.find(m=>m.league===lg).lc;
-        const ld=document.createElement('div');ld.className='lg-lbl';
-        ld.style.cssText=`color:${{lc}};border-left:3px solid ${{lc}};padding-left:6px;`;
-        ld.textContent=lg;root.appendChild(ld);
-        ms.filter(m=>m.league===lg).forEach(m=>{{root.appendChild(buildMatch(m));}});
-      }});
-    }});
-  }}
-  function buildMatch(m){{const w=document.createElement('div');w.id='w'+m.idx;redraw(m,w);return w;}}
-  function redraw(m,w){{
-    if(!w)w=document.getElementById('w'+m.idx);
-    const sc=scores[m.idx];const lk=locked[m.idx];const lc=m.lc;
-    const t1w=pWin(sc.s1,sc.s2),t2w=pWin(sc.s2,sc.s1);
-    const p1=t1w?'pw':'',p2=t2w?'pw':'';
-    w.innerHTML=`
-<div class="mc${{lk?' lk':''}}" style="border-left:4px solid ${{lc}}">
-  <div class="mc-body">
-    <div class="mc-tl"><div class="pn ${{p1}}">${{m.t1a}}</div><div class="pn ${{p1}}">${{m.t1b}}</div></div>
-    <div class="mc-sc">${{sc.s1}}</div><div class="mc-vs">vs</div><div class="mc-sc">${{sc.s2}}</div>
-    <div class="mc-tr"><div class="pn ${{p2}}">${{m.t2a}}</div><div class="pn ${{p2}}">${{m.t2b}}</div></div>
-  </div>
-  <div class="mc-ft">${{m.type}}</div>
-  ${{lk?'<div class="mc-bj">✅ 저장완료</div>':''}}
-</div>
-<div class="inp-row">
-  ${{lk
-    ?`<div class="scr-disp">${{sc.s1}}</div>
-      <button class="ebtn" onclick="doEdit(${{m.idx}})">✏️ 수정</button>
-      <div class="scr-disp">${{sc.s2}}</div>`
-    :`<div class="inp-box">
-        <button class="ibtn" onclick="adj(${{m.idx}},1,-1)">−</button>
-        <input class="inum" id="i1_${{m.idx}}" type="number" value="${{sc.s1}}" min="${{MIN}}" max="${{MAX}}"
-               oninput="onInp(${{m.idx}},1,this.value)">
-        <button class="ibtn" onclick="adj(${{m.idx}},1,1)">+</button>
-      </div>
-      <button class="sbtn" onclick="doSave(${{m.idx}})">💾 저장</button>
-      <div class="inp-box">
-        <button class="ibtn" onclick="adj(${{m.idx}},2,-1)">−</button>
-        <input class="inum" id="i2_${{m.idx}}" type="number" value="${{sc.s2}}" min="${{MIN}}" max="${{MAX}}"
-               oninput="onInp(${{m.idx}},2,this.value)">
-        <button class="ibtn" onclick="adj(${{m.idx}},2,1)">+</button>
-      </div>`
-  }}
-</div>`;
-  }}
-  window.adj=function(idx,t,d){{
-    const el=document.getElementById((t===1?'i1_':'i2_')+idx);
-    let v=parseInt(el.value||'0')+d;if(v<MIN)v=MIN;if(v>MAX)v=MAX;
-    el.value=v;scores[idx][t===1?'s1':'s2']=v;
-  }};
-  window.onInp=function(idx,t,val){{
-    let v=parseInt(val)||0;if(v<MIN)v=MIN;if(v>MAX)v=MAX;scores[idx][t===1?'s1':'s2']=v;
-  }};
-  window.doSave=function(idx){{
-    const s1=scores[idx].s1,s2=scores[idx].s2;locked[idx]=true;
-    const m=matches.find(x=>x.idx===idx);redraw(m);
-    const url=new URL(window.top.location.href);
-    url.searchParams.set('act','save');url.searchParams.set('idx',idx);
-    url.searchParams.set('s1',s1);url.searchParams.set('s2',s2);
-    window.top.location.href=url.toString();
-  }};
-  window.doEdit=function(idx){{
-    locked[idx]=false;const m=matches.find(x=>x.idx===idx);redraw(m);
-    const url=new URL(window.top.location.href);
-    url.searchParams.set('act','edit');url.searchParams.set('idx',idx);
-    window.top.location.href=url.toString();
-  }};
-  render();
-}})();
-</script></body></html>"""
+    league_list  = list(dict.fromkeys(m["league"] for m in schedule))
+    lg_color_map = {lg: get_league_color(lg) for lg in league_list}
 
-    sb_html = build_full_html(schedule, rounds, scores, st.session_state)
-    n = len(schedule); n_rounds = len(rounds)
-    n_leagues = len(set(m["league"] for m in schedule))
-    est = (n * 112) + (n_rounds * 40) + (n_rounds * n_leagues * 24) + 60
-    st.components.v1.html(sb_html, height=est, scrolling=False)
+    for rnd in rounds:
+        rnd_label = rnd.replace("(이벤트)", "") + (" ⭐" if "이벤트" in rnd else "")
+        st.markdown(
+            f'<div style="background:#1a1a2e;color:#fff;font-weight:700;font-size:0.9rem;'
+            f'text-align:center;padding:8px 4px;border-radius:6px;margin:10px 0 6px;'
+            f'letter-spacing:1px;">{rnd_label}</div>', unsafe_allow_html=True)
+
+        rnd_matches = [m for m in schedule if m["round"] == rnd]
+        rnd_leagues = list(dict.fromkeys(m["league"] for m in rnd_matches))
+
+        for lg in rnd_leagues:
+            lc = lg_color_map.get(lg, "#555")
+            st.markdown(
+                f'<div style="color:{lc};font-weight:700;font-size:0.75rem;'
+                f'border-left:3px solid {lc};padding-left:6px;margin:4px 0 3px;">{lg}</div>',
+                unsafe_allow_html=True)
+
+            for idx, match in [(i, m) for i, m in enumerate(schedule)
+                               if m["round"] == rnd and m["league"] == lg]:
+                sc        = scores.get(str(idx), {})
+                is_locked = st.session_state.get(f"locked_{idx}", bool(sc))
+                s1_saved  = sc.get("score1", 0)
+                s2_saved  = sc.get("score2", 0)
+                is_dup_saved = sc.get("is_dup", False)
+
+                if len(match.get("team1",[])) < 2 or len(match.get("team2",[])) < 2:
+                    continue  # 파싱 오류로 팀 구성이 불완전한 경기 스킵
+                t1a = display_name(match["team1"][0]); t1b = display_name(match["team1"][1])
+                t2a = display_name(match["team2"][0]); t2b = display_name(match["team2"][1])
+                match_type = match["type"]
+
+                t1_win    = is_locked and s1_saved > s2_saved
+                t2_win    = is_locked and s2_saved > s1_saved
+                win_style = "color:#b71c1c;font-weight:900;"
+                nrm_style = "color:#333;font-weight:600;"
+
+                border_color = "#a5d6a7" if is_locked else lc
+                bg_color     = "#f0fff0" if is_locked else "#fff"
+                dup_badge    = ' <span style="font-size:0.65rem;color:#e65100;background:#fff3e0;padding:1px 5px;border-radius:8px;">중복</span>' if is_dup_saved else ""
+
+                _p1 = win_style if t1_win else nrm_style
+                _p2 = win_style if t2_win else nrm_style
+                st.markdown(
+                    f'<div style="border:1px solid {border_color};border-left:4px solid {lc};'
+                    f'border-radius:6px;background:{bg_color};padding:6px 8px;margin-bottom:2px;">'
+                    f'<div style="display:flex;align-items:center;gap:2px;">'
+                    f'<div style="flex:1;min-width:0;overflow:hidden;">'
+                    f'<div style="{_p1}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t1a}</div>'
+                    f'<div style="{_p1}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t1b}</div>'
+                    f'</div>'
+                    f'<div style="flex:0 0 56px;text-align:center;font-size:0.92rem;font-weight:800;color:#333;white-space:nowrap;">'
+                    f'{s1_saved if is_locked else "·"}&nbsp;vs&nbsp;{s2_saved if is_locked else "·"}'
+                    f'</div>'
+                    f'<div style="flex:1;min-width:0;overflow:hidden;text-align:right;">'
+                    f'<div style="{_p2}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t2a}</div>'
+                    f'<div style="{_p2}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t2b}</div>'
+                    f'</div>'
+                    f'</div>'
+                    f'<div style="font-size:0.58rem;color:#aaa;text-align:right;margin-top:1px;">'
+                    f'{match_type}{dup_badge}{" ✅저장완료" if is_locked else ""}'
+                    f'</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+                if is_locked:
+                    if _can_edit:
+                        # 저장 완료 + 관리자: [점수1] [수정] [점수2]
+                        _lk1, _lk2, _lk3 = st.columns([4, 3, 4])
+                        _lk1.markdown(
+                            f'<div style="text-align:center;padding:5px 0;background:#ebebeb;'
+                            f'border-radius:5px;font-size:0.95rem;font-weight:700;">{s1_saved}</div>',
+                            unsafe_allow_html=True)
+                        _lk3.markdown(
+                            f'<div style="text-align:center;padding:5px 0;background:#ebebeb;'
+                            f'border-radius:5px;font-size:0.95rem;font-weight:700;">{s2_saved}</div>',
+                            unsafe_allow_html=True)
+                        if _lk2.button("✏️수정", key=f"edit_{idx}", use_container_width=True):
+                            _unlock_score(idx)
+                            st.rerun()
+                    # 비관리자: 아무것도 표시 안 함
+
+                else:
+                    if _can_edit:
+                        # 입력 모드: [점수1] [💾] [✖] [점수2] — 한 줄 4컬럼
+                        _ic1, _ic2, _ic3, _ic4 = st.columns([4, 2, 2, 4])
+                        s1_new = _ic1.number_input(
+                            f"팀1_{idx}", min_value=0, max_value=9,
+                            value=s1_saved, step=1, key=f"s1_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        s2_new = _ic4.number_input(
+                            f"팀2_{idx}", min_value=0, max_value=9,
+                            value=s2_saved, step=1, key=f"s2_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        if _ic2.button("💾", key=f"save_{idx}", type="primary",
+                                       use_container_width=True, help="저장"):
+                            _save_score(idx,
+                                        st.session_state.get(f"s1_{idx}", s1_new),
+                                        st.session_state.get(f"s2_{idx}", s2_new))
+                            st.rerun()
+                        if _ic3.button("✖", key=f"cancel_{idx}",
+                                       use_container_width=True, help="취소"):
+                            if bool(sc):
+                                _cancel_edit(idx, s1_saved, s2_saved)
+                            else:
+                                st.session_state.pop(f"editing_{idx}", None)
+                            st.rerun()
 
     st.markdown("---")
-    if st.button("🔄 점수 전체 초기화", type="secondary"):
-        for i in range(len(schedule)):
-            st.session_state.pop(f"locked_{i}", None)
-        st.session_state["sb_scores"] = {}
-        st.rerun()
+    # 점수 전체 초기화: 관리자만
+    if is_admin():
+        _rc1, _rc2 = st.columns([2, 8])
+        if _rc1.button("🔄 점수 전체 초기화", type="secondary"):
+            for i in range(len(schedule)):
+                st.session_state.pop(f"locked_{i}", None)
+            st.session_state["sb_scores"] = {}
+            st.rerun()
+        _rc2.caption("⚠️ 초기화 시 저장된 점수가 모두 삭제됩니다.")
 
-    st.markdown("### 📈 선수별 통계")
-    df_sb = compute_scoreboard_stats(schedule, st.session_state.get("sb_scores", {}))
+    # ── 관리자 전용: 기록실 재집계 ────────────────────────────
+    # 기존 시트 데이터(잘못된 집계)를 현재 코드 기준으로 덮어써서 정정
+    if is_admin():
+        _ra1, _ra2 = st.columns([3, 7])
+        if _ra1.button("🔁 기록실 재집계 (관리자)", type="secondary",
+                       help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 구글시트에 덮어씁니다."):
+            _reagg_scores = st.session_state.get("sb_scores", {})
+            if not _reagg_scores:
+                _sd = shelf_load(selected_key)
+                if _sd: _reagg_scores = _sd.get("scores", {})
+            if _reagg_scores:
+                with st.spinner("기록실 재집계 중…"):
+                    try:
+                        records_commit(selected_key, schedule, _reagg_scores)
+                        st.cache_data.clear()
+                        st.success(f"✅ '{selected_key}' 기록실 재집계 완료! 중복 선수 데이터가 제거되었습니다.")
+                    except Exception as _e:
+                        st.error(f"재집계 오류: {_e}")
+            else:
+                st.warning("저장된 점수가 없습니다. 먼저 점수를 저장해주세요.")
+
+    # 선수별 현황
+    st.markdown("### 📈 선수별 현황")
+    _current_scores = st.session_state.get("sb_scores", {})
+    if not _current_scores:
+        _shelf_data = shelf_load(selected_key)
+        if _shelf_data:
+            _current_scores = _shelf_data.get("scores", {})
+            st.session_state["sb_scores"] = _current_scores
+    df_sb = compute_scoreboard_stats(schedule, _current_scores)
     if df_sb.empty:
         st.info("점수를 저장하면 통계가 표시됩니다.")
     else:
-        all_leagues = df_sb["리그"].unique()
-        for league in all_leagues:
+        for league in df_sb["리그"].unique():
             df_lg = df_sb[df_sb["리그"]==league].drop(columns=["리그"]).reset_index(drop=True)
             if df_lg.empty: continue
             lg_color = get_league_color(league)
             st.markdown(
                 f'<div style="color:{lg_color};font-weight:700;border-bottom:2px solid {lg_color};'
-                f'padding-bottom:4px;margin:16px 0 8px 0;">🎾 {league} 통계</div>',
+                f'padding-bottom:4px;margin:16px 0 8px 0;">🎾 {league} 선수별 현황</div>',
                 unsafe_allow_html=True)
-            max_win = int(df_lg["승"].max()) if not df_lg.empty else 0
-            def hl_sb(row, mw=max_win):
-                styles = [""]*len(row)
-                if "승" in row.index:
-                    wi = row.index.get_loc("승")
-                    if row["승"]==mw and mw>0:
-                        styles[wi] = "background-color:#FFF176;font-weight:bold"
-                return styles
-            st.dataframe(df_lg.style.apply(hl_sb, axis=1),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(df_lg, use_container_width=True, hide_index=True)
 
 
 # ============================================================
 # 페이지 B: 랜덤페어
 # ============================================================
 
-elif page == "🎲 랜덤페어":
+elif page == "📋 대진표생성":
 
     if not is_logged_in():
-        st.warning("🔐 랜덤페어는 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
+        st.warning("🔐 대진표생성은 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
         st.stop()
 
     # ── [1] 페어링 방식 ──────────────────────────────────────
@@ -3732,27 +4471,50 @@ elif page == "🎲 랜덤페어":
                     st.info(f"{lg}에 배정된 회원이 없습니다.")
                     continue
 
-                def _is_dorm(r):
-                    if r.get("category") == "휴면": return True
+                # 경기 날짜: 사이드바 날짜 입력값 또는 저장된 rp_key에서 추출 (없으면 오늘)
+                try:
+                    _rp_date_str = st.session_state.get("rp_date", "")
+                    if not _rp_date_str:
+                        # rp_key에서 날짜 파싱 (예: "2026-05-23(목)_001")
+                        _rp_key = st.session_state.get("rp_key", "")
+                        _rp_date_str = _rp_key[:10] if _rp_key else ""
+                    _game_date = date.fromisoformat(_rp_date_str[:10]) if _rp_date_str else date.today()
+                except Exception:
+                    _game_date = date.today()
+
+                def _is_dorm(r, gd=_game_date):
+                    """경기 날짜 기준으로 휴면 여부 판단.
+                    - dormant_period 기간이 있으면 기간 내 경기 날짜 포함 여부로만 판단
+                    - dormant_period 없고 category=휴면이면 휴면 처리 (레거시 호환)
+                    """
                     _dp = str(r.get("dormant_period","")).strip()
-                    if not _dp: return False
-                    if "~" in _dp:
-                        _e = _dp.split("~")[-1].strip()
-                        if not _e: return True
-                        try: return date.fromisoformat(_e[:10]) >= date.today()
-                        except ValueError: pass
-                    return True
+                    if _dp:
+                        # 기간이 등록된 경우 → 기간 안에 경기일이 있을 때만 휴면
+                        for _p in parse_dormant_periods(_dp):
+                            _start = (_p.get("start") or "").strip()
+                            _end   = (_p.get("end")   or "").strip()
+                            try:
+                                _sd = date.fromisoformat(_start) if _start else None
+                                _ed = date.fromisoformat(_end)   if _end   else None
+                                after_start = (_sd is None) or (gd >= _sd)
+                                before_end  = (_ed is None) or (gd <= _ed)
+                                if after_start and before_end:
+                                    return True
+                            except (ValueError, TypeError):
+                                continue
+                        # 기간이 있지만 경기일이 어느 기간에도 해당 없으면 정상 참가
+                        return False
+                    # dormant_period 없을 때만 category로 판단
+                    return r.get("category") == "휴면"
 
                 normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
                 dormant_df = lg_df[lg_df.apply(_is_dorm, axis=1)]
 
-                # 선택 현황 카운트 (영구 저장소 기준)
-                _sel_store_view = st.session_state.get("selected_members", {})
-                _gsel_store_view = st.session_state.get("selected_guests", {})
-                sel_cnt   = sum(1 for _, r in lg_df.iterrows()
-                                if _sel_store_view.get(f"{lg}_{int(r['id'])}", False))
+                # 선택 현황 카운트: 실제 위젯 상태(mchk_/gchk_) 기준
+                sel_cnt   = sum(1 for _, r in normal_df.iterrows()
+                                if st.session_state.get(f"mchk_{lg}_{int(r['id'])}", False))
                 g_sel_cnt = sum(1 for gm in _guests_lg
-                                if _gsel_store_view.get(f"{lg}_{gm['name']}", False))
+                                if st.session_state.get(f"gchk_{lg}_{gm['name']}", False))
                 total_sel = sel_cnt + g_sel_cnt
 
                 col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
@@ -3760,27 +4522,24 @@ elif page == "🎲 랜덤페어":
                     _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in normal_df.iterrows():
                         _sel_store[f"{lg}_{int(r['id'])}"] = True
+                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = True
                     _gsel_store = st.session_state.setdefault("selected_guests", {})
                     for gm in _guests_lg:
                         _gsel_store[f"{lg}_{gm['name']}"] = True
-                    # 위젯 키도 동기화
-                    for _, r in normal_df.iterrows():
-                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = True
-                    for gm in _guests_lg:
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = True
-                    st.rerun()
+                    # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
+                    # 위젯 키 직접 설정으로 즉시 반영
+
                 if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}"):
                     _sel_store = st.session_state.setdefault("selected_members", {})
-                    for _, r in lg_df.iterrows():
+                    for _, r in normal_df.iterrows():
                         _sel_store[f"{lg}_{int(r['id'])}"] = False
+                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = False
                     _gsel_store = st.session_state.setdefault("selected_guests", {})
                     for gm in _guests_lg:
                         _gsel_store[f"{lg}_{gm['name']}"] = False
-                    for _, r in lg_df.iterrows():
-                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = False
-                    for gm in _guests_lg:
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = False
-                    st.rerun()
+                    # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
 
                 col_cnt.markdown(
                     f'<div style="padding-top:6px;color:{lc};font-weight:700;">'
@@ -3906,12 +4665,18 @@ elif page == "🎲 랜덤페어":
             _dc1, _dc2 = st.sidebar.columns([1, 1])
             if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
                 shelf_delete(_sel_key)
+                # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
+                try:
+                    records_delete_by_date(_sel_key)
+                    st.cache_data.clear()
+                except Exception:
+                    pass
                 st.session_state.pop("_sb_confirm_del", None)
                 if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
                     st.session_state.pop("rp_schedule", None)
                     st.session_state.pop("stats", None)
                     st.session_state.pop("last_gen_params", None)
-                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨")
+                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
                 st.rerun()
             if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
                 st.session_state.pop("_sb_confirm_del", None)
@@ -3932,7 +4697,7 @@ elif page == "🎲 랜덤페어":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title("🎾 TELA CLUB Random Match Generator v5.00")
+    st.title("🎾 TELA CLUB 대진표 생성")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 결과 고정 (시드) — 본문 배치 ──────────────────────────
@@ -4079,6 +4844,154 @@ elif page == "🎲 랜덤페어":
         with tab1:
             _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players)
 
+            # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
+            if is_admin():
+                with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
+                    st.caption("경기 번호를 선택하고 선수를 재배정할 수 있습니다.")
+                    _adj_matches = st.session_state.get("schedule", schedule)
+                    _match_labels = []
+                    for _mi, _m in enumerate(_adj_matches):
+                        t1a = display_name(_m["team1"][0]); t1b = display_name(_m["team1"][1])
+                        t2a = display_name(_m["team2"][0]); t2b = display_name(_m["team2"][1])
+                        _match_labels.append(f"#{_mi+1} [{_m['round']}·{_m['league']}] {t1a}/{t1b} vs {t2a}/{t2b}")
+
+                    _sel_mi = st.selectbox("조정할 경기 선택", range(len(_adj_matches)),
+                                           format_func=lambda i: _match_labels[i],
+                                           key="adj_match_sel")
+                    _sel_match = _adj_matches[_sel_mi]
+                    st.markdown(f"**현재:** {_match_labels[_sel_mi]}")
+
+                    # 해당 리그 전체 선수 목록 수집
+                    _lg_name   = _sel_match["league"]
+                    _lg_players_all = []
+                    for _m2 in _adj_matches:
+                        if _m2["league"] == _lg_name:
+                            for _p in list(_m2["team1"]) + list(_m2["team2"]):
+                                _pb = base_name(_p)
+                                if _pb not in [base_name(x) for x in _lg_players_all]:
+                                    _lg_players_all.append(_p)
+
+                    _player_labels = {base_name(p): display_name(p) for p in _lg_players_all}
+
+                    st.markdown("**팀 재구성 + 기록실 제외 설정**")
+                    st.caption("선수를 선택하고 '기록 제외' 체크박스로 개인별 기록 제외 여부를 설정하세요.")
+                    _pkeys = list(_player_labels.keys())
+                    def _pidx(code, _pk=_pkeys):
+                        k = base_name(code)
+                        return _pk.index(k) if k in _pk else 0
+                    # 기존 저장된 exclude_players
+                    _prev_excl = set(_sel_match.get("exclude_players", []))
+                    _code_map_pre = {base_name(p): p for p in _lg_players_all}
+                    _new_excl = []
+
+                    _cc1, _cc2 = st.columns(2)
+                    with _cc1:
+                        st.markdown("**팀1**")
+                        _t1_new_a = st.selectbox("팀1 선수A", _pkeys,
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=_pidx(_sel_match["team1"][0]),
+                                                  key=f"adj_t1a_{_sel_mi}")
+                        _fc_t1a = _code_map_pre.get(_t1_new_a, _t1_new_a)
+                        _excl_t1a = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t1_new_a, _t1_new_a)})",
+                            value=(base_name(_fc_t1a) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_0",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t1a: _new_excl.append(base_name(_fc_t1a))
+
+                        _t1_new_b = st.selectbox("팀1 선수B", _pkeys,
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=_pidx(_sel_match["team1"][1]),
+                                                  key=f"adj_t1b_{_sel_mi}")
+                        _fc_t1b = _code_map_pre.get(_t1_new_b, _t1_new_b)
+                        _excl_t1b = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t1_new_b, _t1_new_b)})",
+                            value=(base_name(_fc_t1b) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_1",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t1b: _new_excl.append(base_name(_fc_t1b))
+
+                    with _cc2:
+                        st.markdown("**팀2**")
+                        _t2_new_a = st.selectbox("팀2 선수A", _pkeys,
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=_pidx(_sel_match["team2"][0]),
+                                                  key=f"adj_t2a_{_sel_mi}")
+                        _fc_t2a = _code_map_pre.get(_t2_new_a, _t2_new_a)
+                        _excl_t2a = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t2_new_a, _t2_new_a)})",
+                            value=(base_name(_fc_t2a) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_2",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t2a: _new_excl.append(base_name(_fc_t2a))
+
+                        _t2_new_b = st.selectbox("팀2 선수B", _pkeys,
+                                                  format_func=lambda k: _player_labels.get(k,k),
+                                                  index=_pidx(_sel_match["team2"][1]),
+                                                  key=f"adj_t2b_{_sel_mi}")
+                        _fc_t2b = _code_map_pre.get(_t2_new_b, _t2_new_b)
+                        _excl_t2b = st.checkbox(
+                            f"🚫 기록 제외 ({_player_labels.get(_t2_new_b, _t2_new_b)})",
+                            value=(base_name(_fc_t2b) in _prev_excl),
+                            key=f"adj_excl_{_sel_mi}_3",
+                            help="이 선수의 이 경기 결과를 기록실에서 제외합니다")
+                        if _excl_t2b: _new_excl.append(base_name(_fc_t2b))
+
+                    _all_4 = [_t1_new_a, _t1_new_b, _t2_new_a, _t2_new_b]
+                    _dup_warn = len(set(_all_4)) < 4
+                    if _dup_warn:
+                        st.warning("⚠️ 4명 모두 달라야 합니다. 중복 선수가 있습니다.")
+
+                    # 적용 성공 메시지 (이전 rerun에서 저장된 것)
+                    if st.session_state.get("_adj_success_msg"):
+                        st.success(st.session_state.pop("_adj_success_msg"))
+                    # 적용 버튼
+                    _btn_col, _msg_col = st.columns([2, 6])
+                    if _btn_col.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
+                                       disabled=_dup_warn):
+                        _code_map = {base_name(p): p for p in _lg_players_all}
+
+                        # 제외 선수에는 (중복) 태그 추가, 정상은 태그 제거
+                        def _apply_dup(code):
+                            raw = base_name(code).replace("(중복)","")
+                            base_only = code.replace("(중복)","").strip()
+                            return base_only + ("(중복)" if base_name(base_only) in _new_excl else "")
+
+                        _new_t1 = tuple([_apply_dup(_code_map.get(_t1_new_a, _t1_new_a)),
+                                         _apply_dup(_code_map.get(_t1_new_b, _t1_new_b))])
+                        _new_t2 = tuple([_apply_dup(_code_map.get(_t2_new_a, _t2_new_a)),
+                                         _apply_dup(_code_map.get(_t2_new_b, _t2_new_b))])
+                        _new_type = classify_match([base_name(p) for p in list(_new_t1)+list(_new_t2)])
+                        # 매치 type에 (중복) 표기 (기록 제외 표시)
+                        if _new_excl and "(중복)" not in _new_type:
+                            _new_type = _new_type + "(중복)"
+
+                        _adj_matches[_sel_mi] = {
+                            **_sel_match,
+                            "team1": _new_t1,
+                            "team2": _new_t2,
+                            "type":  _new_type,
+                            "exclude_players": _new_excl,
+                        }
+                        st.session_state["schedule"]    = _adj_matches
+                        st.session_state["rp_schedule"] = _adj_matches
+                        st.session_state["sb_schedule"] = _adj_matches
+                        _ifr = st.session_state.get("last_gen_params",{}).get("is_fully_random", False)
+                        shelf_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
+
+                        # 점수가 있든 없든 기록실 재집계 (제외 선수 변경 즉시 반영)
+                        _existing = shelf_load(rp_key_run) or {}
+                        _ex_scores = _existing.get("scores", {})
+                        try:
+                            records_commit(rp_key_run, _adj_matches, _ex_scores)
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
+
+                        _excl_msg = f" (제외: {', '.join(_new_excl)})" if _new_excl else ""
+                        st.session_state["_adj_success_msg"] = f"✅ #{_sel_mi+1} 적용 완료{_excl_msg}"
+                        st.rerun()
+
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
             # [다이어트] _json2 별칭 제거 - 상단의 json 모듈 직접 사용
 
@@ -4180,7 +5093,7 @@ function showMsg() {{
 </script>
 """
             st.components.v1.html(qr_html, height=200)
-            st.info("💡 대진표 생성 후 사이드바에서 **📊 점수판**을 선택하면 점수를 입력할 수 있습니다.")
+            st.info("💡 대진표 생성 후 사이드바에서 **📊 스코어보드**를 선택하면 점수를 입력할 수 있습니다.")
 
         with tab2:
             st.subheader("선수별 출전 현황")
@@ -4324,6 +5237,123 @@ function showMsg() {{
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
                 _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r)
+                # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
+                if is_admin():
+                    with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
+                        st.caption("경기 번호를 선택하고 선수를 재배정할 수 있습니다.")
+                        _adj2_matches = list(schedule)
+                        _adj2_labels = []
+                        for _mi2, _m2 in enumerate(_adj2_matches):
+                            t1a2 = display_name(_m2["team1"][0]); t1b2 = display_name(_m2["team1"][1])
+                            t2a2 = display_name(_m2["team2"][0]); t2b2 = display_name(_m2["team2"][1])
+                            _adj2_labels.append(f"#{_mi2+1} [{_m2['round']}·{_m2['league']}] {t1a2}/{t1b2} vs {t2a2}/{t2b2}")
+                        _sel_mi2 = st.selectbox("조정할 경기", range(len(_adj2_matches)),
+                                                format_func=lambda i: _adj2_labels[i],
+                                                key="adj2_match_sel")
+                        _sm2 = _adj2_matches[_sel_mi2]
+                        _lg2 = _sm2["league"]
+                        _lp2_all = []
+                        for _m3 in _adj2_matches:
+                            if _m3["league"] == _lg2:
+                                for _p3 in list(_m3["team1"]) + list(_m3["team2"]):
+                                    if base_name(_p3) not in [base_name(x) for x in _lp2_all]:
+                                        _lp2_all.append(_p3)
+                        _pl2 = {base_name(p): display_name(p) for p in _lp2_all}
+                        _keys2 = list(_pl2.keys())
+                        def _idx2(code):
+                            k = base_name(code)
+                            return _keys2.index(k) if k in _keys2 else 0
+                        _cm2_pre = {base_name(p): p for p in _lp2_all}
+                        _prev_excl2 = set(_sm2.get("exclude_players", []))
+                        _new_excl2 = []
+
+                        st.markdown("**팀 재구성 + 기록실 제외 설정**")
+                        st.caption("선수를 선택하고 '기록 제외' 체크박스로 개인별 기록 제외 여부를 설정하세요.")
+                        _c1, _c2 = st.columns(2)
+                        with _c1:
+                            st.markdown("**팀1**")
+                            _t1a2 = st.selectbox("팀1A", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team1"][0]), key=f"adj2_t1a_{_sel_mi2}")
+                            _fc2_t1a = _cm2_pre.get(_t1a2, _t1a2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t1a2,_t1a2)})",
+                                           value=(base_name(_fc2_t1a) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_0",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t1a))
+
+                            _t1b2 = st.selectbox("팀1B", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team1"][1]), key=f"adj2_t1b_{_sel_mi2}")
+                            _fc2_t1b = _cm2_pre.get(_t1b2, _t1b2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t1b2,_t1b2)})",
+                                           value=(base_name(_fc2_t1b) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_1",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t1b))
+
+                        with _c2:
+                            st.markdown("**팀2**")
+                            _t2a2 = st.selectbox("팀2A", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team2"][0]), key=f"adj2_t2a_{_sel_mi2}")
+                            _fc2_t2a = _cm2_pre.get(_t2a2, _t2a2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t2a2,_t2a2)})",
+                                           value=(base_name(_fc2_t2a) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_2",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t2a))
+
+                            _t2b2 = st.selectbox("팀2B", _keys2, format_func=lambda k:_pl2.get(k,k),
+                                                  index=_idx2(_sm2["team2"][1]), key=f"adj2_t2b_{_sel_mi2}")
+                            _fc2_t2b = _cm2_pre.get(_t2b2, _t2b2)
+                            if st.checkbox(f"🚫 기록 제외 ({_pl2.get(_t2b2,_t2b2)})",
+                                           value=(base_name(_fc2_t2b) in _prev_excl2),
+                                           key=f"adj2_excl_{_sel_mi2}_3",
+                                           help="이 선수의 이 경기 결과를 기록실에서 제외합니다"):
+                                _new_excl2.append(base_name(_fc2_t2b))
+
+                        _d2 = len({_t1a2,_t1b2,_t2a2,_t2b2}) < 4
+                        if _d2: st.warning("⚠️ 4명 모두 달라야 합니다.")
+                        # 적용 성공 메시지 (이전 rerun에서 저장된 것)
+                        if st.session_state.get("_adj_success_msg"):
+                            st.success(st.session_state.pop("_adj_success_msg"))
+                        _btn2_col, _msg2_col = st.columns([2, 6])
+                        if _btn2_col.button("✅ 페어 적용", type="primary",
+                                            key=f"adj2_apply_{_sel_mi2}", disabled=_d2):
+                            _cm2 = {base_name(p): p for p in _lp2_all}
+
+                            def _apply_dup2(code):
+                                base_only = code.replace("(중복)","").strip()
+                                return base_only + ("(중복)" if base_name(base_only) in _new_excl2 else "")
+
+                            _nt1 = tuple([_apply_dup2(_cm2.get(_t1a2,_t1a2)),
+                                          _apply_dup2(_cm2.get(_t1b2,_t1b2))])
+                            _nt2 = tuple([_apply_dup2(_cm2.get(_t2a2,_t2a2)),
+                                          _apply_dup2(_cm2.get(_t2b2,_t2b2))])
+                            _ntype = classify_match([base_name(p) for p in list(_nt1)+list(_nt2)])
+                            if _new_excl2 and "(중복)" not in _ntype:
+                                _ntype = _ntype + "(중복)"
+
+                            _adj2_matches[_sel_mi2] = {
+                                **_sm2,
+                                "team1": _nt1, "team2": _nt2, "type": _ntype,
+                                "exclude_players": _new_excl2,
+                            }
+                            st.session_state["rp_schedule"] = _adj2_matches
+                            st.session_state["sb_schedule"] = _adj2_matches
+                            _ifr2 = restored_params.get("is_fully_random", False)
+                            shelf_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
+
+                            # 점수 유무 관계없이 기록실 재집계 (제외 선수 변경 즉시 반영)
+                            _existing2 = shelf_load(rp_key_run) or {}
+                            _ex_scores2 = _existing2.get("scores", {})
+                            try:
+                                records_commit(rp_key_run, _adj2_matches, _ex_scores2)
+                                st.cache_data.clear()
+                            except Exception:
+                                pass
+
+                            _excl_msg2 = f" (제외: {', '.join(_new_excl2)})" if _new_excl2 else ""
+                            st.session_state["_adj_success_msg"] = f"✅ #{_sel_mi2+1} 적용 완료{_excl_msg2}"
+                            st.rerun()
             with tab2:
                 st.subheader("선수별 출전 현황")
                 st.dataframe(df_display, use_container_width=True, height=700)
@@ -4546,13 +5576,13 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.00 기능 안내
+                ### v5.6 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
                 | **회원 사전 등록** | 👥 회원 관리에서 리그별 회원 등록 후 체크박스로 선택 |
                 | **대진표 불러오기** | 📂 저장된 대진표 불러오기에서 날짜 선택 후 로드 |
-                | **페이지 복귀 유지** | 점수판↔랜덤페어 이동해도 마지막 대진표 유지 |
+                | **페이지 복귀 유지** | 스코어보드↔대진표생성 이동해도 마지막 대진표 유지 |
                 | **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
                 | **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
                 | **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
@@ -4564,10 +5594,266 @@ function showMsg() {{
                 - 최대 4경기 제한
 
                 ### 점수판
-                1. 대진표 생성 후 사이드바 **📊 점수판** 선택
-                2. 날짜+일련번호 입력 (랜덤페어와 동일하게)
+                1. 대진표 생성 후 사이드바 **📊 스코어보드** 선택
+                2. 날짜+일련번호 입력 (대진표생성과 동일하게)
                 3. 각 경기 **💾 저장** 버튼 클릭 → 새로고침 후에도 유지
                 """)
+
+elif page == "🏆 기록실":
+    st.markdown("## 🏆 기록실 (누적 통계)")
+    st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 중복 선수 및 제외 지정 선수는 기록에서 제외됩니다.")
+
+    # ── 관리자 전용: 기록 제외 선수 관리 ────────────────────────
+    if is_admin():
+        with st.expander("⚙️ 관리자: 기록 제외 선수 설정 (코치 등)", expanded=False):
+            st.caption("여기 등록된 선수는 기록실 집계·조회에서 완전히 제외됩니다. 이름은 구글시트 player_key와 동일하게 입력하세요.")
+            _ex_list = exclude_list_load()
+
+            # 현재 제외 목록
+            if _ex_list:
+                st.markdown(f"**현재 제외 선수 ({len(_ex_list)}명)**")
+                for _ex_name in _ex_list:
+                    _exc1, _exc2 = st.columns([5, 1])
+                    _exc1.markdown(f'<div style="padding:4px 0;font-size:0.9rem;">🚫 {_ex_name}</div>',
+                                   unsafe_allow_html=True)
+                    if _exc2.button("삭제", key=f"del_ex_{_ex_name}", use_container_width=True):
+                        exclude_list_remove(_ex_name)
+                        st.success(f"'{_ex_name}' 제외 목록에서 제거됨")
+                        st.rerun()
+            else:
+                st.info("제외 선수가 없습니다.")
+
+            st.markdown("---")
+            _add_c1, _add_c2 = st.columns([5, 1])
+            _new_ex = _add_c1.text_input("제외할 선수 이름 입력",
+                                          placeholder="예: 윤지수  (구글시트 player_key와 동일하게)",
+                                          label_visibility="collapsed", key="new_exclude_inp")
+            if _add_c2.button("➕ 추가", key="add_exclude_btn", use_container_width=True):
+                if _new_ex.strip():
+                    if _new_ex.strip() in _ex_list:
+                        st.warning(f"'{_new_ex.strip()}'는 이미 제외 목록에 있습니다.")
+                    else:
+                        exclude_list_add(_new_ex.strip())
+                        st.success(f"✅ '{_new_ex.strip()}' 제외 등록 완료. 재집계 버튼으로 기존 데이터도 정정하세요.")
+                        st.rerun()
+                else:
+                    st.warning("이름을 입력해주세요.")
+
+            # ── 전체 날짜 일괄 재집계 ──
+            st.markdown("---")
+            st.caption("⚠️ 제외 선수를 새로 추가한 경우, 기존에 저장된 모든 날짜의 기록을 아래 버튼으로 한 번에 재집계해야 합니다.")
+            if st.button("🔁 전체 날짜 일괄 재집계 (관리자)", type="primary",
+                         key="bulk_reagg_btn",
+                         help="저장된 모든 점수판 날짜의 기록실 데이터를 현재 제외 목록 기준으로 다시 계산합니다."):
+                _all_keys = shelf_list_dates()
+                if not _all_keys:
+                    st.warning("저장된 스코어보드가 없습니다.")
+                else:
+                    _ok, _fail = 0, 0
+                    with st.spinner(f"{len(_all_keys)}개 날짜 재집계 중…"):
+                        for _dk in _all_keys:
+                            try:
+                                _sd = shelf_load(_dk)
+                                if not _sd:
+                                    continue
+                                _sched = deserialize_schedule(_sd["schedule"])
+                                _sc    = _sd.get("scores", {})
+                                if _sc:
+                                    records_commit(_dk, _sched, _sc)
+                                    _ok += 1
+                            except Exception:
+                                _fail += 1
+                    st.cache_data.clear()
+                    if _fail:
+                        st.warning(f"✅ {_ok}개 완료, ⚠️ {_fail}개 오류")
+                    else:
+                        st.success(f"✅ {_ok}개 날짜 재집계 완료! 제외 선수({', '.join(exclude_list_load())})가 모든 기록에서 제거되었습니다.")
+                    st.rerun()
+
+
+    _now = date.today()
+    _c1, _c2, _c3 = st.columns([3, 3, 2])
+    with _c1:
+        _rec_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
+                              key="rec_page_mode", label_visibility="collapsed")
+    with _c2:
+        if _rec_mode == "월간":
+            _months = []
+            for i in range(12):
+                _m = _now.month - i
+                _y = _now.year
+                while _m <= 0: _m += 12; _y -= 1
+                _months.append(f"{_y}-{_m:02d}")
+            _months = sorted(list(dict.fromkeys(_months)), reverse=True)
+            _sel_val = st.selectbox("월", _months, key="rec_pg_month",
+                                     label_visibility="collapsed")
+            _ft = "monthly"; _fv = _sel_val; _lbl = f"{_sel_val} 월간"
+        else:
+            _years = [str(_now.year - i) for i in range(4)]
+            _sel_val = st.selectbox("연도", _years, key="rec_pg_year",
+                                     label_visibility="collapsed")
+            _ft = "yearly"; _fv = _sel_val; _lbl = f"{_sel_val} 연간"
+    with _c3:
+        if st.button("🔄 새로고침", key="rec_refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    with st.spinner("기록 불러오는 중…"):
+        try:
+            _df_rec = records_get_df(_ft, _fv)
+        except Exception as _re:
+            st.error(f"기록실 로드 오류: {_re}")
+            _df_rec = pd.DataFrame()
+
+    if _df_rec.empty:
+        st.info(f"📭 {_lbl} 기록이 없습니다. 스코어보드에서 점수를 저장하면 자동으로 집계됩니다.")
+    else:
+        _all_leagues = list(_df_rec["리그"].unique())
+
+        # ── 왕 카드 렌더 헬퍼 ─────────────────────────────────
+        def _award_card(emoji, title, name, value, color, subtitle=""):
+            return f"""
+<div style="background:linear-gradient(135deg,{color}22,{color}08);
+     border:2px solid {color}55;border-radius:14px;padding:14px 16px;
+     text-align:center;box-shadow:0 2px 12px {color}22;">
+  <div style="font-size:2rem;line-height:1.1">{emoji}</div>
+  <div style="font-size:0.68rem;font-weight:700;color:{color};
+       letter-spacing:0.5px;margin:4px 0 2px;line-height:1.3">{title}</div>
+  <div style="font-size:1.1rem;font-weight:900;color:#1a2e4a;margin:2px 0">{name}</div>
+  <div style="font-size:0.85rem;font-weight:700;color:{color}">{value}</div>
+  {"<div style='font-size:0.65rem;color:#9ca3af;margin-top:2px'>"+subtitle+"</div>" if subtitle else ""}
+</div>"""
+
+        # ── 연간 모드: 전 리그 통합 수상 ─────────────────────
+        if _ft == "yearly":
+            _yr = _fv
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,#1a1a2e22,transparent);'
+                f'border-left:5px solid #1a1a2e;border-radius:0 10px 10px 0;'
+                f'padding:10px 16px;margin:16px 0 12px;">'
+                f'<span style="color:#1a1a2e;font-weight:900;font-size:1.05rem;">🏆 {_yr} TELA 통합 랭킹</span>'
+                f'<span style="color:#6b7280;font-size:0.8rem;margin-left:8px;">— 전 리그 통합</span>'
+                f'</div>', unsafe_allow_html=True)
+
+            _df_all = _df_rec.copy()
+            _df_all_act = _df_all[(_df_all["승"] + _df_all["패"]) > 0]
+            _ac = st.columns(3)
+            _ch = ["", "", ""]
+            if not _df_all_act.empty:
+                # 득점왕 (1순위)
+                _mp = _df_all_act["득점"].max()
+                _wp = _df_all_act[_df_all_act["득점"] == _mp].iloc[0]
+                _yr_lbl = f"{_yr[2:]}년 통합"
+                _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", _wp["이름"],
+                                     f"{int(_mp)}점", "#2563eb",
+                                     f"득실차 {int(_wp['득실차']):+d}")
+                # 다승왕
+                _mw = _df_all_act["승"].max()
+                _ww = _df_all_act[_df_all_act["승"] == _mw].iloc[0]
+                _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", _ww["이름"],
+                                     f"{int(_mw)}승", "#f59e0b",
+                                     f"승률 {_ww['승률']}")
+                # 승률왕
+                _df_r2 = _df_all_act[(_df_all_act["승"]+_df_all_act["패"])>=2].copy()
+                if not _df_r2.empty:
+                    _df_r2["_rn"] = _df_r2["승"] / (_df_r2["승"]+_df_r2["패"])
+                    _mr = _df_r2["_rn"].max()
+                    _wr = _df_r2[_df_r2["_rn"]==_mr].iloc[0]
+                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", _wr["이름"],
+                                         _wr["승률"], "#7c3aed",
+                                         f"{int(_wr['승'])}승 {int(_wr['패'])}패")
+                else:
+                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "2경기↑ 필요", "#9ca3af")
+            else:
+                _yr_lbl = f"{_yr[2:]}년 통합"
+                _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", "—", "기록 없음", "#9ca3af")
+                _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", "—", "기록 없음", "#9ca3af")
+                _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "기록 없음", "#9ca3af")
+            for _ci, _h in enumerate(_ch):
+                _ac[_ci].markdown(_h, unsafe_allow_html=True)
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        # ── 리그별 섹션 ──────────────────────────────────────
+        for _rec_lg in _all_leagues:
+            _df_lg_full = _df_rec[_df_rec["리그"] == _rec_lg].copy()
+            if _df_lg_full.empty:
+                continue
+
+            _lc = get_league_color(_rec_lg)
+
+            # 리그 헤더
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,{_lc}22,transparent);'
+                f'border-left:5px solid {_lc};border-radius:0 10px 10px 0;'
+                f'padding:10px 16px;margin:20px 0 12px 0;">'
+                f'<span style="color:{_lc};font-weight:900;font-size:1.05rem;">🎾 {_rec_lg}</span>'
+                f'<span style="color:#6b7280;font-size:0.8rem;margin-left:8px;">— {_lbl}</span>'
+                f'</div>', unsafe_allow_html=True)
+
+            _df_active = _df_lg_full[(_df_lg_full["승"] + _df_lg_full["패"]) > 0]
+            _award_cols = st.columns(3)
+            _cards_html = ["", "", ""]
+
+            # 수정6: 월간 카드 제목 = "{리그} 월간 최다득점" 등
+            # 수정5: 카드 순서 = 득점왕(0) → 다승왕(1) → 승률왕(2)
+            if _ft == "monthly":
+                _ym = _fv  # "2026-05"
+                # "2026-05" → "26년 05월"
+                try:
+                    _ym_parts = _ym.split("-")
+                    _ym_label = f"{_ym_parts[0][2:]}년 {_ym_parts[1]}월"
+                except Exception:
+                    _ym_label = _ym
+                _t_score = f"{_rec_lg} {_ym_label} 최다득점"
+                _t_wins  = f"{_rec_lg} {_ym_label} 최다승"
+                _t_rate  = f"{_rec_lg} {_ym_label} 최고승률"
+            else:
+                _t_score = f"{_rec_lg} 득점왕"
+                _t_wins  = f"{_rec_lg} 다승왕"
+                _t_rate  = f"{_rec_lg} 승률왕"
+
+            if not _df_active.empty:
+                # 득점왕 (카드 0번)
+                _max_p = _df_active["득점"].max()
+                _winner_p = _df_active[_df_active["득점"] == _max_p].iloc[0]
+                _cards_html[0] = _award_card("🎯", _t_score, _winner_p["이름"],
+                                              f"{int(_max_p)}점", "#2563eb",
+                                              f"득실차 {int(_winner_p['득실차']):+d}")
+                # 다승왕 (카드 1번)
+                _max_w = _df_active["승"].max()
+                _winner_w = _df_active[_df_active["승"] == _max_w].iloc[0]
+                _cards_html[1] = _award_card("🥇", _t_wins, _winner_w["이름"],
+                                              f"{int(_max_w)}승", "#f59e0b",
+                                              f"승률 {_winner_w['승률']}")
+                # 승률왕 (카드 2번)
+                _df_rate = _df_active[(_df_active["승"] + _df_active["패"]) >= 2].copy()
+                if not _df_rate.empty:
+                    _df_rate["_rate_num"] = _df_rate["승"] / (_df_rate["승"] + _df_rate["패"])
+                    _max_r = _df_rate["_rate_num"].max()
+                    _winner_r = _df_rate[_df_rate["_rate_num"] == _max_r].iloc[0]
+                    _cards_html[2] = _award_card("👑", _t_rate, _winner_r["이름"],
+                                                  _winner_r["승률"], "#7c3aed",
+                                                  f"{int(_winner_r['승'])}승 {int(_winner_r['패'])}패")
+                else:
+                    _cards_html[2] = _award_card("👑", _t_rate, "—", "2경기↑ 필요", "#9ca3af")
+            else:
+                _cards_html[0] = _award_card("🎯", _t_score, "—", "기록 없음", "#9ca3af")
+                _cards_html[1] = _award_card("🥇", _t_wins,  "—", "기록 없음", "#9ca3af")
+                _cards_html[2] = _award_card("👑", _t_rate,  "—", "기록 없음", "#9ca3af")
+
+            for _ci, _html in enumerate(_cards_html):
+                _award_cols[_ci].markdown(_html, unsafe_allow_html=True)
+
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+            _df_lg_disp = _df_lg_full.drop(columns=["리그"]).reset_index(drop=True)
+            # 수정1: Streamlit 자동 배경색(숫자 gradient) 제거 → column_config으로 모든 컬럼 text화
+            import streamlit as _st_cc
+            _cc_cfg = {c: _st_cc.column_config.NumberColumn(c, format="%d")
+                       for c in ["출전경기","승","패","득점","실점","득실차"]
+                       if c in _df_lg_disp.columns}
+            st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
+                         column_config=_cc_cfg)
 
 elif page == "👥 회원명부":
     render_roster_page()
