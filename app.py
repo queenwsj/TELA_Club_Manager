@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.8
+TELA CLUB Random Match Generator v5.9
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -1577,14 +1577,21 @@ def generate_schedule_fully_random(league_players, num_rounds=3):
 # 섹션 10: 입력 파싱
 # ============================================================
 
-def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None):
+def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None,
+                                 max_games_per_player=3):
     """
-    이벤트 팀 대결 대진표 생성.
-    teams: [[player_code,...], [player_code,...], ...]  (각 팀 = 플레이어 코드 리스트)
-    team_labels: 각 팀의 표시 이름 리스트 (없으면 '팀1','팀2'… 사용)
-    팀끼리 맞대결 — 각 매치는 (팀A에서 2명) vs (팀B에서 2명) 복식.
-    모든 팀쌍 조합에 대해 num_rounds 만큼 라운드 생성.
-    반환: (all_results, all_stats) — 기존 schedule 포맷과 호환.
+    이벤트 팀 대결 대진표 생성 (잡복 최소화 + 출전 횟수 제한).
+
+    teams: [[player_code,...], ...]  각 팀 = 플레이어 코드 리스트
+    team_labels: 각 팀 표시 이름 (없으면 '팀1','팀2'…)
+    max_games_per_player: 선수 1인 최대 출전 경기 수 (기본 3)
+
+    규칙:
+    - 모든 팀쌍이 맞대결. 각 매치 = (팀A 2명) vs (팀B 2명) 복식.
+    - 각 선수 출전 횟수를 추적해 max_games_per_player를 초과하지 않음.
+    - 출전 횟수가 적은 선수를 우선 투입(균등). 인원 사정상 일부는 2경기만 뛸 수 있음.
+    - 페어는 같은 성별끼리 우선 묶고, 팀A페어 vs 팀B페어도 성별 구성을 맞춰
+      잡복(남3여1·남1여3)을 최소화.
     """
     all_results = []
     all_stats   = {}
@@ -1597,35 +1604,107 @@ def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None):
             return team_labels[i]
         return f"팀{i+1}"
 
+    # 출전 횟수 추적
+    game_counts = {}
+    for t in teams:
+        for p in t:
+            game_counts[base_name(p)] = 0
+
+    def _avail(team):
+        """아직 max 미만으로 출전 가능한 선수만 (출전 적은 순 + 랜덤)."""
+        cand = [p for p in team if game_counts[base_name(p)] < max_games_per_player]
+        random.shuffle(cand)
+        cand.sort(key=lambda p: game_counts[base_name(p)])
+        return cand
+
+    def _make_pairs(players):
+        """
+        같은 성별끼리 우선 묶어 페어(2명) 리스트 생성.
+        남자끼리, 여자끼리 먼저 페어링 → 남은 1명씩만 혼합.
+        반환: [(p1,p2), ...]
+        """
+        men   = [p for p in players if get_gender(p) == "M"]
+        women = [p for p in players if get_gender(p) == "W"]
+        others= [p for p in players if get_gender(p) not in ("M", "W")]
+        pairs = []
+        for grp in (men, women):
+            i = 0
+            while i + 1 < len(grp):
+                pairs.append((grp[i], grp[i+1]))
+                i += 2
+            if i < len(grp):
+                others.append(grp[i])  # 짝 없는 1명은 others로
+        # 남은 인원(혼성 또는 미상) 2명씩
+        i = 0
+        while i + 1 < len(others):
+            pairs.append((others[i], others[i+1]))
+            i += 2
+        return pairs
+
+    def _pair_gender(pair):
+        gs = {get_gender(pair[0]), get_gender(pair[1])}
+        if gs == {"M"}: return "MM"
+        if gs == {"W"}: return "WW"
+        return "MX"  # 혼합/기타
+
     for r in range(1, num_rounds + 1):
         rname = f"{r}R"
         for ti in range(n):
             for tj in range(ti + 1, n):
-                team_a = list(teams[ti])
-                team_b = list(teams[tj])
-                if len(team_a) < 2 or len(team_b) < 2:
+                a_avail = _avail(teams[ti])
+                b_avail = _avail(teams[tj])
+                if len(a_avail) < 2 or len(b_avail) < 2:
                     continue
                 vs_label = f"{_label(ti)} vs {_label(tj)}"
 
-                a_shuf = team_a[:]; b_shuf = team_b[:]
-                random.shuffle(a_shuf); random.shuffle(b_shuf)
+                a_pairs = _make_pairs(a_avail)
+                b_pairs = _make_pairs(b_avail)
+                if not a_pairs or not b_pairs:
+                    continue
 
-                a_pairs = [tuple(a_shuf[k:k+2]) for k in range(0, len(a_shuf) - 1, 2)]
-                b_pairs = [tuple(b_shuf[k:k+2]) for k in range(0, len(b_shuf) - 1, 2)]
-                num_matches = min(len(a_pairs), len(b_pairs))
+                # 성별 구성이 같은 페어끼리 매칭해 잡복 최소화
+                # (MM↔MM=남복, WW↔WW=여복, MX↔MX=혼복)
+                b_by_g = {"MM": [], "WW": [], "MX": []}
+                for bp in b_pairs:
+                    b_by_g[_pair_gender(bp)].append(bp)
 
-                for mi in range(num_matches):
-                    t1 = a_pairs[mi]
-                    t2 = b_pairs[mi]
-                    mt = classify_match([base_name(p) for p in list(t1) + list(t2)])
-                    update_stats(all_stats, t1, t2, mt, rname, vs_label)
+                num_possible = min(len(a_pairs), len(b_pairs))
+                used_matches = 0
+
+                for ap in a_pairs:
+                    if used_matches >= num_possible:
+                        break
+                    ag = _pair_gender(ap)
+                    # 같은 성별 구성 우선, 없으면 아무 페어
+                    bp = None
+                    if b_by_g[ag]:
+                        bp = b_by_g[ag].pop()
+                    else:
+                        for g2 in ("MM", "WW", "MX"):
+                            if b_by_g[g2]:
+                                bp = b_by_g[g2].pop()
+                                break
+                    if bp is None:
+                        break
+
+                    # 출전 가능 재확인(이미 이 라운드 다른 매치서 찼을 수 있음)
+                    quartet = list(ap) + list(bp)
+                    if any(game_counts[base_name(p)] >= max_games_per_player for p in quartet):
+                        continue
+
+                    mt = classify_match([base_name(p) for p in quartet])
+                    for p in quartet:
+                        game_counts[base_name(p)] += 1
+                    update_stats(all_stats, ap, bp, mt, rname, vs_label)
                     all_results.append({
                         "round":  rname,
                         "league": vs_label,
-                        "team1":  t1,
-                        "team2":  t2,
+                        "team1":  tuple(ap),
+                        "team2":  tuple(bp),
                         "type":   mt,
                     })
+                    used_matches += 1
+
     return all_results, all_stats
 
 
@@ -2163,7 +2242,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.7", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.9", page_icon="🎾", layout="wide")
 
 
 
@@ -4042,7 +4121,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.7")
+st.sidebar.caption("v5.9")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5912,7 +5991,7 @@ function showMsg() {{
 
         with st.expander("📖 사용 방법 및 규칙 안내"):
             st.markdown("""
-### v5.7 기능 안내
+### v5.9 기능 안내
 
 | 항목 | 내용 |
 |------|------|
@@ -6204,7 +6283,7 @@ elif page == "👥 회원명부":
 
 
 # ========================================================================
-# 16. 페이지: 이벤트 팀편성 (v5.8)
+# 16. 페이지: 이벤트 팀편성 (v5.9)
 # ========================================================================
 elif page == "🎯 이벤트 팀편성":
     st.markdown("""
@@ -6325,15 +6404,40 @@ elif page == "🎯 이벤트 팀편성":
 
     _balance_method = st.radio(
         "팀 균형 방식",
-        ["등급 균등분배 (뱀방식)", "등급 합산 균등", "나이순 분배 (뱀방식)", "OB/YB 2팀 대결"],
+        ["등급 균등분배 (뱀방식)", "등급 합산 균등", "OB/YB 2팀 대결"],
         horizontal=True,
-        help=(
-            "등급 뱀방식: 등급 1→N→1 순 배정 (팀 실력 균등). "
-            "등급 합산: 팀 등급 합이 비슷하게. "
-            "나이순 분배: 나이 많은 순으로 1→N→1 배정 (각 팀 연령 균등). "
-            "OB/YB 2팀: 나이 기준으로 OB(연장자)팀 vs YB(연소자)팀 자동 분할."
-        )
     )
+
+    # 팀 편성 방식 상세 설명
+    with st.expander("ℹ️ 팀 편성 방식 설명", expanded=False):
+        st.markdown("""
+**🐍 등급 균등분배 (뱀방식)** — 가장 추천하는 방식
+
+각 팀의 평균 실력을 최대한 비슷하게 맞추는 방법입니다. 작동 순서는 다음과 같습니다.
+
+1. 참가자 전원을 **등급 순으로 정렬**합니다 (1등급 → 5등급, 같은 등급은 이름순).
+2. 정렬된 순서대로 팀에 **지그재그(뱀이 기어가듯)**로 한 명씩 배정합니다.
+   - 예) 4팀일 때: 팀1 → 팀2 → 팀3 → 팀4 → (방향 전환) → 팀4 → 팀3 → 팀2 → 팀1 → (다시 전환) → 팀1 → …
+3. 이렇게 하면 각 팀이 **상위 등급과 하위 등급을 골고루** 나눠 갖게 되어,
+   특정 팀에 고수만 몰리거나 초보만 몰리는 현상을 막아줍니다.
+
+> 💡 단순히 순서대로(팀1에 1·2등급, 팀2에 4·5등급) 나누면 팀 실력이 한쪽으로 쏠리는데,
+> 뱀방식은 배정 방향을 번갈아 뒤집어서 이 쏠림을 상쇄합니다. 팀 수가 많아도 균형이 잘 맞습니다.
+
+---
+
+**➕ 등급 합산 균등**
+
+각 팀의 **등급 숫자 합계**가 비슷해지도록, 참가자를 한 명씩 "현재 합계가 가장 낮은 팀"에 넣는 방식입니다.
+인원이 팀마다 약간 달라질 수 있지만 팀별 실력 총합은 매우 균등해집니다.
+
+---
+
+**⚔️ OB/YB 2팀 대결**
+
+나이(생년) 기준으로 연장자(OB) 팀과 연소자(YB) 팀, 두 팀으로 나눠 맞대결시키는 방식입니다.
+세대 대항전 같은 이벤트에 적합합니다.
+""")
 
     _is_obyb = (_balance_method == "OB/YB 2팀 대결")
 
@@ -6348,7 +6452,7 @@ elif page == "🎯 이벤트 팀편성":
                                           help="기본 2팀.")
     with _tc2:
         _include_ungraded = st.checkbox("미지정 등급 포함", value=True,
-                                         help="등급 미지정 회원도 포함. 나이/OB·YB 방식에선 등급과 무관하게 항상 포함 권장.")
+                                         help="등급 미지정 회원도 포함. OB·YB 방식에선 등급과 무관하게 항상 포함 권장.")
     with _tc3:
         if _is_obyb:
             _obyb_split = st.radio(
@@ -6358,7 +6462,7 @@ elif page == "🎯 이벤트 팀편성":
                 help="인원 균등: 나이순 정렬 후 절반씩. 기준 나이: 특정 출생연도 기준으로 나눔."
             )
         else:
-            st.caption("등급/나이 정보가 비어있는 회원은 중간값으로 처리됩니다.")
+            st.caption("등급 정보가 비어있는 회원은 3등급으로 처리됩니다.")
             _obyb_split = None
 
     # OB/YB 기준 나이 입력
@@ -6486,19 +6590,6 @@ elif page == "🎯 이벤트 팀편성":
                 _yb = _parts[_half:]
             _teams = [_ob, _yb]
             _team_labels = ["OB팀", "YB팀"]
-
-        elif _balance_method == "나이순 분배 (뱀방식)":
-            # 나이 많은 순 정렬 후 스네이크 배정 → 각 팀 연령 균등
-            _parts.sort(key=lambda x: (x["_birth"], x["name"]))
-            _fwd = True; _ti = 0
-            for _p in _parts:
-                _teams[_ti].append(_p)
-                if _fwd:
-                    _ti += 1
-                    if _ti >= _n_teams: _ti = _n_teams - 1; _fwd = False
-                else:
-                    _ti -= 1
-                    if _ti < 0: _ti = 0; _fwd = True
 
         elif "뱀방식" in _balance_method:
             # 등급 뱀방식
@@ -6630,8 +6721,10 @@ elif page == "🎯 이벤트 팀편성":
         st.markdown("---")
         st.markdown("### 📋 대진표 생성 연동")
         st.info("팀 편성 결과로 **팀 대결 대진표**를 만듭니다. "
-                "각 매치는 (한 팀 2명) vs (상대 팀 2명) 복식으로 구성되며, "
-                "모든 팀 조합이 맞붙습니다. 스코어보드에서 점수를 입력할 수 있습니다.")
+                "각 매치는 (한 팀 2명) vs (상대 팀 2명) 복식이며, 모든 팀 조합이 맞붙습니다. "
+                "**선수당 최대 3경기**까지만 배정되며(경기 시간 고려), "
+                "인원 사정에 따라 일부 선수는 2경기만 뛸 수 있습니다. "
+                "잡복(남3여1 등)은 자동으로 최소화됩니다.")
 
         _ev_c1, _ev_c2 = st.columns([1, 2])
         with _ev_c1:
@@ -6639,8 +6732,13 @@ elif page == "🎯 이벤트 팀편성":
                 value=date.today().strftime("%Y-%m-%d"), key="ev_rp_date")
             _ev_rp_num  = st.text_input("일련번호", value="001", key="ev_rp_num")
         with _ev_c2:
-            _ev_rounds = st.number_input("라운드 수 (각 팀쌍 반복 횟수)",
-                min_value=1, max_value=5, value=3, step=1, key="ev_rounds")
+            _ev_max_games = st.number_input(
+                "선수당 최대 출전 경기 수",
+                min_value=1, max_value=5, value=3, step=1, key="ev_max_games",
+                help="기본 3경기. 경기 시간이 부족하면 줄이세요. "
+                     "인원이 적으면 이 한도 내에서 자동 조정되어 2경기만 뛰는 선수가 생길 수 있습니다.")
+            # 팀쌍 반복 라운드는 넉넉히 잡아두고, 실제 배정은 출전 한도로 제한
+            _ev_rounds = 5
 
         if st.button("🏸 이 팀으로 대진표 생성", type="primary", key="ev_gen_schedule"):
             if not is_logged_in():
@@ -6676,7 +6774,8 @@ elif page == "🎯 이벤트 팀편성":
                     with st.spinner("팀 대결 대진표 생성 중…"):
                         _ev_sched, _ev_stats = generate_event_team_vs_team(
                             _ev_team_codes, num_rounds=int(_ev_rounds),
-                            team_labels=_ev_labels)
+                            team_labels=_ev_labels,
+                            max_games_per_player=int(_ev_max_games))
 
                     if not _ev_sched:
                         st.error("대진표를 생성할 수 없습니다. 팀 인원을 확인해주세요.")
@@ -6689,9 +6788,23 @@ elif page == "🎯 이벤트 팀편성":
                             "sb_is_locked": False,
                             "_event_schedule_ready": True,
                         })
+                        # 출전 횟수 분포 집계 (안내용)
+                        _gc_count = {}
+                        for _m in _ev_sched:
+                            for _p in list(_m["team1"]) + list(_m["team2"]):
+                                _nm = base_name(_p)
+                                _gc_count[_nm] = _gc_count.get(_nm, 0) + 1
+                        _dist = {}
+                        for _v in _gc_count.values():
+                            _dist[_v] = _dist.get(_v, 0) + 1
+                        # 잡복 수 집계
+                        _jab = sum(1 for _m in _ev_sched if _m.get("type") == "잡복")
+                        _dist_str = ", ".join(f"{k}경기 {v}명" for k, v in sorted(_dist.items(), reverse=True))
+
                         st.success(
                             f"✅ 팀 대결 대진표 **{_ev_key}** 생성·저장 완료!\n\n"
                             f"👈 왼쪽 메뉴에서 **📊 스코어보드** 또는 **📋 대진표생성**을 선택하면 "
                             f"바로 확인하고 점수를 입력할 수 있습니다."
                         )
+                        st.caption(f"📊 총 {len(_ev_sched)}경기 · 출전 분포: {_dist_str} · 잡복 {_jab}경기")
                         st.balloons()
