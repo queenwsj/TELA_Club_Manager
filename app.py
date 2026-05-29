@@ -4312,35 +4312,40 @@ elif page == "📋 대진표생성":
                     st.info(f"{lg}에 배정된 회원이 없습니다.")
                     continue
 
-                # 경기 날짜: 현재 선택된 날짜 키에서 추출 (없으면 오늘)
+                # 경기 날짜: 사이드바 날짜 입력값 또는 저장된 rp_key에서 추출 (없으면 오늘)
                 try:
-                    _game_date_str = st.session_state.get("rp_date_inp", "")
-                    _game_date = date.fromisoformat(_game_date_str[:10]) if _game_date_str else date.today()
+                    _rp_date_str = st.session_state.get("rp_date", "")
+                    if not _rp_date_str:
+                        # rp_key에서 날짜 파싱 (예: "2026-05-23(목)_001")
+                        _rp_key = st.session_state.get("rp_key", "")
+                        _rp_date_str = _rp_key[:10] if _rp_key else ""
+                    _game_date = date.fromisoformat(_rp_date_str[:10]) if _rp_date_str else date.today()
                 except Exception:
                     _game_date = date.today()
 
                 def _is_dorm(r, gd=_game_date):
                     """경기 날짜 기준으로 휴면 여부 판단.
-                    - dormant_period에 기간이 있으면 기간 내 경기 날짜 포함 여부로 판단
-                    - 기간 없이 category=휴면이면 휴면으로 처리
+                    - dormant_period 기간이 있으면 기간 내 경기 날짜 포함 여부로만 판단
+                    - dormant_period 없고 category=휴면이면 휴면 처리 (레거시 호환)
                     """
                     _dp = str(r.get("dormant_period","")).strip()
                     if _dp:
+                        # 기간이 등록된 경우 → 기간 안에 경기일이 있을 때만 휴면
                         for _p in parse_dormant_periods(_dp):
-                            _start = _p.get("start")
-                            _end   = _p.get("end")
+                            _start = (_p.get("start") or "").strip()
+                            _end   = (_p.get("end")   or "").strip()
                             try:
                                 _sd = date.fromisoformat(_start) if _start else None
                                 _ed = date.fromisoformat(_end)   if _end   else None
-                                # 시작일 이후, 종료일 이전(또는 미종료)이면 휴면
-                                after_start  = (_sd is None) or (gd >= _sd)
-                                before_end   = (_ed is None) or (gd <= _ed)
+                                after_start = (_sd is None) or (gd >= _sd)
+                                before_end  = (_ed is None) or (gd <= _ed)
                                 if after_start and before_end:
                                     return True
                             except (ValueError, TypeError):
                                 continue
-                        return False  # 기간 있지만 해당 없으면 정상
-                    # dormant_period 없고 category가 휴면이면 휴면
+                        # 기간이 있지만 경기일이 어느 기간에도 해당 없으면 정상 참가
+                        return False
+                    # dormant_period 없을 때만 category로 판단
                     return r.get("category") == "휴면"
 
                 normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
