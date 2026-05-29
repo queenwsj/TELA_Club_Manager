@@ -471,19 +471,39 @@ def shelf_save(date_key: str, schedule: list, scores: dict,
         st.session_state.setdefault("_gsheet_errors", []).append(
             f"schedules 저장 예외 (key={date_key}): {_e}")
 
+def _is_valid_loaded(val: dict) -> bool:
+    """로드된 데이터가 정상인지 검증 (컬럼 밀림 손상 감지)."""
+    if not val or not isinstance(val, dict):
+        return False
+    sched = val.get("schedule", [])
+    if not sched:
+        return False
+    # round 값이 1R/2R 같은 정상 형태인지, team이 2명인지 확인
+    for m in sched:
+        rnd = str(m.get("round", ""))
+        t1  = m.get("team1", [])
+        t2  = m.get("team2", [])
+        # round가 순수 숫자(0,1,2…)면 손상 (정상은 "1R","2R","4R(이벤트)")
+        if rnd.isdigit():
+            return False
+        if len(t1) < 2 or len(t2) < 2:
+            return False
+    return True
+
 def shelf_load(date_key: str) -> Optional[dict]:
     # ① 로컬 shelve 우선
     with shelve.open(SHELF_PATH) as db:
         val = db.get(date_key, None)
-    if val is not None:
+    if val is not None and _is_valid_loaded(val):
         return val
-    # ② 없으면 구글시트에서 복원 (재시작 후)
+    # ② 로컬에 없거나 손상됐으면 구글시트에서 재로드
     try:
         val = _gsheet_sched_load(date_key)
-        if val:
-            # 로컬 캐시에 다시 저장
+        if val and _is_valid_loaded(val):
             with shelve.open(SHELF_PATH) as db:
                 db[date_key] = val
+            return val
+        # 구글시트 데이터도 손상이면 그대로 반환 (없는 것보다 나음)
         return val
     except Exception:
         return None
@@ -543,37 +563,42 @@ def _get_schedules_sheet():
 
 def _gsheet_sched_save(date_key: str, schedule: list, scores: dict,
                        is_fully_random: bool, is_locked: bool = False):
-    """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입."""
+    """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입.
+    실제 시트 헤더 순서에 맞춰 저장 (헤더-데이터 컬럼 불일치 방지)."""
     ws = _get_schedules_sheet()
     if ws is None:
         st.session_state.setdefault("_gsheet_errors", []).append(
             f"schedules sheet 연결 실패 (key={date_key})")
         return
-    # 기존 행 삭제
     all_rows = ws.get_all_values()
+    # 실제 헤더 순서 확인 (없으면 SCHED_COLS 기본)
+    headers = all_rows[0] if all_rows else SCHED_COLS
+    # 기존 date_key 행 삭제
     del_rows = [i+1 for i, row in enumerate(all_rows)
                 if i > 0 and len(row) > 0 and row[0] == date_key]
     for ri in sorted(del_rows, reverse=True):
         ws.delete_rows(ri)
-    # 새 행 생성
+    # 새 행 생성 — 각 경기를 dict로 만든 뒤 헤더 순서대로 정렬
     new_rows = []
     for idx, match in enumerate(schedule):
         sc  = scores.get(str(idx), {})
-        new_rows.append([
-            date_key,
-            "1" if is_fully_random else "0",
-            "1" if is_locked else "0",
-            str(idx),
-            str(match.get("round", "")),
-            str(match.get("league", "")),
-            "|".join(str(p) for p in match.get("team1", [])),
-            "|".join(str(p) for p in match.get("team2", [])),
-            str(match.get("type", "")),
-            ",".join(str(p) for p in match.get("exclude_players", [])),
-            str(sc.get("score1", "")) if sc else "",
-            str(sc.get("score2", "")) if sc else "",
-            "1" if sc.get("is_dup", False) else "0",
-        ])
+        rowmap = {
+            "date_key":        date_key,
+            "is_fully_random": "1" if is_fully_random else "0",
+            "is_locked":       "1" if is_locked else "0",
+            "match_idx":       str(idx),
+            "round":           str(match.get("round", "")),
+            "league":          str(match.get("league", "")),
+            "team1":           "|".join(str(p) for p in match.get("team1", [])),
+            "team2":           "|".join(str(p) for p in match.get("team2", [])),
+            "type":            str(match.get("type", "")),
+            "exclude_players": ",".join(str(p) for p in match.get("exclude_players", [])),
+            "score1":          str(sc.get("score1", "")) if sc else "",
+            "score2":          str(sc.get("score2", "")) if sc else "",
+            "is_dup":          "1" if sc.get("is_dup", False) else "0",
+        }
+        # 실제 헤더 순서대로 값 배열 구성
+        new_rows.append([rowmap.get(h, "") for h in headers])
     if new_rows:
         ws.append_rows(new_rows, value_input_option="USER_ENTERED")
 
