@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.4
+TELA CLUB Random Match Generator v5.5
 버전 이력: CHANGELOG.md 참고
 """
 
@@ -1932,7 +1932,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.4", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.5", page_icon="🎾", layout="wide")
 
 # 앱 시작 시 구글시트 → 로컬 shelve 복원 (재시작 후 데이터 유지)
 _restore_shelf_from_gsheet()
@@ -3687,7 +3687,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.4")
+st.sidebar.caption("v5.5")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -4312,16 +4312,36 @@ elif page == "📋 대진표생성":
                     st.info(f"{lg}에 배정된 회원이 없습니다.")
                     continue
 
-                def _is_dorm(r):
-                    if r.get("category") == "휴면": return True
+                # 경기 날짜: 현재 선택된 날짜 키에서 추출 (없으면 오늘)
+                try:
+                    _game_date_str = st.session_state.get("rp_date_inp", "")
+                    _game_date = date.fromisoformat(_game_date_str[:10]) if _game_date_str else date.today()
+                except Exception:
+                    _game_date = date.today()
+
+                def _is_dorm(r, gd=_game_date):
+                    """경기 날짜 기준으로 휴면 여부 판단.
+                    - dormant_period에 기간이 있으면 기간 내 경기 날짜 포함 여부로 판단
+                    - 기간 없이 category=휴면이면 휴면으로 처리
+                    """
                     _dp = str(r.get("dormant_period","")).strip()
-                    if not _dp: return False
-                    if "~" in _dp:
-                        _e = _dp.split("~")[-1].strip()
-                        if not _e: return True
-                        try: return date.fromisoformat(_e[:10]) >= date.today()
-                        except ValueError: pass
-                    return True
+                    if _dp:
+                        for _p in parse_dormant_periods(_dp):
+                            _start = _p.get("start")
+                            _end   = _p.get("end")
+                            try:
+                                _sd = date.fromisoformat(_start) if _start else None
+                                _ed = date.fromisoformat(_end)   if _end   else None
+                                # 시작일 이후, 종료일 이전(또는 미종료)이면 휴면
+                                after_start  = (_sd is None) or (gd >= _sd)
+                                before_end   = (_ed is None) or (gd <= _ed)
+                                if after_start and before_end:
+                                    return True
+                            except (ValueError, TypeError):
+                                continue
+                        return False  # 기간 있지만 해당 없으면 정상
+                    # dormant_period 없고 category가 휴면이면 휴면
+                    return r.get("category") == "휴면"
 
                 normal_df  = lg_df[~lg_df.apply(_is_dorm, axis=1)]
                 dormant_df = lg_df[lg_df.apply(_is_dorm, axis=1)]
@@ -4763,7 +4783,10 @@ elif page == "📋 대진표생성":
                     if _dup_warn:
                         st.warning("⚠️ 4명 모두 달라야 합니다. 중복 선수가 있습니다.")
 
-                    # 적용 버튼 + 메시지 같은 줄 배치
+                    # 적용 성공 메시지 (이전 rerun에서 저장된 것)
+                    if st.session_state.get("_adj_success_msg"):
+                        st.success(st.session_state.pop("_adj_success_msg"))
+                    # 적용 버튼
                     _btn_col, _msg_col = st.columns([2, 6])
                     if _btn_col.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
                                        disabled=_dup_warn):
@@ -4807,7 +4830,7 @@ elif page == "📋 대진표생성":
                             pass
 
                         _excl_msg = f" (제외: {', '.join(_new_excl)})" if _new_excl else ""
-                        _msg_col.success(f"✅ #{_sel_mi+1} 적용 완료{_excl_msg}")
+                        st.session_state["_adj_success_msg"] = f"✅ #{_sel_mi+1} 적용 완료{_excl_msg}"
                         st.rerun()
 
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
@@ -5130,6 +5153,9 @@ function showMsg() {{
 
                         _d2 = len({_t1a2,_t1b2,_t2a2,_t2b2}) < 4
                         if _d2: st.warning("⚠️ 4명 모두 달라야 합니다.")
+                        # 적용 성공 메시지 (이전 rerun에서 저장된 것)
+                        if st.session_state.get("_adj_success_msg"):
+                            st.success(st.session_state.pop("_adj_success_msg"))
                         _btn2_col, _msg2_col = st.columns([2, 6])
                         if _btn2_col.button("✅ 페어 적용", type="primary",
                                             key=f"adj2_apply_{_sel_mi2}", disabled=_d2):
@@ -5167,7 +5193,7 @@ function showMsg() {{
                                 pass
 
                             _excl_msg2 = f" (제외: {', '.join(_new_excl2)})" if _new_excl2 else ""
-                            _msg2_col.success(f"✅ #{_sel_mi2+1} 적용 완료{_excl_msg2}")
+                            st.session_state["_adj_success_msg"] = f"✅ #{_sel_mi2+1} 적용 완료{_excl_msg2}"
                             st.rerun()
             with tab2:
                 st.subheader("선수별 출전 현황")
@@ -5391,7 +5417,7 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.4 기능 안내
+                ### v5.5 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
