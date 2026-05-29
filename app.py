@@ -4954,7 +4954,7 @@ elif page == "📋 대진표생성":
                                 if _pb not in [base_name(x) for x in _lg_players_all]:
                                     _lg_players_all.append(_p)
 
-                    _player_labels = {base_name(p): display_name(p) for p in _lg_players_all}
+                    _player_labels = {base_name(p): display_name(p).replace("(중복)","").strip() for p in _lg_players_all}
 
                     st.markdown("**팀 재구성 + 기록실 제외 설정**")
                     st.caption("선수를 선택하고 '기록 제외' 체크박스로 개인별 기록 제외 여부를 설정하세요.")
@@ -5357,7 +5357,7 @@ function showMsg() {{
                                 for _p3 in list(_m3["team1"]) + list(_m3["team2"]):
                                     if base_name(_p3) not in [base_name(x) for x in _lp2_all]:
                                         _lp2_all.append(_p3)
-                        _pl2 = {base_name(p): display_name(p) for p in _lp2_all}
+                        _pl2 = {base_name(p): display_name(p).replace("(중복)","").strip() for p in _lp2_all}
                         _keys2 = list(_pl2.keys())
                         def _idx2(code):
                             k = base_name(code)
