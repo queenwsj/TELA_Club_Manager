@@ -518,14 +518,27 @@ def _get_schedules_sheet():
     """schedules 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
     try:
         wb = _get_gsheet_connection()
-        try:
-            return wb.worksheet(SCHEDULES_SHEET_NAME)
-        except Exception:
-            ws = wb.add_worksheet(title=SCHEDULES_SHEET_NAME, rows=5000, cols=len(SCHED_COLS))
-            ws.append_row(SCHED_COLS)
-            return ws
     except Exception:
         return None
+    try:
+        ws = wb.worksheet(SCHEDULES_SHEET_NAME)
+    except Exception:
+        try:
+            ws = wb.add_worksheet(title=SCHEDULES_SHEET_NAME, rows=5000, cols=len(SCHED_COLS))
+            ws.append_row(SCHED_COLS)
+        except Exception:
+            return None
+        return ws
+    # 헤더 마이그레이션: 신규 컬럼(is_locked 등) 없으면 추가
+    try:
+        headers = ws.row_values(1)
+        for col in SCHED_COLS:
+            if col not in headers:
+                ws.update_cell(1, len(headers) + 1, col)
+                headers.append(col)
+    except Exception:
+        pass
+    return ws
 
 
 def _gsheet_sched_save(date_key: str, schedule: list, scores: dict,
@@ -566,15 +579,62 @@ def _gsheet_sched_save(date_key: str, schedule: list, scores: dict,
 
 
 def _gsheet_sched_load(date_key: str) -> Optional[dict]:
-    """구글시트에서 특정 date_key 로드."""
+    """구글시트에서 특정 date_key 로드. 헤더 기반 파싱으로 컬럼 순서 변경에 강건."""
     ws = _get_schedules_sheet()
     if ws is None:
         return None
-    all_rows = ws.get_all_records()
-    rows = [r for r in all_rows if str(r.get("date_key","")) == date_key]
-    if not rows:
+    try:
+        all_vals = ws.get_all_values()
+    except Exception:
         return None
-    rows = sorted(rows, key=lambda r: int(r.get("match_idx", 0)))
+    if not all_vals:
+        return None
+    headers = all_vals[0]
+    # 헤더 → 인덱스 매핑
+    def _col(name, default=""):
+        try:
+            i = headers.index(name)
+            return lambda row: row[i] if i < len(row) else default
+        except ValueError:
+            return lambda row: default
+    _dk   = _col("date_key")
+    _ifr  = _col("is_fully_random","0")
+    _ilk  = _col("is_locked","0")
+    _midx = _col("match_idx","0")
+    _rnd  = _col("round")
+    _lg   = _col("league")
+    _t1   = _col("team1")
+    _t2   = _col("team2")
+    _tp   = _col("type")
+    _ep   = _col("exclude_players")
+    _s1   = _col("score1")
+    _s2   = _col("score2")
+    _idup = _col("is_dup","0")
+
+    data_rows = [row for row in all_vals[1:] if len(row) > 0 and _dk(row) == date_key]
+    if not data_rows:
+        return None
+    try:
+        data_rows = sorted(data_rows, key=lambda r: int(_midx(r) or 0))
+    except Exception:
+        pass
+    rows = []
+    for row in data_rows:
+        rows.append({
+            "date_key":        _dk(row),
+            "is_fully_random": _ifr(row),
+            "is_locked":       _ilk(row),
+            "match_idx":       _midx(row),
+            "round":           _rnd(row),
+            "league":          _lg(row),
+            "team1":           _t1(row),
+            "team2":           _t2(row),
+            "type":            _tp(row),
+            "exclude_players": _ep(row),
+            "score1":          _s1(row),
+            "score2":          _s2(row),
+            "is_dup":          _idup(row),
+        })
     schedule = []
     scores   = {}
     is_fully_random = False
@@ -4038,6 +4098,8 @@ if page == "📊 스코어보드":
                 s2_saved  = sc.get("score2", 0)
                 is_dup_saved = sc.get("is_dup", False)
 
+                if len(match.get("team1",[])) < 2 or len(match.get("team2",[])) < 2:
+                    continue  # 파싱 오류로 팀 구성이 불완전한 경기 스킵
                 t1a = display_name(match["team1"][0]); t1b = display_name(match["team1"][1])
                 t2a = display_name(match["team2"][0]); t2b = display_name(match["team2"][1])
                 match_type = match["type"]
