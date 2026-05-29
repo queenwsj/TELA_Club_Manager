@@ -49,7 +49,187 @@ SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그
 RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
 EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
 SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 구글시트 탭명
-SETTINGS_SHEET_NAME  = "settings"                 # 앱 설정·계정·회원·게스트·제외 탭명
+GUESTS_SHEET_NAME  = "guests"   # 게스트 목록 탭
+EXCLUDE_SHEET_NAME = "exclude"  # 기록 제외 선수 탭
+USERS_SHEET_NAME   = "users"    # 계정 탭
+
+GUESTS_COLS  = ["name", "gender", "league", "code"]
+EXCLUDE_COLS = ["player_name"]
+USERS_COLS   = ["user_id", "pw_hash", "role", "name"]
+
+
+# ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
+
+def _get_tab(sheet_name: str, headers: list):
+    """범용 탭 getter. 없으면 자동 생성."""
+    try:
+        wb = _get_gsheet_connection()
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"{sheet_name} 탭: 연결 실패 → {_e}")
+        return None
+    try:
+        return wb.worksheet(sheet_name)
+    except Exception:
+        pass
+    try:
+        ws = wb.add_worksheet(title=sheet_name, rows=500, cols=len(headers))
+        ws.append_row(headers)
+        return ws
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"{sheet_name} 탭 생성 실패 → {_e}")
+        return None
+
+
+# ── guests 탭 ─────────────────────────────────────────────────
+
+def _gsheet_guests_save(guests: list):
+    """guests 탭 전체 덮어쓰기. 행 1개 = 게스트 1명."""
+    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
+    if ws is None:
+        return
+    try:
+        # 헤더 제외 기존 데이터 행 모두 삭제
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if guests:
+            rows = [[
+                str(g.get("name","")),
+                str(g.get("gender","")),
+                str(g.get("league","")),
+                str(g.get("code","")),
+            ] for g in guests]
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"guests 저장 오류 → {_e}")
+
+
+def _gsheet_guests_load() -> list:
+    """guests 탭에서 게스트 목록 로드."""
+    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
+    if ws is None:
+        return []
+    try:
+        return ws.get_all_records()
+    except Exception:
+        return []
+
+
+# ── exclude 탭 ────────────────────────────────────────────────
+
+def _gsheet_exclude_save(names: list):
+    """exclude 탭 전체 덮어쓰기. 행 1개 = 제외 선수 1명."""
+    ws = _get_tab(EXCLUDE_SHEET_NAME, EXCLUDE_COLS)
+    if ws is None:
+        return
+    try:
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if names:
+            ws.append_rows([[n] for n in sorted(set(names))],
+                           value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"exclude 저장 오류 → {_e}")
+
+
+def _gsheet_exclude_load() -> list:
+    """exclude 탭에서 제외 선수 목록 로드."""
+    ws = _get_tab(EXCLUDE_SHEET_NAME, EXCLUDE_COLS)
+    if ws is None:
+        return []
+    try:
+        rows = ws.get_all_records()
+        return [str(r.get("player_name","")).strip()
+                for r in rows if r.get("player_name","").strip()]
+    except Exception:
+        return []
+
+
+# ── users 탭 ──────────────────────────────────────────────────
+
+def _gsheet_users_save(users: dict):
+    """users 탭 전체 덮어쓰기. 행 1개 = 계정 1개."""
+    ws = _get_tab(USERS_SHEET_NAME, USERS_COLS)
+    if ws is None:
+        return
+    try:
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if users:
+            rows = [[
+                str(uid),
+                str(udata.get("pw_hash","")),
+                str(udata.get("role","")),
+                str(udata.get("name","")),
+            ] for uid, udata in users.items()]
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"users 저장 오류 → {_e}")
+
+
+def _gsheet_users_load() -> dict:
+    """users 탭에서 계정 목록 로드. {user_id: {pw_hash, role, name}}"""
+    ws = _get_tab(USERS_SHEET_NAME, USERS_COLS)
+    if ws is None:
+        return {}
+    try:
+        rows = ws.get_all_records()
+        return {
+            str(r["user_id"]): {
+                "pw_hash": str(r.get("pw_hash","")),
+                "role":    str(r.get("role","member")),
+                "name":    str(r.get("name","")),
+            }
+            for r in rows if r.get("user_id","")
+        }
+    except Exception:
+        return {}
+
+
+# ── 앱 시작 시 복원 ───────────────────────────────────────────
+
+def _settings_restore_all():
+    """앱 시작 시 구글시트 각 탭 → shelve 복원."""
+    # users
+    try:
+        with shelve.open(USER_PATH) as db:
+            has = "users" in db and bool(db.get("users"))
+        if not has:
+            val = _gsheet_users_load()
+            if val:
+                with shelve.open(USER_PATH) as db:
+                    db["users"] = val
+    except Exception:
+        pass
+    # guests
+    try:
+        with shelve.open(GUEST_PATH) as db:
+            has = "guests" in db and bool(db.get("guests"))
+        if not has:
+            val = _gsheet_guests_load()
+            if val:
+                with shelve.open(GUEST_PATH) as db:
+                    db["guests"] = val
+    except Exception:
+        pass
+    # exclude
+    try:
+        with shelve.open(EXCLUDE_PATH) as db:
+            has = "excluded" in db and bool(db.get("excluded"))
+        if not has:
+            val = _gsheet_exclude_load()
+            if val is not None:
+                with shelve.open(EXCLUDE_PATH) as db:
+                    db["excluded"] = val
+    except Exception:
+        pass
 # 컬럼 정의
 SCHED_COLS = [
     "date_key","is_fully_random",
@@ -112,7 +292,7 @@ def guest_save(guests: list):
         db["guests"] = guests
     # 구글시트 동기화
     try:
-        _settings_gsheet_set("guests", guests)
+        _gsheet_guests_save(guests)
     except Exception:
         pass
 
@@ -144,7 +324,7 @@ def user_save_all(data: dict):
         db["users"] = data
     # 구글시트 동기화
     try:
-        _settings_gsheet_set("users", data)
+        _gsheet_users_save(data)
     except Exception:
         pass
 
@@ -461,10 +641,13 @@ def _restore_shelf_from_gsheet():
         _get_schedules_sheet()
     except Exception:
         pass
-    try:
-        _get_settings_sheet()
-    except Exception:
-        pass
+    for _tn, _tc in [(GUESTS_SHEET_NAME, GUESTS_COLS),
+                     (EXCLUDE_SHEET_NAME, EXCLUDE_COLS),
+                     (USERS_SHEET_NAME, USERS_COLS)]:
+        try:
+            _get_tab(_tn, _tc)
+        except Exception:
+            pass
     # ② 대진표·점수 복원
     try:
         with shelve.open(SHELF_PATH) as db:
@@ -485,102 +668,6 @@ def _restore_shelf_from_gsheet():
 # 구글시트 settings 탭 — 범용 key-value 이중화
 # ============================================================
 # 구조: key | value (JSON 문자열)
-# key 예: "members", "users", "guests", "exclude"
-
-def _get_settings_sheet():
-    """settings 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
-    try:
-        wb = _get_gsheet_connection()
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"settings: gsheet 연결 실패 → {_e}")
-        return None
-    # 탭 있으면 반환
-    try:
-        return wb.worksheet(SETTINGS_SHEET_NAME)
-    except Exception:
-        pass
-    # 탭 없음 → 생성
-    try:
-        ws = wb.add_worksheet(title=SETTINGS_SHEET_NAME, rows=200, cols=2)
-        ws.append_row(["key", "value"])
-        return ws
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"settings 탭 생성 실패 → {_e}")
-        return None
-
-
-def _settings_gsheet_get(key: str):
-    """구글시트 settings 탭에서 key에 해당하는 값 로드. JSON 역직렬화."""
-    try:
-        ws = _get_settings_sheet()
-        if ws is None:
-            return None
-        rows = ws.get_all_values()
-        for row in rows[1:]:
-            if len(row) >= 2 and row[0] == key:
-                return json.loads(row[1])
-        return None
-    except Exception:
-        return None
-
-
-def _settings_gsheet_set(key: str, value):
-    """구글시트 settings 탭에 key-value 저장. 기존 행 교체."""
-    ws = _get_settings_sheet()
-    if ws is None:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"settings sheet 연결 실패 (key={key})")
-        return
-    try:
-        rows = ws.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if len(row) >= 1 and row[0] == key:
-                ws.update_cell(i, 2, json.dumps(value, ensure_ascii=False))
-                return
-        ws.append_row([key, json.dumps(value, ensure_ascii=False)])
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"settings 저장 오류 (key={key}): {_e}")
-
-
-def _settings_restore_all():
-    """앱 시작 시 구글시트 settings → 각 shelve 복원."""
-    # users
-    try:
-        with shelve.open(USER_PATH) as db:
-            has = "users" in db and bool(db.get("users"))
-        if not has:
-            val = _settings_gsheet_get("users")
-            if val:
-                with shelve.open(USER_PATH) as db:
-                    db["users"] = val
-    except Exception:
-        pass
-    # guests
-    try:
-        with shelve.open(GUEST_PATH) as db:
-            has = "guests" in db and bool(db.get("guests"))
-        if not has:
-            val = _settings_gsheet_get("guests")
-            if val:
-                with shelve.open(GUEST_PATH) as db:
-                    db["guests"] = val
-    except Exception:
-        pass
-    # exclude
-    try:
-        with shelve.open(EXCLUDE_PATH) as db:
-            has = "excluded" in db and bool(db.get("excluded"))
-        if not has:
-            val = _settings_gsheet_get("exclude")
-            if val is not None:
-                with shelve.open(EXCLUDE_PATH) as db:
-                    db["excluded"] = val
-    except Exception:
-        pass
-
 # [제거] ADMIN_PASSWORD: 어디서도 사용되지 않음.
 # 관리자 비밀번호는 RS_ADMIN_PASSWORD(섹션 R)로 별도 관리.
 
@@ -1700,7 +1787,7 @@ def exclude_list_save(names: list):
         db["excluded"] = sorted(list(set(names)))
     # 구글시트 동기화
     try:
-        _settings_gsheet_set("exclude", sorted(list(set(names))))
+        _gsheet_exclude_save(sorted(list(set(names))))
     except Exception:
         pass
 
