@@ -1988,10 +1988,13 @@ def _build_matches_df(schedule):
         "매치종류": d["type"],
     } for d in schedule])
 
-def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict, schedule=None):
+def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict, schedule=None, date_key=""):
     """대진표 탭 공통 렌더러."""
     import streamlit as _st
-    _st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
+    _title = f"경기 대진표 · {seed_label}  [{mode_label}]"
+    if date_key:
+        _title += f"  `{date_key}`"
+    _st.subheader(_title)
     lg_color_map = {lg: get_league_color(lg) for lg in active_lgs}
     def _hl(row):
         bg = ""
@@ -4923,7 +4926,7 @@ elif page == "📋 대진표생성":
         tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
 
         with tab1:
-            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players, schedule=schedule)
+            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players, schedule=schedule, date_key=rp_key_run)
 
             # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
             if is_admin():
@@ -5336,7 +5339,7 @@ function showMsg() {{
 
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
-                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r, schedule=schedule)
+                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r, schedule=schedule, date_key=rp_key_run)
                 # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
                 if is_admin():
                     with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
