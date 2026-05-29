@@ -1,6 +1,19 @@
 # CHANGELOG — TELA CLUB Random Match Generator
 
+---
 
+## v5.5 — 2026-05-29
+
+### 🔴 버그수정
+
+**페어 수동 조정 적용 메시지 불규칙 표시**
+- 원인: `st.success()` 직후 `st.rerun()`으로 메시지가 렌더링 전에 사라짐
+- 수정: `session_state["_adj_success_msg"]`에 저장 → rerun 후 표시 → 자동 삭제
+
+**휴면 시작 전 회원이 참가자 선택에서 차단되는 문제**
+- 원인: `category == "휴면"` 이면 날짜 무관하게 참가 차단
+- 수정: `parse_dormant_periods()`로 기간 파싱, 경기 날짜 기준으로 시작일~종료일 범위 내에 있을 때만 차단
+- 경기 날짜: 대진표 생성 날짜 입력값(`rp_date_inp`) 자동 참조
 
 ---
 
