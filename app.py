@@ -590,26 +590,30 @@ def _gsheet_sched_load(date_key: str) -> Optional[dict]:
     if not all_vals:
         return None
     headers = all_vals[0]
-    # 헤더 → 인덱스 매핑
-    def _col(name, default=""):
+
+    # 헤더 → 인덱스 매핑 헬퍼 (클로저 캡처 버그 방지: default 인자로 i 고정)
+    def _get_col(name, default=""):
         try:
-            i = headers.index(name)
-            return lambda row: row[i] if i < len(row) else default
+            idx = headers.index(name)
         except ValueError:
-            return lambda row: default
-    _dk   = _col("date_key")
-    _ifr  = _col("is_fully_random","0")
-    _ilk  = _col("is_locked","0")
-    _midx = _col("match_idx","0")
-    _rnd  = _col("round")
-    _lg   = _col("league")
-    _t1   = _col("team1")
-    _t2   = _col("team2")
-    _tp   = _col("type")
-    _ep   = _col("exclude_players")
-    _s1   = _col("score1")
-    _s2   = _col("score2")
-    _idup = _col("is_dup","0")
+            idx = -1
+        def _getter(row, _i=idx, _d=default):
+            return row[_i] if _i >= 0 and _i < len(row) else _d
+        return _getter
+
+    _dk   = _get_col("date_key")
+    _ifr  = _get_col("is_fully_random", "0")
+    _ilk  = _get_col("is_locked", "0")
+    _midx = _get_col("match_idx", "0")
+    _rnd  = _get_col("round")
+    _lg   = _get_col("league")
+    _t1   = _get_col("team1")
+    _t2   = _get_col("team2")
+    _tp   = _get_col("type")
+    _ep   = _get_col("exclude_players")
+    _s1   = _get_col("score1")
+    _s2   = _get_col("score2")
+    _idup = _get_col("is_dup", "0")
 
     data_rows = [row for row in all_vals[1:] if len(row) > 0 and _dk(row) == date_key]
     if not data_rows:
