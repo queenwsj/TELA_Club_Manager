@@ -184,7 +184,7 @@ def _gsheet_users_load() -> dict:
         return {
             str(r["user_id"]): {
                 "pw_hash": str(r.get("pw_hash","")),
-                "role":    str(r.get("role","member")),
+                "role":    str(r.get("role","sub_admin")),
                 "name":    str(r.get("name","")),
             }
             for r in rows if r.get("user_id","")
@@ -3223,7 +3223,7 @@ def render_roster_page():
             for uid, uinfo in list(all_users.items()):
                 ucols = st.columns([2, 2, 1, 1, 1])
                 ucols[0].write(uid)
-                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else ('부관리자' if uinfo.get('role')=='sub_admin' else '일반회원')})")
+                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else '부관리자'})")
                 # 비밀번호 변경
                 new_pw_key = f"chpw_{uid}"
                 new_pw = ucols[2].text_input("새PW", key=new_pw_key,
@@ -3250,7 +3250,7 @@ def render_roster_page():
             new_uid   = nc1.text_input("아이디", key="new_uid", label_visibility="collapsed", placeholder="아이디")
             new_upw   = nc2.text_input("비밀번호", key="new_upw", label_visibility="collapsed", placeholder="비밀번호")
             new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
-            new_urole = nc4.selectbox("권한", ["일반회원", "부관리자", "관리자"], key="new_urole", label_visibility="collapsed")
+            new_urole = nc4.selectbox("권한", ["부관리자", "관리자"], key="new_urole", label_visibility="collapsed")
             if nc5.button("➕ 추가", key="add_user_btn"):
                 import re as _re_uid
                 _uid_val = new_uid.strip()
@@ -3261,10 +3261,8 @@ def render_roster_page():
                     else:
                         if new_urole == "관리자":
                             role_val = "admin"
-                        elif new_urole == "부관리자":
-                            role_val = "sub_admin"
                         else:
-                            role_val = "member"
+                            role_val = "sub_admin"
                         ok = user_add(_uid_val, new_upw.strip(), role_val, new_uname.strip())
                         if ok:
                             st.success(f"계정 '{_uid_val}' 추가 완료")
@@ -3842,7 +3840,7 @@ if "app_user" not in st.session_state:
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
 _u = get_app_user()
 if _u:
-    role_label = "🔑 관리자" if _u["role"] == "admin" else ("🗝️ 부관리자" if _u["role"] == "sub_admin" else "👤 일반회원")
+    role_label = "🔑 관리자" if _u["role"] == "admin" else "🗝️ 부관리자"
     st.sidebar.markdown(
         f'<div style="background:#d1fae5;border-radius:8px;padding:8px 10px;'
         f'font-size:0.8rem;color:#065f46;font-weight:700;margin-bottom:6px;">'
@@ -4045,8 +4043,8 @@ if page == "📊 스코어보드":
         f'{disp_date} · {disp_num}</div>', unsafe_allow_html=True)
 
     # ── 점수 입력 UI ─────────────────────────────────────────
-    # 잠금 중이면 편집 불가
-    _can_edit = is_admin() and not _sb_locked
+    # 부관리자 이상 편집 가능, 잠금 중이면 불가
+    _can_edit = is_sub_admin() and not _sb_locked
 
     def _save_score(idx, s1, s2):
         """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
@@ -4904,16 +4902,17 @@ elif page == "📋 대진표생성":
             st.session_state["do_undo"] = True
 
         _has_prev = bool(st.session_state.get("prev_schedule"))
-        col_regen, col_undo, col_space = st.columns([1, 1, 3])
-        with col_regen:
-            st.button("🔄 다시 생성", type="secondary", use_container_width=True,
-                      on_click=_set_regen,
-                      help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)")
-        with col_undo:
-            st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
-                      on_click=_set_undo,
-                      disabled=not _has_prev,
-                      help="직전 대진표로 되돌립니다")
+        if is_admin():
+            col_regen, col_undo, col_space = st.columns([1, 1, 3])
+            with col_regen:
+                st.button("🔄 다시 생성", type="secondary", use_container_width=True,
+                          on_click=_set_regen,
+                          help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)")
+            with col_undo:
+                st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
+                          on_click=_set_undo,
+                          disabled=not _has_prev,
+                          help="직전 대진표로 되돌립니다")
 
         seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
 
@@ -5314,17 +5313,14 @@ function showMsg() {{
                 st.session_state["do_undo"] = True
 
             _has_prev2 = bool(st.session_state.get("prev_schedule"))
-            col_regen2, col_undo2, col_space2 = st.columns([1, 1, 3])
-            with col_regen2:
-                if is_admin():
+            if is_admin():
+                col_regen2, col_undo2, col_space2 = st.columns([1, 1, 3])
+                with col_regen2:
                     st.button("🔄 다시 생성", type="secondary", use_container_width=True,
                               on_click=_set_regen2,
                               help="사이드바 현재 날짜+번호로 새 대진표를 생성합니다",
                               key="regen2")
-                else:
-                    st.caption("🔒 대진표 수정은 관리자만 가능합니다.")
-            with col_undo2:
-                if is_admin():
+                with col_undo2:
                     st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
                               on_click=_set_undo2,
                               disabled=not _has_prev2,
@@ -5676,33 +5672,30 @@ function showMsg() {{
             else:
                 st.info("등록된 게스트가 없습니다.")
 
-        if not restored_schedule:
-            pass  # 안내는 항상 표시 (아래로 이동)
-
         with st.expander("📖 사용 방법 및 규칙 안내"):
-                st.markdown("""
-                ### v5.7 기능 안내
+            st.markdown("""
+### v5.7 기능 안내
 
-                | 항목 | 내용 |
-                |------|------|
-                | **회원 사전 등록** | 👥 회원 관리에서 리그별 회원 등록 후 체크박스로 선택 |
-                | **대진표 불러오기** | 📂 저장된 대진표 불러오기에서 날짜 선택 후 로드 |
-                | **페이지 복귀 유지** | 스코어보드↔대진표생성 이동해도 마지막 대진표 유지 |
-                | **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
-                | **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
-                | **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
-                | **카카오톡 복사** | 대진표를 카카오톡용 텍스트로 한 번에 복사 |
-                | **QR코드** | 앱 URL QR코드로 회원 공유 |
+| 항목 | 내용 |
+|------|------|
+| **회원 사전 등록** | 👥 회원 관리에서 리그별 회원 등록 후 체크박스로 선택 |
+| **대진표 불러오기** | 📂 저장된 대진표 불러오기에서 날짜 선택 후 로드 |
+| **페이지 복귀 유지** | 스코어보드↔대진표생성 이동해도 마지막 대진표 유지 |
+| **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
+| **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
+| **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
+| **카카오톡 복사** | 대진표를 카카오톡용 텍스트로 한 번에 복사 |
+| **QR코드** | 앱 URL QR코드로 회원 공유 |
 
-                ### 공통 출전 규칙
-                - 최소 3경기 보장 → 이벤트 라운드(4R)로 보충
-                - 최대 4경기 제한
+### 공통 출전 규칙
+- 최소 3경기 보장 → 이벤트 라운드(4R)로 보충
+- 최대 4경기 제한
 
-                ### 점수판
-                1. 대진표 생성 후 사이드바 **📊 스코어보드** 선택
-                2. 날짜+일련번호 입력 (대진표생성과 동일하게)
-                3. 각 경기 **💾 저장** 버튼 클릭 → 새로고침 후에도 유지
-                """)
+### 점수판
+1. 대진표 생성 후 사이드바 **📊 스코어보드** 선택
+2. 날짜+일련번호 입력 (대진표생성과 동일하게)
+3. 각 경기 **💾 저장** 버튼 클릭 → 새로고침 후에도 유지
+""")
 
 elif page == "🏆 기록실":
     st.markdown("## 🏆 기록실 (누적 통계)")
