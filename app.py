@@ -285,8 +285,9 @@ def shelf_save(date_key: str, schedule: list, scores: dict, is_fully_random: boo
     # ② 구글시트 schedules 탭 (영구 저장 — 재시작 후 복원용)
     try:
         _gsheet_sched_save(date_key, schedule, scores, is_fully_random)
-    except Exception:
-        pass
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"schedules 저장 예외 (key={date_key}): {_e}")
 
 def shelf_load(date_key: str) -> Optional[dict]:
     # ① 로컬 shelve 우선
@@ -349,6 +350,8 @@ def _gsheet_sched_save(date_key: str, schedule: list, scores: dict, is_fully_ran
     """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입."""
     ws = _get_schedules_sheet()
     if ws is None:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"schedules sheet 연결 실패 (key={date_key})")
         return
     # 기존 행 삭제
     all_rows = ws.get_all_values()
@@ -506,18 +509,21 @@ def _settings_gsheet_get(key: str):
 
 def _settings_gsheet_set(key: str, value):
     """구글시트 settings 탭에 key-value 저장. 기존 행 교체."""
+    ws = _get_settings_sheet()
+    if ws is None:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"settings sheet 연결 실패 (key={key})")
+        return
     try:
-        ws = _get_settings_sheet()
-        if ws is None:
-            return
         rows = ws.get_all_values()
         for i, row in enumerate(rows[1:], start=2):
             if len(row) >= 1 and row[0] == key:
                 ws.update_cell(i, 2, json.dumps(value, ensure_ascii=False))
                 return
         ws.append_row([key, json.dumps(value, ensure_ascii=False)])
-    except Exception:
-        pass
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"settings 저장 오류 (key={key}): {_e}")
 
 
 def _settings_restore_all():
@@ -3668,6 +3674,13 @@ st.sidebar.markdown("---")
 if page == "📊 스코어보드":
 
     st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
+    # 구글시트 동기화 오류 표시 (디버깅용, 관리자만)
+    if is_admin():
+        _errs = st.session_state.pop("_gsheet_errors", [])
+        if _errs:
+            with st.expander(f"⚠️ 구글시트 동기화 오류 {len(_errs)}건", expanded=True):
+                for _e in _errs:
+                    st.error(_e)
 
     today_str  = date.today().strftime("%Y-%m-%d")
     saved_keys = shelf_list_dates()
