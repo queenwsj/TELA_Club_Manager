@@ -2906,7 +2906,14 @@ def dialog_form(df, existing=None):
         else:
             # ── 카테고리 자동 결정 ──
             had_dormant = bool(dorm_str)
-            has_ongoing = had_dormant and any(not p["end"] for p in clean_dorm_list)
+            # 오늘 기준으로 실제 휴면 중인지 판단 (시작일 <= 오늘, 종료일 없거나 오늘 이후)
+            today_dt = date.today()
+            has_ongoing = had_dormant and any(
+                (not p["end"])
+                and (not p["start"] or date.fromisoformat(p["start"]) <= today_dt)
+                for p in clean_dorm_list
+                if p.get("start")
+            )
             if ld_str:
                 final_cat = "탈퇴"
             elif has_ongoing:
@@ -2934,6 +2941,8 @@ def dialog_form(df, existing=None):
                 "region":         region.strip(),
                 "memo":           memo.strip(),
                 "deleted_at":     "",
+                # league: 기존 값 보존 (수정 시 league가 지워지는 버그 방지)
+                "league":         existing.get("league", "") if existing else "",
             }
             with st.spinner("구글 시트에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None), action_detail=action_detail)
