@@ -331,21 +331,16 @@ def shelf_delete(date_key: str):
 
 # ── 구글시트 schedules 탭 헬퍼 ────────────────────────────────
 
-@st.cache_resource
 def _get_schedules_sheet():
-    """schedules 워크시트. 없으면 자동 생성."""
+    """schedules 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
     try:
         wb = _get_gsheet_connection()
         try:
-            ws = wb.worksheet(SCHEDULES_SHEET_NAME)
+            return wb.worksheet(SCHEDULES_SHEET_NAME)
         except Exception:
             ws = wb.add_worksheet(title=SCHEDULES_SHEET_NAME, rows=5000, cols=len(SCHED_COLS))
             ws.append_row(SCHED_COLS)
-        # 헤더 보정
-        headers = ws.row_values(1)
-        if not headers or headers[0] != "date_key":
-            ws.insert_row(SCHED_COLS, 1)
-        return ws
+            return ws
     except Exception:
         return None
 
@@ -480,20 +475,16 @@ def _restore_shelf_from_gsheet():
 # 구조: key | value (JSON 문자열)
 # key 예: "members", "users", "guests", "exclude"
 
-@st.cache_resource
 def _get_settings_sheet():
-    """settings 워크시트. 없으면 자동 생성."""
+    """settings 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
     try:
         wb = _get_gsheet_connection()
         try:
-            ws = wb.worksheet(SETTINGS_SHEET_NAME)
+            return wb.worksheet(SETTINGS_SHEET_NAME)
         except Exception:
             ws = wb.add_worksheet(title=SETTINGS_SHEET_NAME, rows=200, cols=2)
             ws.append_row(["key", "value"])
-        headers = ws.row_values(1)
-        if not headers or headers[0] != "key":
-            ws.insert_row(["key", "value"], 1)
-        return ws
+            return ws
     except Exception:
         return None
 
@@ -1494,22 +1485,17 @@ RECORDS_SHEET_NAME = "records"
 RECORDS_COLUMNS = ["date_key","year_month","year","player_key","display_name","league",
                    "wins","losses","pf","pa"]
 
-@st.cache_resource
 def _get_records_sheet():
-    """records 워크시트. 없으면 자동 생성."""
+    """records 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
     try:
         wb = _get_gsheet_connection()
         try:
-            ws = wb.worksheet(RECORDS_SHEET_NAME)
+            return wb.worksheet(RECORDS_SHEET_NAME)
         except Exception:
             ws = wb.add_worksheet(title=RECORDS_SHEET_NAME,
                                   rows=5000, cols=len(RECORDS_COLUMNS))
             ws.append_row(RECORDS_COLUMNS)
-        # 헤더 보정
-        headers = ws.row_values(1)
-        if not headers or headers[0] != "date_key":
-            ws.insert_row(RECORDS_COLUMNS, 1)
-        return ws
+            return ws
     except Exception:
         return None
 
@@ -2000,24 +1986,23 @@ if st.session_state.admin_authed and st.session_state.auth_time:
         st.toast("⏰ 관리자 세션이 만료되었습니다. 다시 인증해 주세요.", icon="🔒")
 
 # ── Google Sheets ─────────────────────────────────────────
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def _get_gsheet_connection():
-    """구글 시트 연결 객체만 캐싱 (API 호출 없음)."""
+    """구글 시트 연결 객체 캐싱 (1시간 TTL로 토큰 만료 방지)."""
     creds  = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=RS_SCOPES)
     client = gspread.authorize(creds)
     wb     = client.open_by_key(st.secrets["SHEET_ID"])
     return wb
 
-@st.cache_resource
 def get_audit_sheet():
-    """변경 이력 시트 (audit_log 탭). 없으면 자동 생성."""
+    """변경 이력 시트 (audit_log 탭). 매번 새 연결. 없으면 자동 생성."""
     wb = _get_gsheet_connection()
     try:
-        asheet = wb.worksheet("audit_log")
+        return wb.worksheet("audit_log")
     except gspread.exceptions.WorksheetNotFound:
         asheet = wb.add_worksheet(title="audit_log", rows=2000, cols=len(AUDIT_COLUMNS))
         asheet.insert_row(AUDIT_COLUMNS, 1)
-    return asheet
+        return asheet
 
 def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except."""
