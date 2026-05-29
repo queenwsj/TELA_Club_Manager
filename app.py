@@ -1,5 +1,24 @@
-"""TELA CLUB Random Match Generator v5.7"""
+"""
+TELA CLUB Random Match Generator v5.00
+======================================
+변경사항 (v4.01):
+  [버그수정] 완전 랜덤페어 여복 미출현 버그 수정
+      · 문제: 남자 10명 여자 5명 등 특정 비율에서 여복이 나오지 않음
+      · 원인: _build_jabbok_minimized_groups의 동점 후보 수집 방식이
+              dong_w=0인 조합만 동점으로 묶어 여복 선택 기회 원천 차단
+      · 수정: best_score + threshold(15점) 이내 모든 유효 조합을 candidates로
+              확장하여 여복/남복 그룹이 골고루 등장하도록 개선
 
+변경사항 (v4.00):
+  [1] 페어링 방식 선택 섹션 추가 (v3.01 내용 통합)
+      · 조건부 랜덤페어: 리그별 우선순위·쿼터 적용
+      · 완전 랜덤페어: 완전 무작위 (남성 vs 여성 대결 제한)
+  [2] 리그 수 변동 설정 기능 추가
+      · 1~5개 리그 자유 설정
+      · 리그명: A리그, B리그, C리그, D리그, E리그 순 자동 부여
+      · 리그별 독립적으로 우선순위(동성우선/혼복우선) 및 쿼터 설정
+      · 인원 입력 UI, 색상, 검증 리포트 모두 리그 수에 따라 동적 생성
+"""
 
 import streamlit as st
 import pandas as pd
@@ -18,11 +37,11 @@ from itertools import zip_longest
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 from datetime import date
 
-# ── 날짜 -> 요일 포함 문자열 헬퍼 ────────────────────────────
+# ── 날짜 → 요일 포함 문자열 헬퍼 ────────────────────────────
 _WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
 
 def _date_with_weekday(date_str: str) -> str:
-    """'2026-05-23' -> '2026-05-23(토)'. 파싱 실패 시 원본 반환."""
+    """'2026-05-23' → '2026-05-23(토)'. 파싱 실패 시 원본 반환."""
     try:
         from datetime import datetime as _dt
         d = _dt.strptime(date_str.strip()[:10], "%Y-%m-%d")
@@ -255,16 +274,6 @@ def is_admin() -> bool:
     u = get_app_user()
     return bool(u and u.get("role") == "admin")
 
-def is_sub_admin() -> bool:
-    """부관리자(sub_admin) 여부. 관리자도 True 반환(포함 관계)."""
-    u = get_app_user()
-    return bool(u and u.get("role") in ("admin", "sub_admin"))
-
-def is_sub_admin_only() -> bool:
-    """부관리자 전용(관리자 제외)."""
-    u = get_app_user()
-    return bool(u and u.get("role") == "sub_admin")
-
 
 def shelf_save(date_key: str, schedule: list, scores: dict, is_fully_random: bool = False):
     with shelve.open(SHELF_PATH) as db:
@@ -322,7 +331,7 @@ def _get_gspread_client():
         "https://www.googleapis.com/auth/drive",
     ]
     creds_dict = dict(st.secrets["gcp_service_account"])
-    # private_key 개행 처리 (TOML에서 \\n -> \n)
+    # private_key 개행 처리 (TOML에서 \\n → \n)
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
@@ -337,12 +346,12 @@ def sync_from_sheet(target_league: str) -> dict:
                updated_at(O) deleted_at(P)
 
     상태 판별:
-      - deleted_at 값 있음         -> 탈퇴 (완전 제외)
-      - leave_date 값 있음         -> 탈퇴 (완전 제외)
-      - dormant_period 비어있음    -> 정상
-      - dormant_period 종료일이 오늘 이전 -> 정상 (휴면 종료)
-      - dormant_period 종료일이 오늘 이후 -> 휴면
-      - dormant_period 종료일 없음  -> 휴면 (진행 중)
+      - deleted_at 값 있음         → 탈퇴 (완전 제외)
+      - leave_date 값 있음         → 탈퇴 (완전 제외)
+      - dormant_period 비어있음    → 정상
+      - dormant_period 종료일이 오늘 이전 → 정상 (휴면 종료)
+      - dormant_period 종료일이 오늘 이후 → 휴면
+      - dormant_period 종료일 없음  → 휴면 (진행 중)
 
     반환: {"imported": int, "skipped": int, "added": int}
     """
@@ -350,7 +359,7 @@ def sync_from_sheet(target_league: str) -> dict:
     today = _date.today()
 
     def _parse_dormant(dormant_str: str) -> str:
-        """dormant_period 문자열 -> '정상' 또는 '휴면'"""
+        """dormant_period 문자열 → '정상' 또는 '휴면'"""
         s = dormant_str.strip()
         if not s:
             return "정상"
@@ -364,7 +373,7 @@ def sync_from_sheet(target_league: str) -> dict:
                 except ValueError:
                     pass
             return "휴면"   # 종료일 없으면 진행 중
-        # 날짜 하나만 있을 때 (시작일로 간주 -> 휴면 진행 중)
+        # 날짜 하나만 있을 때 (시작일로 간주 → 휴면 진행 중)
         return "휴면"
 
     gc   = _get_gspread_client()
@@ -973,7 +982,7 @@ def generate_schedule_from_leagues(league_players, league_configs, num_rounds=3)
 # ============================================================
 
 def _is_gender_vs_gender(t1, t2) -> bool:
-    """팀1 전원 남자 & 팀2 전원 여자, 또는 그 반대 -> True (금지)"""
+    """팀1 전원 남자 & 팀2 전원 여자, 또는 그 반대 → True (금지)"""
     g1 = {get_gender(p) for p in t1}
     g2 = {get_gender(p) for p in t2}
     if g1 == {"M"} and g2 == {"W"}: return True
@@ -1000,11 +1009,11 @@ def _build_jabbok_minimized_groups(pool):
 
     [버그수정 v4.01]
     기존: 스코어(잡복+균형 가중합) 동점 조합만 candidates 수집
-      -> 남10:여5 등 특정 비율에서 dong_w=0인 조합만 동점으로 묶여
-         여복(dong_w>=1)이 수학적으로 선택 불가능한 상태 발생.
+      → 남10:여5 등 특정 비율에서 dong_w=0인 조합만 동점으로 묶여
+         여복(dong_w≥1)이 수학적으로 선택 불가능한 상태 발생.
     수정: "잡복 수가 최소인" 조합 전체를 candidates로 사용
-      -> 잡복 수만 최소 조건으로 1차 필터 후 나머지는 랜덤 선택
-      -> 여복/남복/혼복이 인원 비율에 맞게 골고루 등장.
+      → 잡복 수만 최소 조건으로 1차 필터 후 나머지는 랜덤 선택
+      → 여복/남복/혼복이 인원 비율에 맞게 골고루 등장.
     반환: groups (list of list), leftover (list)
     """
     men   = [p for p in pool if get_gender(p) == "M"]
@@ -1031,7 +1040,7 @@ def _build_jabbok_minimized_groups(pool):
     best_mixed, best_dong_m, best_dong_w = 0, 0, 0
     if all_valid:
         # [핵심 수정] 잡복 수 최소인 조합 전체를 candidates로 사용
-        # 잡복 수가 같은 조합끼리는 균등 랜덤 선택 -> 여복 출현 보장
+        # 잡복 수가 같은 조합끼리는 균등 랜덤 선택 → 여복 출현 보장
         min_jab = min(j for _, _, _, j in all_valid)
         best_candidates = [
             (m, dm, dw)
@@ -1060,7 +1069,7 @@ def _build_jabbok_minimized_groups(pool):
         if len(w_pool) >= 4:
             groups.append(w_pool[:4]); w_pool = w_pool[4:]
 
-    # 나머지(잡복 불가피) -> leftover
+    # 나머지(잡복 불가피) → leftover
     leftover = m_pool + w_pool + other
     return groups, leftover
 
@@ -1068,7 +1077,7 @@ def _build_jabbok_minimized_groups(pool):
 def _make_fully_random_round(players, game_counts, gs, rs):
     """
     완전 랜덤 1라운드 생성 (잡복 최소화 버전).
-    그룹 구성: 남2+여2 우선 -> 남4/여4 -> 불가피 잡복
+    그룹 구성: 남2+여2 우선 → 남4/여4 → 불가피 잡복
     페어링: 팀 내에서 무작위 (남팀 vs 여팀 대결만 제한)
     """
     if len(players) < 4: return []
@@ -1089,7 +1098,7 @@ def _make_fully_random_round(players, game_counts, gs, rs):
         leftover = leftover[4:]
 
     # 그룹 수가 n_groups보다 적으면 부족분 보충 (엣지 케이스)
-    # -> 발생 시 leftover를 기존 그룹에 합쳐 재구성
+    # → 발생 시 leftover를 기존 그룹에 합쳐 재구성
     if len(groups) < n_groups and leftover:
         for p in leftover:
             if groups:
@@ -1304,10 +1313,10 @@ def _build_matches_df(schedule):
         "매치종류": d["type"],
     } for d in schedule])
 
-def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict, schedule=None):
+def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict):
     """대진표 탭 공통 렌더러."""
     import streamlit as _st
-    _st.subheader(f"경기 대진표 - {seed_label}  [{mode_label}]")
+    _st.subheader(f"경기 대진표 · {seed_label}  [{mode_label}]")
     lg_color_map = {lg: get_league_color(lg) for lg in active_lgs}
     def _hl(row):
         bg = ""
@@ -1320,47 +1329,9 @@ def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_p
     summary = df_matches["매치종류"].value_counts()
     _st.caption(f"총 {len(df_matches)}경기 | "
                 + " | ".join(f"{k}: {v}경기" for k,v in summary.items()))
-
-    # 참여자 수 집계 — league_players_dict가 비어있으면(불러오기) schedule에서 직접 집계
-    if league_players_dict and any(len(pl) > 0 for pl in league_players_dict.values()):
-        # 생성 시: league_players_dict 사용
-        per_league_parts = []
-        total_m, total_w = 0, 0
-        for lg, pl in league_players_dict.items():
-            if not pl:
-                continue
-            m_cnt = sum(1 for p in pl if get_gender(p) == "M")
-            w_cnt = sum(1 for p in pl if get_gender(p) == "W")
-            total_m += m_cnt; total_w += w_cnt
-            per_league_parts.append(f"{lg} {len(pl)}명(남{m_cnt}/여{w_cnt})")
-        total_players = total_m + total_w
-        per_league = " - ".join(per_league_parts)
-    elif schedule:
-        # 불러오기 시: schedule에서 고유 참여자 추출
-        all_players_by_lg: dict = {}
-        for m in schedule:
-            lg = m.get("league", "")
-            for p in list(m.get("team1", [])) + list(m.get("team2", [])):
-                bp = base_name(p)
-                if lg not in all_players_by_lg:
-                    all_players_by_lg[lg] = {}
-                all_players_by_lg[lg][bp] = p  # 마지막 code 유지
-        per_league_parts = []
-        total_m, total_w = 0, 0
-        for lg in active_lgs:
-            if lg not in all_players_by_lg:
-                continue
-            codes = list(all_players_by_lg[lg].values())
-            m_cnt = sum(1 for p in codes if get_gender(p) == "M")
-            w_cnt = sum(1 for p in codes if get_gender(p) == "W")
-            total_m += m_cnt; total_w += w_cnt
-            per_league_parts.append(f"{lg} {len(codes)}명(남{m_cnt}/여{w_cnt})")
-        total_players = total_m + total_w
-        per_league = " - ".join(per_league_parts)
-    else:
-        total_players = 0; total_m = 0; total_w = 0; per_league = ""
-
-    _st.caption(f"👥 총 {total_players}명 (남 {total_m}명 - 여 {total_w}명)  {per_league}")
+    total_players = sum(len(pl) for pl in league_players_dict.values())
+    per_league = " · ".join(f"{lg} {len(pl)}명" for lg,pl in league_players_dict.items() if pl)
+    _st.caption(f"👥 총 {total_players}명  ({per_league})")
 
 def _render_basic_validation(df_full):
     """검증 리포트 공통 부분 (3경기 미달, 4경기 초과)."""
@@ -1388,7 +1359,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.7", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.00", page_icon="🎾", layout="wide")
 
 
 # ============================================================
@@ -1799,9 +1770,9 @@ def validate_date(s):
 
 def normalize_date(s):
     """다양한 입력 형식을 YYYY-MM-DD로 자동 변환.
-    - 8자리: 20260101 -> 2026-01-01
-    - 6자리: 260101  -> 2026-01-01
-    - 구분자 혼용: 2026/01/01, 2026.01.01 -> 2026-01-01
+    - 8자리: 20260101 → 2026-01-01
+    - 6자리: 260101  → 2026-01-01
+    - 구분자 혼용: 2026/01/01, 2026.01.01 → 2026-01-01
     """
     if not s: return ""
     s = str(s).strip()
@@ -1822,7 +1793,7 @@ def normalize_date(s):
     return s
 
 def normalize_phone(s):
-    """연락처 자동 포맷팅: 01012345678 -> 010-1234-5678"""
+    """연락처 자동 포맷팅: 01012345678 → 010-1234-5678"""
     if not s: return ""
     digits = re.sub(r"\D", "", str(s).strip())
     if len(digits) == 11 and digits.startswith("010"):
@@ -1953,7 +1924,7 @@ def dialog_pw(target):
     col_ok, col_cancel = st.columns(2)
     if col_ok.button("✅ 확인", type="primary", use_container_width=True):
         if pw == RS_ADMIN_PASSWORD:
-            # 인증 성공 -> 세션 전체 인증 플래그 설정
+            # 인증 성공 → 세션 전체 인증 플래그 설정
             st.session_state.admin_authed = True
             st.session_state.auth_time    = datetime.now()   # 타임아웃 기산점
             if target["type"] == "edit":
@@ -2209,7 +2180,7 @@ def dialog_form(df, existing=None):
         if v:
             st.session_state[widget_key] = normalize_date(v)
 
-    st.markdown("**휴면 기간** <span style='font-size:11px;color:#6b7280;'>(진행중이면 자동->휴면, 모두 종료 시 자동->정회원)</span>", unsafe_allow_html=True)
+    st.markdown("**휴면 기간** <span style='font-size:11px;color:#6b7280;'>(진행중이면 자동→휴면, 모두 종료 시 자동→정회원)</span>", unsafe_allow_html=True)
 
     # [다이어트] 휴면기간 행 스타일은 전역 CSS에 통합됨 (dormant-row-wrap, .st-key-add_dormant_btn)
 
@@ -2269,7 +2240,7 @@ def dialog_form(df, existing=None):
     if ld_key not in st.session_state:
         st.session_state[ld_key] = ld_str_existing
     st.text_input(
-        "탈퇴일 (입력 시 구분 자동->탈퇴)",
+        "탈퇴일 (입력 시 구분 자동→탈퇴)",
         key=ld_key,
         placeholder="YYYY-MM-DD 또는 20260101 (비우면 탈퇴 해제)",
         on_change=_normalize_date_input, args=(ld_key,)
@@ -2418,7 +2389,7 @@ def dialog_form(df, existing=None):
             else:
                 final_cat = cat
 
-            action_detail = (f"{'신규등록' if not existing else '수정'} -> "
+            action_detail = (f"{'신규등록' if not existing else '수정'} → "
                              f"카테고리:{final_cat}, 연락처:{phone_normalized}")
             row_data = {
                 "id":             existing["id"] if existing else next_id(df),
@@ -2462,7 +2433,7 @@ def render_roster_page():
     <div class="app-header">
       <span style="font-size:36px">🎾</span>
       <div><h1>테라클럽 회원 명부 <span style="font-size:13px;font-weight:400;opacity:.65;">(v5.00)</span></h1>
-      <p>TELA CLUB Member Roster - Google Sheets 연동</p></div>
+      <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
     # ── 비로그인: 본인 인증 후 제한 열람 모드 ───────────────────
@@ -2496,9 +2467,9 @@ def render_roster_page():
                     st.error(f"오류: {_e}")
             return
 
-        # 인증 성공 -> 제한 열람
+        # 인증 성공 → 제한 열람
         _auth_col, _logout_col = st.columns([5, 1])
-        _auth_col.info(f"🔍 제한 열람 모드 — 구분 - 성명 - 연락처만 표시됩니다.")
+        _auth_col.info(f"🔍 제한 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다.")
         if _logout_col.button("🔒 나가기", key="guest_auth_logout"):
             st.session_state["guest_auth_ok"] = False
             st.rerun()
@@ -2518,7 +2489,7 @@ def render_roster_page():
             st.info("표시할 회원이 없습니다.")
             return
 
-        # ── 정렬: 운영진 상단 고정 -> 정회원 이름순 -> 휴면 하단 ──
+        # ── 정렬: 운영진 상단 고정 → 정회원 이름순 → 휴면 하단 ──
         # [수정] 기존엔 _sort_key 함수를 정의해 sort_values를 먼저 호출한 뒤
         # _sort 컬럼으로 다시 정렬했음. 첫 호출은 결과가 즉시 덮어써지므로
         # 무의미했고 _sort_key 함수도 사용되지 않았음. _sort 컬럼 정렬만 남김.
@@ -2588,7 +2559,7 @@ def render_roster_page():
             for uid, uinfo in list(all_users.items()):
                 ucols = st.columns([2, 2, 1, 1, 1])
                 ucols[0].write(uid)
-                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else ('부관리자' if uinfo.get('role')=='sub_admin' else '일반회원')})")
+                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else '회원'})")
                 # 비밀번호 변경
                 new_pw_key = f"chpw_{uid}"
                 new_pw = ucols[2].text_input("새PW", key=new_pw_key,
@@ -2615,15 +2586,10 @@ def render_roster_page():
             new_uid   = nc1.text_input("아이디", key="new_uid", label_visibility="collapsed", placeholder="아이디")
             new_upw   = nc2.text_input("비밀번호", key="new_upw", label_visibility="collapsed", placeholder="비밀번호")
             new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
-            new_urole = nc4.selectbox("권한", ["일반회원", "부관리자", "관리자"], key="new_urole", label_visibility="collapsed")
+            new_urole = nc4.selectbox("권한", ["회원", "관리자"], key="new_urole", label_visibility="collapsed")
             if nc5.button("➕ 추가", key="add_user_btn"):
                 if new_uid.strip() and new_upw.strip() and new_uname.strip():
-                    if new_urole == "관리자":
-                        role_val = "admin"
-                    elif new_urole == "부관리자":
-                        role_val = "sub_admin"
-                    else:
-                        role_val = "member"
+                    role_val = "admin" if new_urole == "관리자" else "member"
                     ok = user_add(new_uid.strip(), new_upw.strip(), role_val, new_uname.strip())
                     if ok:
                         st.success(f"계정 '{new_uid}' 추가 완료")
@@ -2732,14 +2698,14 @@ def render_roster_page():
     for col,(label,cats,cls) in zip(sc[:-1],groups):
         m,f = stat_counts(cats)
         col.markdown(f'<div class="stat-card {cls}"><div class="stat-label">{label}</div>'
-                     f'<div class="stat-num">{m+f}</div><div class="stat-sub">남 {m} - 여 {f}</div></div>',
+                     f'<div class="stat-num">{m+f}</div><div class="stat-sub">남 {m} · 여 {f}</div></div>',
                      unsafe_allow_html=True)
     # 총 회원수 = 탈퇴 제외
     active_df = df[df["category"] != "탈퇴"] if not df.empty else df
     tm = len(active_df[active_df["gender"]=="남"]) if not active_df.empty else 0
     tf = len(active_df[active_df["gender"]=="여"]) if not active_df.empty else 0
     sc[-1].markdown(f'<div class="stat-card total"><div class="stat-label white">총 회원수</div>'
-                    f'<div class="stat-num white">{tm+tf}</div><div class="stat-sub white">남 {tm} - 여 {tf}</div></div>',
+                    f'<div class="stat-num white">{tm+tf}</div><div class="stat-sub white">남 {tm} · 여 {tf}</div></div>',
                     unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -2999,7 +2965,7 @@ def render_roster_page():
                                 row_d = r.to_dict()
                                 row_d["category"] = new_cat
                                 save_row(df, row_d, is_new=False,
-                                         action_detail=f"벌크 카테고리 변경 -> {new_cat}")
+                                         action_detail=f"벌크 카테고리 변경 → {new_cat}")
                         # 체크박스 세션 초기화
                         for sid in list(sel_ids):
                             k = f"chk_{sid}"
@@ -3200,11 +3166,11 @@ if "app_user" not in st.session_state:
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
 _u = get_app_user()
 if _u:
-    role_label = "🔑 관리자" if _u["role"] == "admin" else ("🗝️ 부관리자" if _u["role"] == "sub_admin" else "👤 일반회원")
+    role_label = "🔑 관리자" if _u["role"] == "admin" else "👤 회원"
     st.sidebar.markdown(
         f'<div style="background:#d1fae5;border-radius:8px;padding:8px 10px;'
         f'font-size:0.8rem;color:#065f46;font-weight:700;margin-bottom:6px;">'
-        f'{role_label} - {_u["name"]} ({_u["id"]})</div>',
+        f'{role_label} · {_u["name"]} ({_u["id"]})</div>',
         unsafe_allow_html=True
     )
     if st.sidebar.button("🔒 로그아웃", key="app_logout", use_container_width=True):
@@ -3276,11 +3242,6 @@ if page == "📊 점수판":
 
     st.markdown("## 🎾 TELA 테니스 클럽 랜덤페어 점수판")
 
-    # 점수판: 부관리자(등록 계정) 이상 로그인 필요
-    if not is_sub_admin():
-        st.warning("🔐 점수판은 등록 계정(부관리자 이상)으로 로그인 후 이용할 수 있습니다.")
-        st.stop()
-
     today_str  = date.today().strftime("%Y-%m-%d")
     saved_keys = shelf_list_dates()
 
@@ -3333,7 +3294,7 @@ if page == "📊 점수판":
     disp_num  = parts[1] if len(parts) > 1 else ""
     st.markdown(
         f'<div style="text-align:right;font-size:0.85rem;color:#666;margin-bottom:8px;">'
-        f'{disp_date} - {disp_num}</div>', unsafe_allow_html=True)
+        f'{disp_date} · {disp_num}</div>', unsafe_allow_html=True)
 
     qp  = st.query_params
     act = qp.get("act", None)
@@ -3586,7 +3547,7 @@ elif page == "🎲 랜덤페어":
     if IS_FULLY_RANDOM:
         st.sidebar.info("**완전 랜덤페어**\n\n완전 무작위\n\n✅ 남성 vs 여성 대결 제한")
     else:
-        st.sidebar.info("**조건부 랜덤페어**\n\n리그별 우선순위-쿼터 적용")
+        st.sidebar.info("**조건부 랜덤페어**\n\n리그별 우선순위·쿼터 적용")
     st.sidebar.markdown("---")
 
     # ── [2] 리그 수 설정 (NEW) ───────────────────────────────
@@ -3892,7 +3853,7 @@ elif page == "🎲 랜덤페어":
     if st.session_state.get("member_popup_open", False):
         _member_select_popup()
 
-    # ── [4] 날짜-번호 (가로 배치) + 비밀번호 + 생성 버튼 ────
+    # ── [4] 날짜·번호 (가로 배치) + 비밀번호 + 생성 버튼 ────
     st.sidebar.markdown("---")
     _d1, _d2 = st.sidebar.columns([3, 2])
     rp_date = _d1.text_input("📅 날짜", value=date.today().strftime("%Y-%m-%d"), key="rp_date")
@@ -3909,7 +3870,7 @@ elif page == "🎲 랜덤페어":
         )
         _lb1, _lb2 = st.sidebar.columns([1, 1])
 
-        # 불러오기 (관리자 + 부관리자 가능)
+        # 불러오기
         if _lb1.button("📥 Load", key="sb_load_btn", type="primary", use_container_width=True):
             _loaded = shelf_load(_sel_key)
             if _loaded:
@@ -3919,21 +3880,11 @@ elif page == "🎲 랜덤페어":
                 for _m in _loaded_sched:
                     update_stats(_loaded_stats, _m["team1"], _m["team2"],
                                  _m["type"].replace("(중복)",""), _m["round"], _m["league"])
-                # 불러오기 시 league_players를 schedule에서 역산 (색상-참여자수 정상화)
-                _lp_from_sched: dict = {}
-                for _sm in _loaded_sched:
-                    _slg = _sm.get("league", "")
-                    if _slg not in _lp_from_sched:
-                        _lp_from_sched[_slg] = {}
-                    for _sp in list(_sm.get("team1", [])) + list(_sm.get("team2", [])):
-                        _lp_from_sched[_slg][base_name(_sp)] = _sp
-                _lp_final = {lg: list(d.values()) for lg, d in _lp_from_sched.items()}
-
                 st.session_state.update({
                     "rp_schedule":     _loaded_sched,
                     "stats":           _loaded_stats,
                     "last_gen_params": {
-                        "league_players":  _lp_final,
+                        "league_players":  {},
                         "is_fully_random": _loaded_is_fully_random,
                         "league_configs":  {},
                         "use_seed":        False,
@@ -3946,35 +3897,32 @@ elif page == "🎲 랜덤페어":
             else:
                 st.sidebar.error("불러오기 실패")
 
-        # 삭제 — 관리자만 가능
-        if is_admin():
-            if _lb2.button("🗑️ Del", key="sb_delete_btn", use_container_width=True):
-                st.session_state["_sb_confirm_del"] = _sel_key
+        # 삭제 (2단계 확인)
+        if _lb2.button("🗑️ Del", key="sb_delete_btn", use_container_width=True):
+            st.session_state["_sb_confirm_del"] = _sel_key
 
-            if st.session_state.get("_sb_confirm_del") == _sel_key:
-                st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
-                _dc1, _dc2 = st.sidebar.columns([1, 1])
-                if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
-                    shelf_delete(_sel_key)
-                    st.session_state.pop("_sb_confirm_del", None)
-                    if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
-                        st.session_state.pop("rp_schedule", None)
-                        st.session_state.pop("stats", None)
-                        st.session_state.pop("last_gen_params", None)
-                    st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨")
-                    st.rerun()
-                if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
-                    st.session_state.pop("_sb_confirm_del", None)
-                    st.rerun()
-        else:
-            _lb2.caption("🔒 삭제 불가")
+        if st.session_state.get("_sb_confirm_del") == _sel_key:
+            st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
+            _dc1, _dc2 = st.sidebar.columns([1, 1])
+            if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
+                shelf_delete(_sel_key)
+                st.session_state.pop("_sb_confirm_del", None)
+                if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
+                    st.session_state.pop("rp_schedule", None)
+                    st.session_state.pop("stats", None)
+                    st.session_state.pop("last_gen_params", None)
+                st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨")
+                st.rerun()
+            if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
+                st.session_state.pop("_sb_confirm_del", None)
+                st.rerun()
 
     # ── [5] 대진표 생성 ────────────────────────────────────────
     st.sidebar.markdown("---")
-    _admin_ok = is_sub_admin()   # 관리자 + 부관리자 모두 생성 가능
+    _admin_ok = is_admin()
     pw_ok = _admin_ok   # 호환성 유지
     if not _admin_ok:
-        st.sidebar.warning("🔒 대진표 생성은 관리자 또는 부관리자만 가능합니다.")
+        st.sidebar.warning("🔒 대진표 생성은 관리자만 가능합니다.")
 
     generate_btn = st.sidebar.button(
         "🎾 대진표 생성", type="primary", use_container_width=True,
@@ -3983,8 +3931,8 @@ elif page == "🎲 랜덤페어":
 
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
-    league_badge = " - ".join(active_leagues)
-    st.title("🎾 TELA CLUB Random Match Generator v5.7")
+    league_badge = " · ".join(active_leagues)
+    st.title("🎾 TELA CLUB Random Match Generator v5.00")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 결과 고정 (시드) — 본문 배치 ──────────────────────────
@@ -4007,7 +3955,7 @@ elif page == "🎲 랜덤페어":
         st.write(f"- 영구 저장소 True 키 (처음 5개): `{_dbg.get('store_true', [])}`")
         for lg in active_leagues:
             cnt = len(member_selected.get(lg, []))
-            st.write(f"- {lg}: **{cnt}명** -> {member_selected.get(lg, [])[:3]}")
+            st.write(f"- {lg}: **{cnt}명** → {member_selected.get(lg, [])[:3]}")
 
     # ── 대진표 생성 ──────────────────────────────────────────
     # do_regen: pop 대신 get으로 읽고, 실제 실행 후에만 삭제
@@ -4060,7 +4008,7 @@ elif page == "🎲 랜덤페어":
             # ── 디버그: 실제 선택 현황 확인용 ──────────────────
             with st.expander("🔍 선택 현황 (디버그)", expanded=False):
                 for lg, pl in league_players.items():
-                    st.write(f"**{lg}**: {len(pl)}명 -> {pl[:5]}")
+                    st.write(f"**{lg}**: {len(pl)}명 → {pl[:5]}")
 
             # 유효성 검사
             errors = []
@@ -4105,7 +4053,7 @@ elif page == "🎲 랜덤페어":
         shelf_save(rp_key_run, serialize_schedule(schedule), {}, IS_FULLY_RANDOM_run)
         mode_label   = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
         active_lgs   = list(league_players.keys())
-        league_badge_run = " - ".join(active_lgs)
+        league_badge_run = " · ".join(active_lgs)
         st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
         # ── 재생성 버튼 ──────────────────────────────────────
@@ -4129,7 +4077,7 @@ elif page == "🎲 랜덤페어":
         tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
 
         with tab1:
-            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players, schedule=schedule)
+            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players)
 
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
             # [다이어트] _json2 별칭 제거 - 상단의 json 모듈 직접 사용
@@ -4292,8 +4240,8 @@ function showMsg() {{
                         if lg_rows.empty: continue
                         mmax = cfg.get("mixed_max"); dmin = cfg.get("dong_min")
                         label_parts = []
-                        if mmax: label_parts.append(f"혼성<={mmax}회")
-                        if dmin: label_parts.append(f"동성>={dmin}회")
+                        if mmax: label_parts.append(f"혼성≤{mmax}회")
+                        if dmin: label_parts.append(f"동성≥{dmin}회")
                         st.markdown(f"**{lg} 쿼터 현황** ({', '.join(label_parts)})")
                         quota_rows = []
                         for _, row in lg_rows.iterrows():
@@ -4351,11 +4299,7 @@ function showMsg() {{
             league_players_r    = restored_params.get("league_players", {})
             use_seed_run        = restored_params.get("use_seed", False)
             seed_val_run        = restored_params.get("seed_val", None)
-            # league_players_r가 비어있으면(구버전 저장) schedule에서 리그 목록 추출
-            if league_players_r:
-                active_lgs = list(league_players_r.keys())
-            else:
-                active_lgs = list(dict.fromkeys(m["league"] for m in restored_schedule))
+            active_lgs          = list(league_players_r.keys())
             mode_label          = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
             schedule            = restored_schedule
             stats               = restored_stats
@@ -4366,13 +4310,10 @@ function showMsg() {{
                 st.session_state["do_regen"] = True
             col_regen2, col_space2 = st.columns([1, 4])
             with col_regen2:
-                if is_admin():
-                    st.button("🔄 다시 생성", type="secondary", use_container_width=True,
-                              on_click=_set_regen2,
-                              help="동일 설정으로 새로운 랜덤 대진표를 생성합니다",
-                              key="regen2")
-                else:
-                    st.caption("🔒 대진표 수정은 관리자만 가능합니다.")
+                st.button("🔄 다시 생성", type="secondary", use_container_width=True,
+                          on_click=_set_regen2,
+                          help="동일 설정으로 새로운 랜덤 대진표를 생성합니다",
+                          key="regen2")
 
             seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
             # [다이어트] DataFrame 생성 및 매치 테이블/검증 렌더링 모두 공통 헬퍼 사용
@@ -4382,7 +4323,7 @@ function showMsg() {{
 
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
-                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r, schedule=schedule)
+                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r)
             with tab2:
                 st.subheader("선수별 출전 현황")
                 st.dataframe(df_display, use_container_width=True, height=700)
@@ -4392,7 +4333,7 @@ function showMsg() {{
 
         else:
             # ── 최초 진입 안내 ───────────────────────────────
-            st.info("👈 사이드바에서 리그-페어링 방식-인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
+            st.info("👈 사이드바에서 리그·페어링 방식·인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
 
         # ═══════════════════════════════════════════════════════
         # 리그 설정 (구글 시트 직접 연동)
@@ -4488,7 +4429,7 @@ function showMsg() {{
                                 for _mid in _checked_ids:
                                     if save_league_to_sheet(_mid, _target_val):
                                         _ok_cnt += 1
-                            st.success(f"✅ {_ok_cnt}명 -> {_target_sel} 저장 완료")
+                            st.success(f"✅ {_ok_cnt}명 → {_target_sel} 저장 완료")
                             # 체크박스 초기화
                             for _mid in _checked_ids:
                                 st.session_state[f"lgchk_{_mid}"] = False
@@ -4550,7 +4491,7 @@ function showMsg() {{
                                 with st.spinner("저장 중…"):
                                     _ok = save_league_to_sheet(_rid, _ind_val)
                                 if _ok:
-                                    st.success(f"✅ '{_row['name']}' -> {_ind_sel} 저장")
+                                    st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
                                     st.rerun()
             else:
                 st.info("구글 시트에 회원 데이터가 없습니다.")
@@ -4558,7 +4499,7 @@ function showMsg() {{
             # ── 게스트 관리 (회원명부 미반영) ────────────────────
             st.markdown("---")
             st.markdown("#### 👤 게스트 관리")
-            st.caption("회원명부-구글 시트 미반영 - 직접 삭제 전까지 유지됩니다.")
+            st.caption("회원명부·구글 시트 미반영 · 직접 삭제 전까지 유지됩니다.")
 
             # 추가 폼
             _gc1, _gc2, _gc3, _gc4 = st.columns([2, 2, 1, 1])
@@ -4605,32 +4546,27 @@ function showMsg() {{
         if not restored_schedule:
             with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
-                ### v5.7 기능 안내
+                ### v5.00 기능 안내
 
                 | 항목 | 내용 |
                 |------|------|
                 | **회원 사전 등록** | 👥 회원 관리에서 리그별 회원 등록 후 체크박스로 선택 |
                 | **대진표 불러오기** | 📂 저장된 대진표 불러오기에서 날짜 선택 후 로드 |
                 | **페이지 복귀 유지** | 점수판↔랜덤페어 이동해도 마지막 대진표 유지 |
-                | **리그 수 설정** | 1~5개 자유 설정 (A->B->C->D->E 순) |
+                | **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
                 | **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
-                | **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 (관리자 전용) |
+                | **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
                 | **카카오톡 복사** | 대진표를 카카오톡용 텍스트로 한 번에 복사 |
                 | **QR코드** | 앱 URL QR코드로 회원 공유 |
 
-                ### 권한 안내
-                - **관리자**: 대진표 생성-수정-삭제, 점수 입력
-                - **부관리자**: 대진표 생성-불러오기, 점수 입력 (삭제-수정 불가)
-                - **일반회원**: 회원명부 열람만 가능
-
                 ### 공통 출전 규칙
-                - 최소 3경기 보장 -> 이벤트 라운드(4R)로 보충
+                - 최소 3경기 보장 → 이벤트 라운드(4R)로 보충
                 - 최대 4경기 제한
 
                 ### 점수판
                 1. 대진표 생성 후 사이드바 **📊 점수판** 선택
                 2. 날짜+일련번호 입력 (랜덤페어와 동일하게)
-                3. 각 경기 **💾 저장** 버튼 클릭 -> 새로고침 후에도 유지
+                3. 각 경기 **💾 저장** 버튼 클릭 → 새로고침 후에도 유지
                 """)
 
 elif page == "👥 회원명부":
