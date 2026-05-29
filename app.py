@@ -4773,6 +4773,22 @@ elif page == "📋 대진표생성":
             cnt = len(member_selected.get(lg, []))
             st.write(f"- {lg}: **{cnt}명** → {member_selected.get(lg, [])[:3]}")
 
+    # ── 되돌리기 처리 ────────────────────────────────────────
+    if st.session_state.pop("do_undo", False):
+        _prev_sched  = st.session_state.get("prev_schedule")
+        _prev_stats  = st.session_state.get("prev_stats")
+        _prev_params = st.session_state.get("prev_gen_params")
+        if _prev_sched and _prev_stats and _prev_params:
+            st.session_state["rp_schedule"]     = _prev_sched
+            st.session_state["stats"]           = _prev_stats
+            st.session_state["last_gen_params"] = _prev_params
+            st.session_state.pop("prev_schedule",   None)
+            st.session_state.pop("prev_stats",      None)
+            st.session_state.pop("prev_gen_params", None)
+            st.rerun()
+        else:
+            st.warning("되돌릴 대진표가 없습니다.")
+
     # ── 대진표 생성 ──────────────────────────────────────────
     # do_regen: pop 대신 get으로 읽고, 실제 실행 후에만 삭제
     do_regen = st.session_state.get("do_regen", False)
@@ -4853,6 +4869,11 @@ elif page == "📋 대진표생성":
 
         spinner_msg = "완전 랜덤 대진표 생성 중..." if IS_FULLY_RANDOM_run else "조건부 대진표 생성 중..."
         with st.spinner(spinner_msg):
+            # 생성 전 현재 대진표를 직전 백업으로 저장
+            if st.session_state.get("rp_schedule"):
+                st.session_state["prev_schedule"]   = st.session_state["rp_schedule"]
+                st.session_state["prev_stats"]      = st.session_state.get("stats")
+                st.session_state["prev_gen_params"] = st.session_state.get("last_gen_params")
             if IS_FULLY_RANDOM_run:
                 schedule, stats = generate_schedule_fully_random(league_players)
             else:
@@ -4872,15 +4893,24 @@ elif page == "📋 대진표생성":
         league_badge_run = " · ".join(active_lgs)
         st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
-        # ── 재생성 버튼 ──────────────────────────────────────
+        # ── 다시 생성 / 되돌리기 버튼 ────────────────────────
         def _set_regen():
             st.session_state["do_regen"] = True
 
-        col_regen, col_space = st.columns([1, 4])
+        def _set_undo():
+            st.session_state["do_undo"] = True
+
+        _has_prev = bool(st.session_state.get("prev_schedule"))
+        col_regen, col_undo, col_space = st.columns([1, 1, 3])
         with col_regen:
             st.button("🔄 다시 생성", type="secondary", use_container_width=True,
                       on_click=_set_regen,
                       help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)")
+        with col_undo:
+            st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
+                      on_click=_set_undo,
+                      disabled=not _has_prev,
+                      help="직전 대진표로 되돌립니다")
 
         seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
 
@@ -5276,15 +5306,27 @@ function showMsg() {{
 
             def _set_regen2():
                 st.session_state["do_regen"] = True
-            col_regen2, col_space2 = st.columns([1, 4])
+
+            def _set_undo2():
+                st.session_state["do_undo"] = True
+
+            _has_prev2 = bool(st.session_state.get("prev_schedule"))
+            col_regen2, col_undo2, col_space2 = st.columns([1, 1, 3])
             with col_regen2:
                 if is_admin():
                     st.button("🔄 다시 생성", type="secondary", use_container_width=True,
                               on_click=_set_regen2,
-                              help="동일 설정으로 새로운 랜덤 대진표를 생성합니다",
+                              help="사이드바 현재 날짜+번호로 새 대진표를 생성합니다",
                               key="regen2")
                 else:
                     st.caption("🔒 대진표 수정은 관리자만 가능합니다.")
+            with col_undo2:
+                if is_admin():
+                    st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
+                              on_click=_set_undo2,
+                              disabled=not _has_prev2,
+                              help="직전 대진표로 되돌립니다",
+                              key="undo2")
 
             seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
             # [다이어트] DataFrame 생성 및 매치 테이블/검증 렌더링 모두 공통 헬퍼 사용
@@ -5632,7 +5674,9 @@ function showMsg() {{
                 st.info("등록된 게스트가 없습니다.")
 
         if not restored_schedule:
-            with st.expander("📖 사용 방법 및 규칙 안내"):
+            pass  # 안내는 항상 표시 (아래로 이동)
+
+        with st.expander("📖 사용 방법 및 규칙 안내"):
                 st.markdown("""
                 ### v5.7 기능 안내
 
