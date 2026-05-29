@@ -1577,6 +1577,58 @@ def generate_schedule_fully_random(league_players, num_rounds=3):
 # 섹션 10: 입력 파싱
 # ============================================================
 
+def generate_event_team_vs_team(teams, num_rounds=3, team_labels=None):
+    """
+    이벤트 팀 대결 대진표 생성.
+    teams: [[player_code,...], [player_code,...], ...]  (각 팀 = 플레이어 코드 리스트)
+    team_labels: 각 팀의 표시 이름 리스트 (없으면 '팀1','팀2'… 사용)
+    팀끼리 맞대결 — 각 매치는 (팀A에서 2명) vs (팀B에서 2명) 복식.
+    모든 팀쌍 조합에 대해 num_rounds 만큼 라운드 생성.
+    반환: (all_results, all_stats) — 기존 schedule 포맷과 호환.
+    """
+    all_results = []
+    all_stats   = {}
+    n = len(teams)
+    if n < 2:
+        return all_results, all_stats
+
+    def _label(i):
+        if team_labels and i < len(team_labels) and team_labels[i]:
+            return team_labels[i]
+        return f"팀{i+1}"
+
+    for r in range(1, num_rounds + 1):
+        rname = f"{r}R"
+        for ti in range(n):
+            for tj in range(ti + 1, n):
+                team_a = list(teams[ti])
+                team_b = list(teams[tj])
+                if len(team_a) < 2 or len(team_b) < 2:
+                    continue
+                vs_label = f"{_label(ti)} vs {_label(tj)}"
+
+                a_shuf = team_a[:]; b_shuf = team_b[:]
+                random.shuffle(a_shuf); random.shuffle(b_shuf)
+
+                a_pairs = [tuple(a_shuf[k:k+2]) for k in range(0, len(a_shuf) - 1, 2)]
+                b_pairs = [tuple(b_shuf[k:k+2]) for k in range(0, len(b_shuf) - 1, 2)]
+                num_matches = min(len(a_pairs), len(b_pairs))
+
+                for mi in range(num_matches):
+                    t1 = a_pairs[mi]
+                    t2 = b_pairs[mi]
+                    mt = classify_match([base_name(p) for p in list(t1) + list(t2)])
+                    update_stats(all_stats, t1, t2, mt, rname, vs_label)
+                    all_results.append({
+                        "round":  rname,
+                        "league": vs_label,
+                        "team1":  t1,
+                        "team2":  t2,
+                        "type":   mt,
+                    })
+    return all_results, all_stats
+
+
 def parse_custom_players(text, league_prefix):
     players = []
     for line in text.strip().splitlines():
@@ -1870,7 +1922,12 @@ def records_commit(date_key: str, schedule: list, scores: dict):
     구글시트 records 탭에 세션 점수 반영.
     1) 동일 date_key 기존 행 무조건 삭제 (제외/삭제 등으로 비어도 정정)
     2) session_stats가 있으면 새 행 삽입
+
+    ※ 이벤트 대진표(키에 '[이벤트]' 포함)는 기록실 집계에서 제외한다.
     """
+    # 이벤트 대진표는 기록실에 반영하지 않음 (집계/삭제 모두 건너뜀)
+    if "[이벤트]" in str(date_key):
+        return
     try:
         ws = _get_records_sheet()
         if ws is None:
@@ -4092,6 +4149,13 @@ if page == "📊 스코어보드":
     today_str  = date.today().strftime("%Y-%m-%d")
     saved_keys = shelf_list_dates()
 
+    # 수정3: 이벤트 팀편성에서 막 생성한 대진표가 있으면 안내 + 기본 선택
+    _ev_ready_key = None
+    if st.session_state.get("_event_schedule_ready") and st.session_state.get("rp_key"):
+        _ev_ready_key = st.session_state.get("rp_key")
+        st.success(f"🎯 이벤트 팀편성에서 생성한 대진표 **{_ev_ready_key}** 가 준비되었습니다. "
+                   f"아래에서 점수를 입력하세요.")
+
     sb_mode = st.radio("모드", ["저장된 스코어보드 불러오기", "새 스코어보드 (날짜+번호 입력)"],
                        index=0, horizontal=True, label_visibility="collapsed")
     if sb_mode == "새 스코어보드 (날짜+번호 입력)":
@@ -4100,10 +4164,19 @@ if page == "📊 스코어보드":
         selected_key = f"{_date_with_weekday(sb_date)}_{sb_num}"
     else:
         if saved_keys:
-            selected_key = st.selectbox("저장된 스코어보드 선택", saved_keys)
+            # 이벤트 대진표 키가 있으면 기본 선택
+            _sb_default_idx = 0
+            if _ev_ready_key and _ev_ready_key in saved_keys:
+                _sb_default_idx = saved_keys.index(_ev_ready_key)
+            selected_key = st.selectbox("저장된 스코어보드 선택", saved_keys,
+                                        index=_sb_default_idx)
         else:
             st.info("저장된 데이터가 없습니다.")
             selected_key = f"{_date_with_weekday(today_str)}_001"
+
+    # 이벤트 준비 플래그는 한 번 사용 후 해제 (다른 키 선택 자유롭게)
+    if _ev_ready_key and selected_key == _ev_ready_key:
+        st.session_state.pop("_event_schedule_ready", None)
 
     st.caption(f"현재 키: **{selected_key}**")
 
@@ -4134,6 +4207,14 @@ if page == "📊 스코어보드":
         st.warning("⚠️ 이 키에 저장된 대진표가 없습니다.")
         st.info("👈 **📋 대진표생성**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
         st.stop()
+
+    # 이벤트 대진표 안내 (기록실 미반영)
+    if "[이벤트]" in str(selected_key):
+        st.markdown(
+            '<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;'
+            'padding:8px 12px;margin-bottom:8px;font-size:0.85rem;color:#9a3412;font-weight:600;">'
+            '🎯 이벤트 대진표입니다. 점수를 입력·저장할 수 있지만 <b>기록실(월간/연간 집계)에는 반영되지 않습니다.</b>'
+            '</div>', unsafe_allow_html=True)
 
     # ── 잠금 상태 ─────────────────────────────────────────────
     _sb_locked = st.session_state.get("sb_is_locked", False)
@@ -6241,18 +6322,53 @@ elif page == "🎯 이벤트 팀편성":
 
     # ── 팀 편성 설정 ─────────────────────────────────────────
     st.markdown("### ⚙️ 팀 편성 설정")
+
+    _balance_method = st.radio(
+        "팀 균형 방식",
+        ["등급 균등분배 (뱀방식)", "등급 합산 균등", "나이순 분배 (뱀방식)", "OB/YB 2팀 대결"],
+        horizontal=True,
+        help=(
+            "등급 뱀방식: 등급 1→N→1 순 배정 (팀 실력 균등). "
+            "등급 합산: 팀 등급 합이 비슷하게. "
+            "나이순 분배: 나이 많은 순으로 1→N→1 배정 (각 팀 연령 균등). "
+            "OB/YB 2팀: 나이 기준으로 OB(연장자)팀 vs YB(연소자)팀 자동 분할."
+        )
+    )
+
+    _is_obyb = (_balance_method == "OB/YB 2팀 대결")
+
     _tc1, _tc2, _tc3 = st.columns([1, 1, 2])
     with _tc1:
-        _num_teams = st.number_input("팀 수", min_value=2, max_value=20, value=2, step=1,
-                                      help="기본 2팀. 대진표 생성 시 팀1→A리그, 팀2→B리그…로 매핑됩니다.")
+        if _is_obyb:
+            _num_teams = 2
+            st.number_input("팀 수", min_value=2, max_value=2, value=2, step=1,
+                            disabled=True, help="OB/YB 대결은 2팀 고정입니다.")
+        else:
+            _num_teams = st.number_input("팀 수", min_value=2, max_value=20, value=2, step=1,
+                                          help="기본 2팀.")
     with _tc2:
-        _include_ungraded = st.checkbox("미지정 등급 포함", value=True)
+        _include_ungraded = st.checkbox("미지정 등급 포함", value=True,
+                                         help="등급 미지정 회원도 포함. 나이/OB·YB 방식에선 등급과 무관하게 항상 포함 권장.")
     with _tc3:
-        _balance_method = st.radio(
-            "팀 균형 방식",
-            ["등급 균등분배 (뱀방식)", "등급 합산 균등"],
-            horizontal=True,
-            help="뱀방식: 1→N→1 순 배정. 합산균등: 팀 등급 합이 비슷하게."
+        if _is_obyb:
+            _obyb_split = st.radio(
+                "OB/YB 분할 기준",
+                ["인원 균등 분할", "기준 나이로 분할"],
+                horizontal=True,
+                help="인원 균등: 나이순 정렬 후 절반씩. 기준 나이: 특정 출생연도 기준으로 나눔."
+            )
+        else:
+            st.caption("등급/나이 정보가 비어있는 회원은 중간값으로 처리됩니다.")
+            _obyb_split = None
+
+    # OB/YB 기준 나이 입력
+    _obyb_cut_year = None
+    if _is_obyb and _obyb_split == "기준 나이로 분할":
+        _cur_year = date.today().year
+        _obyb_cut_year = st.number_input(
+            "기준 출생연도 (이 연도 이전 출생 = OB)",
+            min_value=1940, max_value=_cur_year, value=1985, step=1,
+            help="예: 1985 입력 시 1985년생 이전(나이 많음)=OB, 이후=YB"
         )
 
     # ── 참가 회원 선택 ───────────────────────────────────────
@@ -6281,25 +6397,37 @@ elif page == "🎯 이벤트 팀편성":
         _stars = "⭐" * (6 - int(_g)) if _g.isdigit() else "○"
         _name_to_row[f"{_mr['name']} [{_g}등급 {_stars}]"] = _mr
 
-    # 수정4: session_state로 선택 관리 → 전체 해제 시 페이지 이동 방지
+    # 수정1: multiselect 동적 key로 전체선택/해제 즉시 반영
+    # 버튼 클릭 시 _ev_ms_ver를 증가시켜 위젯을 새로 생성 → default 값이 적용됨
+    if "_ev_ms_ver" not in st.session_state:
+        st.session_state["_ev_ms_ver"] = 0
+    if "ev_sel_members" not in st.session_state:
+        st.session_state["ev_sel_members"] = list(_member_options)
+
+    # 옵션 목록이 바뀌면(데이터 갱신) 선택을 전체로 초기화
     _opts_hash = str(sorted(_member_options))
     if st.session_state.get("_ev_opts_hash") != _opts_hash:
-        st.session_state["ev_sel_members"]  = list(_member_options)
-        st.session_state["_ev_opts_hash"]   = _opts_hash
+        st.session_state["ev_sel_members"] = list(_member_options)
+        st.session_state["_ev_opts_hash"]  = _opts_hash
 
     _ev_b1, _ev_b2, _ev_b3 = st.columns([1, 1, 5])
     with _ev_b1:
         if st.button("☑️ 전체 선택", key="ev_sel_all", use_container_width=True):
             st.session_state["ev_sel_members"] = list(_member_options)
+            st.session_state["_ev_ms_ver"] += 1   # 위젯 강제 재생성
+            st.rerun()
     with _ev_b2:
         if st.button("☐ 전체 해제", key="ev_sel_none", use_container_width=True):
             st.session_state["ev_sel_members"] = []
+            st.session_state["_ev_ms_ver"] += 1   # 위젯 강제 재생성
+            st.rerun()
 
+    _ev_ms_key = f"ev_multiselect_{st.session_state['_ev_ms_ver']}"
     _sel_members = st.multiselect(
         f"참가 회원 ({len(_member_options)}명 가능)",
         options=_member_options,
-        default=[m for m in st.session_state.get("ev_sel_members",[]) if m in _member_options],
-        key="ev_multiselect",
+        default=[m for m in st.session_state.get("ev_sel_members", []) if m in _member_options],
+        key=_ev_ms_key,
     )
     st.session_state["ev_sel_members"] = list(_sel_members)
 
@@ -6318,13 +6446,63 @@ elif page == "🎯 이벤트 팀편성":
         import random as _rand
         _parts = [_name_to_row[k].to_dict() for k in _sel_members]
         _n_teams = int(_num_teams)
+
+        # 등급 숫자화 (미지정=3)
         for _p in _parts:
             _gv = str(_p.get("grade","")).strip()
             _p["_grade_num"] = int(_gv) if _gv.isdigit() else 3
-        _parts.sort(key=lambda x: (x["_grade_num"], x["name"]))
-        _teams = [[] for _ in range(_n_teams)]
 
-        if "뱀방식" in _balance_method:
+        # 나이(출생연도) 숫자화 — 결측은 중간값으로 대체
+        _cur_year = date.today().year
+        _by_vals = []
+        for _p in _parts:
+            try:
+                _byv = int(float(_p.get("birth_year")))
+                if 1900 <= _byv <= _cur_year:
+                    _p["_birth"] = _byv
+                    _by_vals.append(_byv)
+                else:
+                    _p["_birth"] = None
+            except (ValueError, TypeError):
+                _p["_birth"] = None
+        _median_by = int(sorted(_by_vals)[len(_by_vals)//2]) if _by_vals else (_cur_year - 35)
+        for _p in _parts:
+            if _p["_birth"] is None:
+                _p["_birth"] = _median_by
+
+        _teams = [[] for _ in range(_n_teams)]
+        _team_labels = None   # OB/YB일 때 사용
+
+        if _balance_method == "OB/YB 2팀 대결":
+            # 나이 많은 순(출생연도 오름차순) 정렬
+            _parts.sort(key=lambda x: (x["_birth"], x["name"]))
+            if _obyb_split == "기준 나이로 분할" and _obyb_cut_year:
+                _ob = [p for p in _parts if p["_birth"] <  int(_obyb_cut_year)]
+                _yb = [p for p in _parts if p["_birth"] >= int(_obyb_cut_year)]
+            else:
+                # 인원 균등 분할 (앞쪽=연장자=OB)
+                _half = len(_parts) // 2
+                _ob = _parts[:_half]
+                _yb = _parts[_half:]
+            _teams = [_ob, _yb]
+            _team_labels = ["OB팀", "YB팀"]
+
+        elif _balance_method == "나이순 분배 (뱀방식)":
+            # 나이 많은 순 정렬 후 스네이크 배정 → 각 팀 연령 균등
+            _parts.sort(key=lambda x: (x["_birth"], x["name"]))
+            _fwd = True; _ti = 0
+            for _p in _parts:
+                _teams[_ti].append(_p)
+                if _fwd:
+                    _ti += 1
+                    if _ti >= _n_teams: _ti = _n_teams - 1; _fwd = False
+                else:
+                    _ti -= 1
+                    if _ti < 0: _ti = 0; _fwd = True
+
+        elif "뱀방식" in _balance_method:
+            # 등급 뱀방식
+            _parts.sort(key=lambda x: (x["_grade_num"], x["name"]))
             _fwd = True; _ti = 0
             for _p in _parts:
                 _teams[_ti].append(_p)
@@ -6335,6 +6513,8 @@ elif page == "🎯 이벤트 팀편성":
                     _ti -= 1
                     if _ti < 0: _ti = 0; _fwd = True
         else:
+            # 등급 합산 균등
+            _parts.sort(key=lambda x: (x["_grade_num"], x["name"]))
             _tsums = [0] * _n_teams
             for _p in _parts:
                 _mi = _tsums.index(min(_tsums))
@@ -6342,19 +6522,37 @@ elif page == "🎯 이벤트 팀편성":
                 _tsums[_mi] += _p["_grade_num"]
 
         for _t in _teams: _rand.shuffle(_t)
-        st.session_state["_team_result"] = _teams
-        st.session_state["_team_run"]    = False
+        st.session_state["_team_result"]  = _teams
+        st.session_state["_team_labels"]  = _team_labels
+        st.session_state["_team_run"]     = False
 
     # ── 결과 표시 ─────────────────────────────────────────────
     _res = st.session_state.get("_team_result")
     if _res:
+        _team_labels = st.session_state.get("_team_labels")  # OB/YB일 때 ["OB팀","YB팀"]
+        _cur_year_disp = date.today().year
         st.markdown("---")
         st.markdown("### 🏅 팀 편성 결과")
+        if _team_labels:
+            st.caption(f"⚔️ {_team_labels[0]} vs {_team_labels[1]} (나이 기준 분할)")
 
         _tcolors = ["#2563eb","#16a34a","#dc2626","#d97706","#7c3aed",
                     "#0891b2","#be185d","#065f46","#92400e","#1d4ed8",
                     "#15803d","#b91c1c","#b45309","#6d28d9","#0e7490",
                     "#9d174d","#064e3b","#78350f","#3730a3","#0c4a6e"]
+
+        def _team_title(_ti):
+            if _team_labels and _ti < len(_team_labels):
+                return _team_labels[_ti]
+            return f"팀 {_ti+1}"
+
+        def _avg_age(_t):
+            _ages = []
+            for _p in _t:
+                _b = _p.get("_birth")
+                if _b:
+                    _ages.append(_cur_year_disp - int(_b) + 1)
+            return (sum(_ages) / len(_ages)) if _ages else 0
 
         _n_res    = len(_res)
         _max_cols = min(_n_res, 4)
@@ -6366,17 +6564,22 @@ elif page == "🎯 이벤트 팀편성":
                 _t  = _res[_ti]
                 _tc = _tcolors[_ti % len(_tcolors)]
                 _avg_g = sum(p["_grade_num"] for p in _t) / len(_t) if _t else 0
+                _aage  = _avg_age(_t)
                 _mhtml = ""
                 for _pm in _t:
                     _pg    = str(_pm.get("grade","")).strip()
                     _pstar = "⭐" * (6 - int(_pg)) if _pg.isdigit() else "○"
                     _pgc   = GRADE_COLORS.get(_pg, "#9ca3af")
                     _gico  = "🔵" if str(_pm.get("gender","")).strip() == "남" else "🔴"
+                    _page  = ""
+                    _pb = _pm.get("_birth")
+                    if _pb:
+                        _page = f" <span style='color:#9ca3af;font-size:10px'>{_cur_year_disp-int(_pb)+1}세</span>"
                     _mhtml += (
                         f"<div style='display:flex;justify-content:space-between;align-items:center;"
                         f"padding:5px 8px;margin:3px 0;background:#fff;border-radius:6px;"
                         f"border-left:3px solid {_pgc};'>"
-                        f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>{_gico} {_pm['name']}</span>"
+                        f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>{_gico} {_pm['name']}{_page}</span>"
                         f"<span style='font-size:11px;color:{_pgc};font-weight:700'>{_pstar}</span>"
                         f"</div>"
                     )
@@ -6384,13 +6587,13 @@ elif page == "🎯 이벤트 팀편성":
                     f"<div style='background:{_tc}0d;border:2px solid {_tc}44;"
                     f"border-radius:12px;padding:14px;margin-bottom:8px;'>"
                     f"<div style='font-weight:900;color:{_tc};font-size:16px;margin-bottom:4px'>"
-                    f"🏸 팀 {_ti+1}</div>"
+                    f"🏸 {_team_title(_ti)}</div>"
                     f"<div style='font-size:11px;color:#9ca3af;margin-bottom:8px'>"
-                    f"{len(_t)}명 · 평균 {_avg_g:.1f}등급</div>{_mhtml}</div>",
+                    f"{len(_t)}명 · 평균 {_avg_g:.1f}등급 · 평균 {_aage:.0f}세</div>{_mhtml}</div>",
                     unsafe_allow_html=True)
 
         # 요약 테이블
-        st.markdown("#### 📋 팀별 등급 요약")
+        st.markdown("#### 📋 팀별 요약")
         _srows = []
         for _ti, _t in enumerate(_res):
             _gd = {str(g):0 for g in range(1,6)}; _gd["미지정"]=0
@@ -6399,18 +6602,21 @@ elif page == "🎯 이벤트 팀편성":
                 if _gv in _gd: _gd[_gv] += 1
                 else: _gd["미지정"] += 1
             _avg_g = sum(_p["_grade_num"] for _p in _t) / len(_t) if _t else 0
-            _srows.append({"팀":f"팀 {_ti+1}","인원":len(_t),
+            _aage  = _avg_age(_t)
+            _srows.append({"팀":_team_title(_ti),"인원":len(_t),
                 "1등급":_gd["1"],"2등급":_gd["2"],"3등급":_gd["3"],
                 "4등급":_gd["4"],"5등급":_gd["5"],"미지정":_gd["미지정"],
-                "평균등급":round(_avg_g,2)})
+                "평균등급":round(_avg_g,2),"평균나이":round(_aage,1)})
         st.dataframe(pd.DataFrame(_srows), use_container_width=True, hide_index=True)
 
         # CSV 다운로드
         _dlrows = []
         for _ti, _t in enumerate(_res):
             for _p in _t:
-                _dlrows.append({"팀":f"팀 {_ti+1}","성명":_p.get("name",""),
-                    "등급":_p.get("grade",""),"성별":_p.get("gender",""),
+                _pb = _p.get("_birth")
+                _page = (_cur_year_disp - int(_pb) + 1) if _pb else ""
+                _dlrows.append({"팀":_team_title(_ti),"성명":_p.get("name",""),
+                    "등급":_p.get("grade",""),"나이":_page,"성별":_p.get("gender",""),
                     "리그":_p.get("league",""),"카테고리":_p.get("category","")})
         _dlcsv = pd.DataFrame(_dlrows).to_csv(index=False, encoding="utf-8-sig")
         st.download_button("⬇️ 팀편성 결과 CSV", data=_dlcsv.encode("utf-8-sig"),
@@ -6423,10 +6629,9 @@ elif page == "🎯 이벤트 팀편성":
         # ── 대진표 생성 연동 ──────────────────────────────────
         st.markdown("---")
         st.markdown("### 📋 대진표 생성 연동")
-        st.info("팀 편성 결과를 대진표에 직접 연동합니다. 팀1→A리그, 팀2→B리그… (최대 5팀)")
-
-        if len(_res) > 5:
-            st.warning(f"{len(_res)}팀 중 처음 5팀만 연동됩니다.")
+        st.info("팀 편성 결과로 **팀 대결 대진표**를 만듭니다. "
+                "각 매치는 (한 팀 2명) vs (상대 팀 2명) 복식으로 구성되며, "
+                "모든 팀 조합이 맞붙습니다. 스코어보드에서 점수를 입력할 수 있습니다.")
 
         _ev_c1, _ev_c2 = st.columns([1, 2])
         with _ev_c1:
@@ -6434,58 +6639,59 @@ elif page == "🎯 이벤트 팀편성":
                 value=date.today().strftime("%Y-%m-%d"), key="ev_rp_date")
             _ev_rp_num  = st.text_input("일련번호", value="001", key="ev_rp_num")
         with _ev_c2:
-            _ev_pairing = st.radio("페어링 방식",
-                ["🔴 완전 랜덤페어","🔵 조건부 랜덤페어"],
-                horizontal=True, key="ev_pairing_mode")
+            _ev_rounds = st.number_input("라운드 수 (각 팀쌍 반복 횟수)",
+                min_value=1, max_value=5, value=3, step=1, key="ev_rounds")
 
         if st.button("🏸 이 팀으로 대진표 생성", type="primary", key="ev_gen_schedule"):
             if not is_logged_in():
                 st.error("대진표 생성은 로그인 후 이용할 수 있습니다.")
             else:
-                _ev_teams_use = _res[:5]
-                _ev_lp = {}; _ev_lc = {}
-                for _ti, _t in enumerate(_ev_teams_use):
-                    _lg  = LEAGUE_NAMES[_ti]
-                    _pfx = LEAGUE_PREFIXES[_ti]
+                # 각 팀 → 플레이어 코드 리스트로 변환
+                # 코드 형식: {팀접두사}{M/W}{이름}  (팀별 고유 접두사로 동명이인 구분)
+                _ev_team_codes = []
+                for _ti, _t in enumerate(_res):
+                    _pfx = LEAGUE_PREFIXES[_ti] if _ti < len(LEAGUE_PREFIXES) else chr(ord('A') + _ti)
                     _codes = []
                     for _p in _t:
-                        _gnd  = str(_p.get("gender","")).strip()
-                        _gc   = "M" if _gnd == "남" else "W"
+                        _gnd = str(_p.get("gender","")).strip()
+                        _gc  = "M" if _gnd == "남" else "W"
                         _codes.append(f"{_pfx}{_gc}{str(_p.get('name','')).strip()}")
-                    _ev_lp[_lg] = _codes
-                    _ev_lc[_lg] = {"priority":"동성우선","mixed_max":None,"dong_min":None}
+                    _ev_team_codes.append(_codes)
 
+                # 유효성: 각 팀 최소 2명, 팀 2개 이상
                 _ev_errs = []
-                for _lg, _pl in _ev_lp.items():
-                    if 0 < len(_pl) < 4:
-                        _ev_errs.append(f"{_lg} 인원 {len(_pl)}명 (최소 4명 필요)")
-                if not any(len(_pl) >= 4 for _pl in _ev_lp.values()):
-                    _ev_errs.append("최소 한 팀에 4명 이상이 필요합니다.")
+                if len(_ev_team_codes) < 2:
+                    _ev_errs.append("팀이 2개 이상이어야 대결할 수 있습니다.")
+                for _ti, _codes in enumerate(_ev_team_codes):
+                    if len(_codes) < 2:
+                        _ev_errs.append(f"팀 {_ti+1} 인원이 2명 미만입니다 ({len(_codes)}명).")
 
                 if _ev_errs:
-                    for _e in _ev_errs: st.error(_e)
+                    for _e in _ev_errs:
+                        st.error(_e)
                 else:
-                    _ev_key    = f"{_date_with_weekday(_ev_rp_date.strip())}_{_ev_rp_num.strip()}"
-                    _ev_is_ran = (_ev_pairing == "🔴 완전 랜덤페어")
-                    with st.spinner("이벤트 대진표 생성 중…"):
-                        if _ev_is_ran:
-                            _ev_sched, _ev_stats = generate_schedule_fully_random(_ev_lp)
-                        else:
-                            _ev_sched, _ev_stats = generate_schedule_from_leagues(_ev_lp, _ev_lc)
+                    # 키에 [이벤트] 마커 → 기록실 집계에서 자동 제외
+                    _ev_key = f"{_date_with_weekday(_ev_rp_date.strip())}_{_ev_rp_num.strip()}[이벤트]"
+                    _ev_labels = st.session_state.get("_team_labels")  # OB/YB 등
+                    with st.spinner("팀 대결 대진표 생성 중…"):
+                        _ev_sched, _ev_stats = generate_event_team_vs_team(
+                            _ev_team_codes, num_rounds=int(_ev_rounds),
+                            team_labels=_ev_labels)
 
                     if not _ev_sched:
-                        st.error("대진표를 생성할 수 없습니다.")
+                        st.error("대진표를 생성할 수 없습니다. 팀 인원을 확인해주세요.")
                     else:
-                        shelf_save(_ev_key, serialize_schedule(_ev_sched), {}, _ev_is_ran)
+                        # 이벤트 대진표는 완전랜덤 플래그로 저장 (집계 호환)
+                        shelf_save(_ev_key, serialize_schedule(_ev_sched), {}, True)
                         st.session_state.update({
                             "rp_schedule": _ev_sched, "rp_key": _ev_key,
-                            "sb_schedule": _ev_sched, "sb_scores": {}, "sb_key": "",
-                            "last_gen_params": {
-                                "league_players": _ev_lp, "is_fully_random": _ev_is_ran,
-                                "league_configs": _ev_lc, "use_seed": False,
-                                "seed_val": None, "rp_key": _ev_key,
-                            },
+                            "sb_schedule": _ev_sched, "sb_scores": {}, "sb_key": _ev_key,
+                            "sb_is_locked": False,
+                            "_event_schedule_ready": True,
                         })
-                        st.success(f"✅ 대진표 **{_ev_key}** 저장 완료! 📋 대진표생성 메뉴에서 확인하세요.")
-                        st.session_state["current_page"] = "📋 대진표생성"
-                        st.rerun()
+                        st.success(
+                            f"✅ 팀 대결 대진표 **{_ev_key}** 생성·저장 완료!\n\n"
+                            f"👈 왼쪽 메뉴에서 **📊 스코어보드** 또는 **📋 대진표생성**을 선택하면 "
+                            f"바로 확인하고 점수를 입력할 수 있습니다."
+                        )
+                        st.balloons()
