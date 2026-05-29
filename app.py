@@ -456,7 +456,16 @@ def _restore_shelf_from_gsheet():
     if st.session_state.get("_shelf_restored"):
         return
     st.session_state["_shelf_restored"] = True
-    # ① 대진표·점수 복원
+    # ① schedules / settings 탭 없으면 미리 생성 (저장 전에 탭이 반드시 있어야 함)
+    try:
+        _get_schedules_sheet()
+    except Exception:
+        pass
+    try:
+        _get_settings_sheet()
+    except Exception:
+        pass
+    # ② 대진표·점수 복원
     try:
         with shelve.open(SHELF_PATH) as db:
             local_keys = set(db.keys())
@@ -468,7 +477,7 @@ def _restore_shelf_from_gsheet():
                     db[dk] = val
     except Exception:
         pass
-    # ② 설정 데이터 복원 (회원·계정·게스트·제외선수)
+    # ③ 설정 데이터 복원 (계정·게스트·제외선수)
     _settings_restore_all()
 
 
@@ -482,13 +491,23 @@ def _get_settings_sheet():
     """settings 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
     try:
         wb = _get_gsheet_connection()
-        try:
-            return wb.worksheet(SETTINGS_SHEET_NAME)
-        except Exception:
-            ws = wb.add_worksheet(title=SETTINGS_SHEET_NAME, rows=200, cols=2)
-            ws.append_row(["key", "value"])
-            return ws
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"settings: gsheet 연결 실패 → {_e}")
+        return None
+    # 탭 있으면 반환
+    try:
+        return wb.worksheet(SETTINGS_SHEET_NAME)
     except Exception:
+        pass
+    # 탭 없음 → 생성
+    try:
+        ws = wb.add_worksheet(title=SETTINGS_SHEET_NAME, rows=200, cols=2)
+        ws.append_row(["key", "value"])
+        return ws
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"settings 탭 생성 실패 → {_e}")
         return None
 
 
