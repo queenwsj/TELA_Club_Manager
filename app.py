@@ -4372,27 +4372,24 @@ elif page == "📋 대진표생성":
                     _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in normal_df.iterrows():
                         _sel_store[f"{lg}_{int(r['id'])}"] = True
+                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = True
                     _gsel_store = st.session_state.setdefault("selected_guests", {})
                     for gm in _guests_lg:
                         _gsel_store[f"{lg}_{gm['name']}"] = True
-                    # 위젯 키도 동기화
-                    for _, r in normal_df.iterrows():
-                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = True
-                    for gm in _guests_lg:
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = True
-                    st.rerun()
+                    # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
+                    # 위젯 키 직접 설정으로 즉시 반영
+
                 if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}"):
                     _sel_store = st.session_state.setdefault("selected_members", {})
-                    for _, r in lg_df.iterrows():
+                    for _, r in normal_df.iterrows():
                         _sel_store[f"{lg}_{int(r['id'])}"] = False
+                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = False
                     _gsel_store = st.session_state.setdefault("selected_guests", {})
                     for gm in _guests_lg:
                         _gsel_store[f"{lg}_{gm['name']}"] = False
-                    for _, r in lg_df.iterrows():
-                        st.session_state[f"mchk_{lg}_{int(r['id'])}"] = False
-                    for gm in _guests_lg:
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = False
-                    st.rerun()
+                    # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
 
                 col_cnt.markdown(
                     f'<div style="padding-top:6px;color:{lc};font-weight:700;">'
