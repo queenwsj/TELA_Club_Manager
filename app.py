@@ -3921,10 +3921,7 @@ if page == "📊 스코어보드":
 
     st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
 
-    # 스코어보드: 부관리자 이상 로그인 필요
-    if not is_sub_admin():
-        st.warning("🔐 스코어보드는 등록 계정(부관리자 이상)으로 로그인 후 이용할 수 있습니다.")
-        st.stop()
+    # 스코어보드 열람은 누구나 가능, 점수 입력은 부관리자 이상 (_can_edit로 제어)
     # 구글시트 동기화 오류 표시 (디버깅용, 관리자만)
     if is_admin():
         _errs = st.session_state.pop("_gsheet_errors", [])
