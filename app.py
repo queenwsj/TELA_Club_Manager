@@ -2401,6 +2401,17 @@ def gender_html(g):
 def cell(txt, color="#374151", extra=""):
     return f"<div style='padding:7px 0;{RS_FS};color:{color};{extra}'>{txt}</div>"
 
+def phone_cell(phone_val, extra=""):
+    """전화번호를 tel: 링크로 감싸서 반환. 값 없으면 — 표시."""
+    v = str(phone_val or "").strip()
+    if not v or v in ("—", "nan"):
+        return cell("—")
+    # 링크용 숫자만 추출 (하이픈 제거)
+    tel_num = v.replace("-", "").replace(" ", "")
+    return (f"<div style='padding:7px 0;{RS_FS};{extra}'>"
+            f"<a href='tel:{tel_num}' style='color:#2563eb;text-decoration:none;font-weight:500'>{v}</a>"
+            f"</div>")
+
 # ─────────────────────────────────────────────────────────
 # 검증 함수
 # ─────────────────────────────────────────────────────────
@@ -2649,9 +2660,15 @@ def dialog_detail(row):
     # ── 기본 정보 ──
     def info_row(label, value, color="#1a2e4a"):
         if not value or str(value).strip() in ("", "—", "nan"): value = "—"
+        # 연락처는 tel: 링크로 처리
+        if label == "연락처" and value != "—":
+            tel_num = str(value).replace("-","").replace(" ","")
+            disp = f"<a href='tel:{tel_num}' style='color:#2563eb;text-decoration:none;font-weight:600'>{value} 📞</a>"
+        else:
+            disp = f"<span style='color:{color};font-weight:500'>{value}</span>"
         return (f"<div style='display:flex;padding:8px 0;border-bottom:1px solid #f1f5f9;{RS_FS}'>"
                 f"<div style='width:100px;color:#6b7280;font-weight:600;flex-shrink:0'>{label}</div>"
-                f"<div style='color:{color};font-weight:500'>{value}</div></div>")
+                f"<div>{disp}</div></div>")
 
     st.markdown("**📋 기본 정보**")
     st.markdown(
@@ -3190,7 +3207,7 @@ def render_roster_page():
             rc[0].markdown(f"<div style='padding:5px 0'>{badge(cat)}</div>", unsafe_allow_html=True)
             rc[1].markdown(f"<div style='{_g_fs};padding:7px 0;font-weight:600;color:#1a2e4a'>{row.get('name','')}</div>", unsafe_allow_html=True)
             phone_val = str(row.get('phone','') or '—')
-            rc[2].markdown(f"<div style='{_g_fs};padding:7px 0;color:#374151'>{phone_val}</div>", unsafe_allow_html=True)
+            rc[2].markdown(phone_cell(phone_val), unsafe_allow_html=True)
             st.markdown("<div style='border-bottom:1px solid #f1f5f9'></div>", unsafe_allow_html=True)
         return
 
@@ -3764,7 +3781,7 @@ def render_roster_page():
             rc[col_offset+4].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
             rc[col_offset+5].markdown(cell(by_val), unsafe_allow_html=True)
             rc[col_offset+6].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True)
-            rc[col_offset+7].markdown(cell(row.get('phone','') or '—'), unsafe_allow_html=True)
+            rc[col_offset+7].markdown(phone_cell(row.get('phone','') or ''), unsafe_allow_html=True)
             rc[col_offset+8].markdown(cell(row.get('region','') or '—',"#374151"), unsafe_allow_html=True)
             rc[col_offset+9].markdown(cell(row.get('join_date','') or '—',"#6b7280"), unsafe_allow_html=True)
     
