@@ -1805,7 +1805,7 @@ def compute_scoreboard_stats(schedule, scores):
         if key not in player_stats:
             player_stats[key] = {
                 "이름": display_name(code), "리그": league,
-                "출전":0,"승":0,"패":0,"득점":0,"실점":0,
+                "출전":0,"승":0,"무":0,"패":0,"득점":0,"실점":0,
                 "1R출전":0,"2R출전":0,"3R출전":0,"4R출전":0,
             }
 
@@ -1851,8 +1851,10 @@ def compute_scoreboard_stats(schedule, scores):
             elif s2 > s1:
                 winners, losers, ws, ls = t2_valid, t1_valid, s2, s1
             else:
+                # 무승부
                 for p in t1_valid + t2_valid:
                     if p in player_stats:
+                        player_stats[p]["무"]   += 1
                         player_stats[p]["득점"] += s1
                         player_stats[p]["실점"] += s2
                 continue
@@ -1869,7 +1871,7 @@ def compute_scoreboard_stats(schedule, scores):
 
     if not player_stats: return pd.DataFrame()
     df = pd.DataFrame(list(player_stats.values()))
-    df = df[["리그","이름","출전","승","패","득점","실점","1R출전","2R출전","3R출전","4R출전"]]
+    df = df[["리그","이름","출전","승","무","패","득점","실점","1R출전","2R출전","3R출전","4R출전"]]
     return df.sort_values(["리그","승","득점"],ascending=[True,False,False]).reset_index(drop=True)
 
 
@@ -1900,7 +1902,7 @@ def deserialize_schedule(schedule):
 
 RECORDS_SHEET_NAME = "records"
 RECORDS_COLUMNS = ["date_key","year_month","year","player_key","display_name","league",
-                   "wins","losses","pf","pa"]
+                   "wins","losses","draws","pf","pa"]
 
 def _get_records_sheet():
     """records 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
@@ -2001,7 +2003,7 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
                     "player_key":  pkey,
                     "display_name": pname(code),
                     "league":      match["league"],
-                    "wins": 0, "losses": 0, "pf": 0, "pa": 0,
+                    "wins": 0, "losses": 0, "draws": 0, "pf": 0, "pa": 0,
                 }
             session_stats[pkey]["display_name"] = pname(code)
             session_stats[pkey]["league"] = match["league"]
@@ -2017,9 +2019,11 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
             for k in t1_keys:
                 session_stats[k]["losses"]+=1; session_stats[k]["pf"]+=s1; session_stats[k]["pa"]+=s2
         else:
+            # 무승부: 득점/실점 기록 + draws +1
             for k in t1_keys + t2_keys:
-                session_stats[k]["pf"] += s1
-                session_stats[k]["pa"] += s2
+                session_stats[k]["draws"] += 1
+                session_stats[k]["pf"]    += s1
+                session_stats[k]["pa"]    += s2
     return session_stats
 
 
@@ -2062,6 +2066,7 @@ def records_commit(date_key: str, schedule: list, scores: dict):
                 str(pdata.get("league","")),
                 int(pdata.get("wins",0)),
                 int(pdata.get("losses",0)),
+                int(pdata.get("draws",0)),
                 int(pdata.get("pf",0)),
                 int(pdata.get("pa",0)),
             ])
@@ -2145,13 +2150,15 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
             agg[pkey] = {
                 "리그":    str(r.get("league","")),
                 "이름":    str(r.get("display_name", pkey)),
-                "승":      0, "패": 0, "득점": 0, "실점": 0, "출전경기": 0,
+                "승": 0, "패": 0, "무": 0, "득점": 0, "실점": 0, "출전경기": 0,
             }
         _w = int(r.get("wins",0)  or 0)
         _l = int(r.get("losses",0) or 0)
+        _d = int(r.get("draws",0) or 0)
         agg[pkey]["승"]       += _w
         agg[pkey]["패"]       += _l
-        agg[pkey]["출전경기"] += _w + _l
+        agg[pkey]["무"]       += _d
+        agg[pkey]["출전경기"] += _w + _l + _d
         agg[pkey]["득점"]     += int(r.get("pf",0) or 0)
         agg[pkey]["실점"]     += int(r.get("pa",0) or 0)
         agg[pkey]["이름"]  = str(r.get("display_name", pkey))
@@ -2159,13 +2166,14 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
 
     rows = []
     for pkey, rec in agg.items():
-        total = rec["승"] + rec["패"]
+        total = rec["승"] + rec["패"] + rec["무"]
         rate  = f"{rec['승']/total*100:.1f}%" if total > 0 else "-"
         rows.append({
             "리그":     rec["리그"],
             "이름":     rec["이름"],
             "출전경기": rec["출전경기"],
             "승":       rec["승"],
+            "무":       rec["무"],
             "패":       rec["패"],
             "득점":     rec["득점"],
             "실점":     rec["실점"],
@@ -2178,7 +2186,7 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     df = df.sort_values(["리그","득점","득실차","승"], ascending=[True,False,False,False]).reset_index(drop=True)
     df["순위"] = df.groupby("리그").cumcount() + 1
     df["순위"] = df["순위"].apply(lambda x: f"{x}위")
-    cols = ["리그","순위","이름","출전경기","승","패","득점","실점","득실차","승률"]
+    cols = ["리그","순위","이름","출전경기","승","무","패","득점","실점","득실차","승률"]
     return df[cols]
 
 
@@ -4524,17 +4532,21 @@ if page == "📊 스코어보드":
                 t2a = display_name(match["team2"][0]); t2b = display_name(match["team2"][1])
                 match_type = match["type"]
 
-                t1_win    = is_locked and s1_saved > s2_saved
-                t2_win    = is_locked and s2_saved > s1_saved
-                win_style = "color:#b71c1c;font-weight:900;"
-                nrm_style = "color:#333;font-weight:600;"
+                t1_win  = is_locked and s1_saved > s2_saved
+                t2_win  = is_locked and s2_saved > s1_saved
+                is_draw = is_locked and s1_saved == s2_saved
+
+                win_style  = "color:#b71c1c;font-weight:900;"
+                draw_style = "color:#7c3aed;font-weight:900;"  # 무승부: 보라색
+                nrm_style  = "color:#333;font-weight:600;"
 
                 border_color = "#a5d6a7" if is_locked else lc
                 bg_color     = "#f0fff0" if is_locked else "#fff"
                 dup_badge    = ' <span style="font-size:0.65rem;color:#e65100;background:#fff3e0;padding:1px 5px;border-radius:8px;">중복</span>' if is_dup_saved else ""
+                draw_badge   = ' <span style="font-size:0.65rem;color:#7c3aed;background:#ede9fe;padding:1px 6px;border-radius:8px;font-weight:700;">무승부</span>' if is_draw else ""
 
-                _p1 = win_style if t1_win else nrm_style
-                _p2 = win_style if t2_win else nrm_style
+                _p1 = win_style if t1_win else (draw_style if is_draw else nrm_style)
+                _p2 = win_style if t2_win else (draw_style if is_draw else nrm_style)
                 st.markdown(
                     f'<div style="border:1px solid {border_color};border-left:4px solid {lc};'
                     f'border-radius:6px;background:{bg_color};padding:6px 8px;margin-bottom:2px;">'
@@ -4552,7 +4564,7 @@ if page == "📊 스코어보드":
                     f'</div>'
                     f'</div>'
                     f'<div style="font-size:0.58rem;color:#aaa;text-align:right;margin-top:1px;">'
-                    f'{match_type}{dup_badge}{" ✅저장완료" if is_locked else ""}'
+                    f'{match_type}{dup_badge}{draw_badge}{" ✅저장완료" if is_locked else ""}'
                     f'</div>'
                     f'</div>', unsafe_allow_html=True)
 
