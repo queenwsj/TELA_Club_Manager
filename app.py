@@ -1898,14 +1898,16 @@ def deserialize_schedule(schedule):
 # 섹션 12-B: 누적 기록실 (구글시트 저장)
 # ============================================================
 # 구글시트 "records" 워크시트 구조:
-# date_key | year_month | year | player_key | display_name | league | wins | losses | pf | pa
+# date_key | year_month | year | player_key | display_name | league | wins | losses | pf | pa | draws
+# ※ draws는 기존 시트 컬럼(wins/losses/pf/pa) 뒤에 append로 추가됨
 
 RECORDS_SHEET_NAME = "records"
 RECORDS_COLUMNS = ["date_key","year_month","year","player_key","display_name","league",
-                   "wins","losses","draws","pf","pa"]
+                   "wins","losses","pf","pa","draws"]
 
 def _get_records_sheet():
     """records 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
+    import time as _time
     try:
         wb = _get_gsheet_connection()
         try:
@@ -1915,16 +1917,27 @@ def _get_records_sheet():
                                   rows=5000, cols=len(RECORDS_COLUMNS))
             ws.append_row(RECORDS_COLUMNS)
             return ws
-        # ── 헤더 마이그레이션: 새 컬럼(draws 등)이 없으면 자동 추가 ──
-        try:
-            headers = ws.row_values(1)
-            for col in RECORDS_COLUMNS:
-                if col not in headers:
-                    import time as _t; _t.sleep(1)  # quota 방지
-                    ws.update_cell(1, len(headers) + 1, col)
-                    headers.append(col)
-        except Exception:
-            pass
+        # ── 헤더 마이그레이션: 누락된 컬럼을 맨 끝에 추가 ──
+        for attempt in range(3):
+            try:
+                headers = ws.row_values(1)
+                for col in RECORDS_COLUMNS:
+                    if col not in headers:
+                        _time.sleep(2)  # quota 방지
+                        ws.update_cell(1, len(headers) + 1, col)
+                        headers.append(col)
+                break  # 성공
+            except Exception as _me:
+                if attempt < 2:
+                    _time.sleep(3)
+                else:
+                    # 마이그레이션 실패를 세션에 기록 (앱 중단은 없음)
+                    try:
+                        import streamlit as _st
+                        _st.session_state.setdefault("_gsheet_errors", []).append(
+                            f"records 헤더 마이그레이션 실패: {_me}")
+                    except Exception:
+                        pass
         return ws
     except Exception:
         return None
@@ -6157,6 +6170,18 @@ elif page == "🏆 기록실":
 
 
     _now = date.today()
+    
+    # 무승부 컬럼 추가 이후 재집계 필요 안내
+    if not st.session_state.get("_draws_reagg_dismissed"):
+        st.warning(
+            "⚠️ **기록실 데이터 재집계가 필요합니다.**  \n"
+            "무승부(무) 컬럼이 추가되어 기존 점수가 올바르게 반영되려면 "
+            "아래 관리자 메뉴 → **🔁 전체 날짜 일괄 재집계** 버튼을 눌러주세요.",
+            icon="⚠️"
+        )
+        if st.button("✅ 재집계 완료 (안내 닫기)", key="dismiss_draws_notice"):
+            st.session_state["_draws_reagg_dismissed"] = True
+            st.rerun()
     _c1, _c2, _c3 = st.columns([3, 3, 2])
     with _c1:
         _rec_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
