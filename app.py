@@ -1845,13 +1845,13 @@ def compute_scoreboard_stats(schedule, scores):
         t2_valid = [base_name(c) for c in t2_all
                     if not _skip_player(c) and not _is_duplicate_player(c)]
 
-        if s1 is not None and s2 is not None and (s1+s2) > 0:
+        if s1 is not None and s2 is not None:
             if s1 > s2:
                 winners, losers, ws, ls = t1_valid, t2_valid, s1, s2
             elif s2 > s1:
                 winners, losers, ws, ls = t2_valid, t1_valid, s2, s1
             else:
-                # 무승부
+                # 무승부 (0:0 포함)
                 for p in t1_valid + t2_valid:
                     if p in player_stats:
                         player_stats[p]["무"]   += 1
@@ -1909,12 +1909,23 @@ def _get_records_sheet():
     try:
         wb = _get_gsheet_connection()
         try:
-            return wb.worksheet(RECORDS_SHEET_NAME)
+            ws = wb.worksheet(RECORDS_SHEET_NAME)
         except Exception:
             ws = wb.add_worksheet(title=RECORDS_SHEET_NAME,
                                   rows=5000, cols=len(RECORDS_COLUMNS))
             ws.append_row(RECORDS_COLUMNS)
             return ws
+        # ── 헤더 마이그레이션: 새 컬럼(draws 등)이 없으면 자동 추가 ──
+        try:
+            headers = ws.row_values(1)
+            for col in RECORDS_COLUMNS:
+                if col not in headers:
+                    import time as _t; _t.sleep(1)  # quota 방지
+                    ws.update_cell(1, len(headers) + 1, col)
+                    headers.append(col)
+        except Exception:
+            pass
+        return ws
     except Exception:
         return None
 
@@ -2043,8 +2054,11 @@ def records_commit(date_key: str, schedule: list, scores: dict):
         if ws is None:
             return
 
-        # ① 기존 동일 date_key 행 삭제 (집계가 비어있어도 반드시 실행)
+        # ① 실제 시트 헤더 확인 (컬럼 순서/draws 유무 모두 반영)
         all_rows = ws.get_all_values()
+        headers  = all_rows[0] if all_rows else RECORDS_COLUMNS
+
+        # ① 기존 동일 date_key 행 삭제 (집계가 비어있어도 반드시 실행)
         del_rows = [i+1 for i, row in enumerate(all_rows)
                     if i > 0 and len(row) > 0 and row[0] == date_key]
         for ri in sorted(del_rows, reverse=True):
@@ -2055,25 +2069,29 @@ def records_commit(date_key: str, schedule: list, scores: dict):
         if not session_stats:
             return  # 삭제만 하고 종료 (점수 없거나 전원 제외인 경우)
 
-        new_rows = []
-        for pkey, pdata in session_stats.items():
-            new_rows.append([
-                str(pdata.get("date_key","")),
-                str(pdata.get("year_month","")),
-                str(pdata.get("year","")),
-                str(pdata.get("player_key","")),
-                str(pdata.get("display_name","")),
-                str(pdata.get("league","")),
-                int(pdata.get("wins",0)),
-                int(pdata.get("losses",0)),
-                int(pdata.get("draws",0)),
-                int(pdata.get("pf",0)),
-                int(pdata.get("pa",0)),
-            ])
+        # ③ 실제 헤더 순서로 행 구성 (컬럼 밀림 방지)
+        def _pdata_to_row(pdata, hdrs):
+            mapping = {
+                "date_key":    str(pdata.get("date_key","")),
+                "year_month":  str(pdata.get("year_month","")),
+                "year":        str(pdata.get("year","")),
+                "player_key":  str(pdata.get("player_key","")),
+                "display_name":str(pdata.get("display_name","")),
+                "league":      str(pdata.get("league","")),
+                "wins":        int(pdata.get("wins",0)),
+                "losses":      int(pdata.get("losses",0)),
+                "draws":       int(pdata.get("draws",0)),
+                "pf":          int(pdata.get("pf",0)),
+                "pa":          int(pdata.get("pa",0)),
+            }
+            return [mapping.get(h, "") for h in hdrs]
+
+        new_rows = [_pdata_to_row(pdata, headers) for pdata in session_stats.values()]
         if new_rows:
             ws.append_rows(new_rows, value_input_option="USER_ENTERED")
-    except Exception:
-        pass
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"records_commit 예외 (key={date_key}): {_e}")
 
 
 def records_delete_by_date(date_key: str):
