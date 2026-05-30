@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9
+TELA CLUB Random Match Generator v5.8
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -507,18 +507,43 @@ def is_sub_admin() -> bool:
     return bool(u and u.get("role") in ("admin", "sub_admin"))
 
 
+def _gsheet_with_retry(fn, label="", max_retries=5):
+    """
+    구글시트 write 작업을 최대 max_retries회 재시도.
+    429(Quota exceeded) / 503(일시 불가) 에러에 지수 백오프 적용.
+    최종 실패 시 st.session_state._gsheet_errors에 기록(앱 중단 없음).
+    """
+    import time as _time
+    delay = 2.0  # 초기 대기 시간(초)
+    for attempt in range(max_retries):
+        try:
+            fn()
+            return  # 성공
+        except Exception as _e:
+            err_str = str(_e)
+            is_quota = "429" in err_str or "Quota" in err_str or "quota" in err_str
+            is_retry = is_quota or "503" in err_str or "500" in err_str
+            if is_retry and attempt < max_retries - 1:
+                _time.sleep(delay)
+                delay = min(delay * 2, 60)  # 최대 60초
+                continue
+            # 재시도 불가 에러 or 최대 시도 초과 → 오류 기록만
+            st.session_state.setdefault("_gsheet_errors", []).append(
+                f"{label} 예외: {_e}")
+            return
+
+
 def shelf_save(date_key: str, schedule: list, scores: dict,
                is_fully_random: bool = False, is_locked: bool = False):
     # ① 로컬 shelve (빠른 읽기 캐시)
     with shelve.open(SHELF_PATH) as db:
         db[date_key] = {"schedule": schedule, "scores": scores,
                         "is_fully_random": is_fully_random, "is_locked": is_locked}
-    # ② 구글시트 schedules 탭 (영구 저장 — 재시작 후 복원용)
-    try:
+    # ② 구글시트 schedules 탭 — 429 대비 지수 백오프 재시도
+    def _do_save():
         _gsheet_sched_save(date_key, schedule, scores, is_fully_random, is_locked)
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"schedules 저장 예외 (key={date_key}): {_e}")
+
+    _gsheet_with_retry(_do_save, label=f"schedules 저장 (key={date_key})")
 
 def _is_valid_loaded(val: dict) -> bool:
     """로드된 데이터가 정상인지 검증 (컬럼 밀림 손상 감지)."""
@@ -2244,7 +2269,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.9", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TELA CLUB v5.8", page_icon="🎾", layout="wide")
 
 
 
@@ -2530,20 +2555,25 @@ def save_row(df, row, is_new, action_detail=""):
     values = [str(row.get(c,"") or "") for c in RS_COLUMNS]
     action = "등록" if is_new else "수정"
     if is_new:
-        sheet.append_row(values, value_input_option="USER_ENTERED")
+        _gsheet_with_retry(
+            lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
+            label=f"회원 등록 (id={row.get('id','')})")
     else:
         all_ids = sheet.col_values(1)
         try:
             ri         = all_ids.index(str(row["id"])) + 1
             start_cell = rowcol_to_a1(ri, 1)
             end_cell   = rowcol_to_a1(ri, len(RS_COLUMNS))
-            sheet.update(f"{start_cell}:{end_cell}", [values], value_input_option="USER_ENTERED")
+            _gsheet_with_retry(
+                lambda: sheet.update(f"{start_cell}:{end_cell}", [values], value_input_option="USER_ENTERED"),
+                label=f"회원 수정 (id={row.get('id','')})")
         except ValueError:
-            sheet.append_row(values, value_input_option="USER_ENTERED")
+            _gsheet_with_retry(
+                lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
+                label=f"회원 수정→등록 (id={row.get('id','')})")
     log_audit(action, row.get("id",""), row.get("name",""), action_detail or f"카테고리:{row.get('category','')}")
 
 def soft_delete_row(mid, member_name):
-    """소프트 삭제: deleted_at 컬럼에 현재 시각을 기록. 행은 보존됨."""
     sheet   = _get_gsheet_connection().sheet1
     all_ids = sheet.col_values(1)
     if not all_ids or all_ids[0] != "id":
@@ -2552,17 +2582,18 @@ def soft_delete_row(mid, member_name):
         idx = all_ids.index(str(mid))
         if idx == 0:
             raise RuntimeError("헤더 행은 삭제할 수 없습니다.")
-        ri         = idx + 1
-        del_col    = RS_COLUMNS.index("deleted_at") + 1
-        del_cell   = rowcol_to_a1(ri, del_col)
-        sheet.update(del_cell, [[datetime.now().strftime("%Y-%m-%d %H:%M:%S")]],
-                     value_input_option="USER_ENTERED")
+        ri       = idx + 1
+        del_col  = RS_COLUMNS.index("deleted_at") + 1
+        del_cell = rowcol_to_a1(ri, del_col)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _gsheet_with_retry(
+            lambda: sheet.update(del_cell, [[ts]], value_input_option="USER_ENTERED"),
+            label=f"소프트삭제 (id={mid})")
         log_audit("삭제(소프트)", mid, member_name, f"휴지통 이동. {TRASH_DAYS}일 후 영구 삭제.")
     except ValueError:
         pass
 
 def hard_delete_row(mid, member_name):
-    """영구 삭제: 시트에서 행 자체를 제거."""
     sheet   = _get_gsheet_connection().sheet1
     all_ids = sheet.col_values(1)
     if not all_ids or all_ids[0] != "id":
@@ -2571,13 +2602,14 @@ def hard_delete_row(mid, member_name):
         idx = all_ids.index(str(mid))
         if idx == 0:
             raise RuntimeError("헤더 행은 삭제할 수 없습니다.")
-        sheet.delete_rows(idx + 1)
+        _gsheet_with_retry(
+            lambda: sheet.delete_rows(idx + 1),
+            label=f"영구삭제 (id={mid})")
         log_audit("삭제(영구)", mid, member_name, "영구 삭제 완료.")
     except ValueError:
         pass
 
 def restore_row(mid, member_name):
-    """소프트 삭제 취소: deleted_at을 비워서 복구."""
     sheet   = _get_gsheet_connection().sheet1
     all_ids = sheet.col_values(1)
     try:
@@ -2585,7 +2617,9 @@ def restore_row(mid, member_name):
         ri  = idx + 1
         del_col  = RS_COLUMNS.index("deleted_at") + 1
         del_cell = rowcol_to_a1(ri, del_col)
-        sheet.update(del_cell, [[""]], value_input_option="USER_ENTERED")
+        _gsheet_with_retry(
+            lambda: sheet.update(del_cell, [[""]], value_input_option="USER_ENTERED"),
+            label=f"복구 (id={mid})")
         log_audit("복구", mid, member_name, "휴지통에서 복구.")
     except ValueError:
         pass
@@ -4123,7 +4157,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9")
+st.sidebar.caption("v5.8")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -4505,16 +4539,16 @@ if page == "📊 스코어보드":
                     f'<div style="border:1px solid {border_color};border-left:4px solid {lc};'
                     f'border-radius:6px;background:{bg_color};padding:6px 8px;margin-bottom:2px;">'
                     f'<div style="display:flex;align-items:center;gap:2px;">'
-                    f'<div style="flex:1;min-width:0;overflow:hidden;">'
-                    f'<div style="{_p1}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t1a}</div>'
-                    f'<div style="{_p1}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t1b}</div>'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<div style="{_p1}font-size:0.78rem;word-break:keep-all;overflow-wrap:anywhere;line-height:1.3">{t1a}</div>'
+                    f'<div style="{_p1}font-size:0.78rem;word-break:keep-all;overflow-wrap:anywhere;line-height:1.3">{t1b}</div>'
                     f'</div>'
-                    f'<div style="flex:0 0 56px;text-align:center;font-size:0.92rem;font-weight:800;color:#333;white-space:nowrap;">'
+                    f'<div style="flex:0 0 56px;text-align:center;font-size:0.92rem;font-weight:800;color:#333;white-space:nowrap;padding:0 2px;">'
                     f'{s1_saved if is_locked else "·"}&nbsp;vs&nbsp;{s2_saved if is_locked else "·"}'
                     f'</div>'
-                    f'<div style="flex:1;min-width:0;overflow:hidden;text-align:right;">'
-                    f'<div style="{_p2}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t2a}</div>'
-                    f'<div style="{_p2}font-size:0.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{t2b}</div>'
+                    f'<div style="flex:1;min-width:0;text-align:right;">'
+                    f'<div style="{_p2}font-size:0.78rem;word-break:keep-all;overflow-wrap:anywhere;line-height:1.3">{t2a}</div>'
+                    f'<div style="{_p2}font-size:0.78rem;word-break:keep-all;overflow-wrap:anywhere;line-height:1.3">{t2b}</div>'
                     f'</div>'
                     f'</div>'
                     f'<div style="font-size:0.58rem;color:#aaa;text-align:right;margin-top:1px;">'
@@ -5993,7 +6027,7 @@ function showMsg() {{
 
         with st.expander("📖 사용 방법 및 규칙 안내"):
             st.markdown("""
-### v5.9 기능 안내
+### v5.8 기능 안내
 
 | 항목 | 내용 |
 |------|------|
@@ -6285,7 +6319,7 @@ elif page == "👥 회원명부":
 
 
 # ========================================================================
-# 16. 페이지: 이벤트 팀편성 (v5.9)
+# 16. 페이지: 이벤트 팀편성 (v5.8)
 # ========================================================================
 elif page == "🎯 이벤트 팀편성":
     st.markdown("""
