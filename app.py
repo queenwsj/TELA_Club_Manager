@@ -2224,13 +2224,68 @@ def records_load_cached() -> list:
     return _records_sheet_load_all()
 
 
+def _records_rows_from_shelf() -> list:
+    """
+    로컬 저장된 모든 스코어보드(shelf)에서 직접 선수별 통계를 계산.
+    구글시트 records 탭의 누적/오염 데이터에 의존하지 않으므로 항상 정확.
+    이벤트 대진표([이벤트])는 제외.
+    반환: records 시트와 동일한 형식의 dict 리스트.
+    """
+    rows = []
+    try:
+        all_keys = shelf_list_dates()
+    except Exception:
+        all_keys = []
+    for dk in all_keys:
+        if "[이벤트]" in str(dk):
+            continue
+        try:
+            sd = shelf_load(dk)
+            if not sd:
+                continue
+            sched = deserialize_schedule(sd["schedule"])
+            sc    = sd.get("scores", {})
+            if not sc:
+                continue
+            session_stats = _records_build_session_stats(dk, sched, sc)
+            for pdata in session_stats.values():
+                rows.append({
+                    "date_key":     pdata.get("date_key",""),
+                    "year_month":   pdata.get("year_month",""),
+                    "year":         pdata.get("year",""),
+                    "player_key":   pdata.get("player_key",""),
+                    "display_name": pdata.get("display_name",""),
+                    "league":       pdata.get("league",""),
+                    "wins":         int(pdata.get("wins",0)),
+                    "losses":       int(pdata.get("losses",0)),
+                    "draws":        int(pdata.get("draws",0)),
+                    "pf":           int(pdata.get("pf",0)),
+                    "pa":           int(pdata.get("pa",0)),
+                })
+        except Exception:
+            continue
+    return rows
+
+
+@st.cache_data(ttl=60)
+def records_rows_from_shelf_cached() -> list:
+    return _records_rows_from_shelf()
+
+
 def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     """
     filter_type: 'monthly' 또는 'yearly'
     filter_value: 'YYYY-MM' 또는 'YYYY'
     제외 선수 목록에 있는 player_key는 조회에서도 제외.
+
+    ※ 집계 소스: 로컬 스코어보드(shelf)에서 직접 계산 → 항상 정확.
+      shelf가 비어있으면(서버 재시작 등) 구글시트 records 탭으로 폴백.
     """
-    all_rows = records_load_cached()
+    all_rows = records_rows_from_shelf_cached()
+    if not all_rows:
+        # 폴백: 구글시트 누적 데이터
+        all_rows = records_load_cached()
+
     col = "year_month" if filter_type == "monthly" else "year"
     excluded = set(exclude_list_load())  # 제외 선수 이름 세트
     filtered = [r for r in all_rows
@@ -4516,6 +4571,11 @@ if page == "📊 스코어보드":
             _prev = shelf_load(selected_key) or {}
             _ifr  = _prev.get("is_fully_random", False)
             shelf_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
+            # 기록실 캐시 무효화 → 다음 기록실 방문 시 최신 반영
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
             import threading as _threading
             def _bg_commit(_dk, _sched, _sc):
                 try:
@@ -6259,13 +6319,13 @@ elif page == "🏆 기록실":
 
     _now = date.today()
     
-    # 데이터 손상 시 완전 재구축 안내
+    # 데이터 손상 시 안내
     if not st.session_state.get("_draws_reagg_dismissed"):
-        st.warning(
-            "⚠️ **기록 데이터가 이상하게 보이나요?** (무/패/득점이 뒤섞여 표시되는 경우)  \n"
-            "아래 관리자 메뉴 → **🛠️ 기록실 완전 재구축** 버튼을 한 번 눌러주세요. "
-            "시트를 초기화하고 모든 데이터를 올바르게 다시 계산합니다.",
-            icon="⚠️"
+        st.info(
+            "ℹ️ 기록실은 이제 저장된 스코어보드에서 **직접 계산**됩니다. "
+            "데이터가 이상하면 위 **🔄 새로고침** 버튼을 누르세요. "
+            "구글시트의 과거 누적 데이터를 완전히 정리하려면 관리자 메뉴의 **🛠️ 기록실 완전 재구축**을 사용하세요.",
+            icon="ℹ️"
         )
         if st.button("✅ 안내 닫기", key="dismiss_draws_notice"):
             st.session_state["_draws_reagg_dismissed"] = True
