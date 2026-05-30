@@ -6203,7 +6203,7 @@ elif page == "🏆 기록실":
                 f'</div>', unsafe_allow_html=True)
 
             _df_all = _df_rec.copy()
-            _df_all_act = _df_all[(_df_all["승"] + _df_all["패"]) > 0]
+            _df_all_act = _df_all[(_df_all["승"] + _df_all["무"] + _df_all["패"]) > 0]
             _ac = st.columns(3)
             _ch = ["", "", ""]
             if not _df_all_act.empty:
@@ -6221,14 +6221,14 @@ elif page == "🏆 기록실":
                                      f"{int(_mw)}승", "#f59e0b",
                                      f"승률 {_ww['승률']}")
                 # 승률왕
-                _df_r2 = _df_all_act[(_df_all_act["승"]+_df_all_act["패"])>=2].copy()
+                _df_r2 = _df_all_act[(_df_all_act["승"]+_df_all_act["무"]+_df_all_act["패"])>=2].copy()
                 if not _df_r2.empty:
-                    _df_r2["_rn"] = _df_r2["승"] / (_df_r2["승"]+_df_r2["패"])
+                    _df_r2["_rn"] = _df_r2["승"] / (_df_r2["승"]+_df_r2["무"]+_df_r2["패"])
                     _mr = _df_r2["_rn"].max()
                     _wr = _df_r2[_df_r2["_rn"]==_mr].iloc[0]
                     _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", _wr["이름"],
                                          _wr["승률"], "#7c3aed",
-                                         f"{int(_wr['승'])}승 {int(_wr['패'])}패")
+                                         f"{int(_wr['승'])}승 {int(_wr['무'])}무 {int(_wr['패'])}패")
                 else:
                     _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "2경기↑ 필요", "#9ca3af")
             else:
@@ -6257,7 +6257,7 @@ elif page == "🏆 기록실":
                 f'<span style="color:#6b7280;font-size:0.8rem;margin-left:8px;">— {_lbl}</span>'
                 f'</div>', unsafe_allow_html=True)
 
-            _df_active = _df_lg_full[(_df_lg_full["승"] + _df_lg_full["패"]) > 0]
+            _df_active = _df_lg_full[(_df_lg_full["승"] + _df_lg_full["무"] + _df_lg_full["패"]) > 0]
             _award_cols = st.columns(3)
             _cards_html = ["", "", ""]
 
@@ -6293,14 +6293,14 @@ elif page == "🏆 기록실":
                                               f"{int(_max_w)}승", "#f59e0b",
                                               f"승률 {_winner_w['승률']}")
                 # 승률왕 (카드 2번)
-                _df_rate = _df_active[(_df_active["승"] + _df_active["패"]) >= 2].copy()
+                _df_rate = _df_active[(_df_active["승"] + _df_active["무"] + _df_active["패"]) >= 2].copy()
                 if not _df_rate.empty:
-                    _df_rate["_rate_num"] = _df_rate["승"] / (_df_rate["승"] + _df_rate["패"])
+                    _df_rate["_rate_num"] = _df_rate["승"] / (_df_rate["승"] + _df_rate["무"] + _df_rate["패"])
                     _max_r = _df_rate["_rate_num"].max()
                     _winner_r = _df_rate[_df_rate["_rate_num"] == _max_r].iloc[0]
                     _cards_html[2] = _award_card("👑", _t_rate, _winner_r["이름"],
                                                   _winner_r["승률"], "#7c3aed",
-                                                  f"{int(_winner_r['승'])}승 {int(_winner_r['패'])}패")
+                                                  f"{int(_winner_r['승'])}승 {int(_winner_r['무'])}무 {int(_winner_r['패'])}패")
                 else:
                     _cards_html[2] = _award_card("👑", _t_rate, "—", "2경기↑ 필요", "#9ca3af")
             else:
@@ -6314,10 +6314,9 @@ elif page == "🏆 기록실":
             st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
             _df_lg_disp = _df_lg_full.drop(columns=["리그"]).reset_index(drop=True)
-            # 수정1: Streamlit 자동 배경색(숫자 gradient) 제거 → column_config으로 모든 컬럼 text화
             import streamlit as _st_cc
             _cc_cfg = {c: _st_cc.column_config.NumberColumn(c, format="%d")
-                       for c in ["출전경기","승","패","득점","실점","득실차"]
+                       for c in ["출전경기","승","무","패","득점","실점","득실차"]
                        if c in _df_lg_disp.columns}
             st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
                          column_config=_cc_cfg)
