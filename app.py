@@ -899,7 +899,9 @@ def is_custom_code(code: str) -> bool:
     return len(raw) > 2 and not raw[2:].isdigit()
 
 def display_name(code: str) -> str:
-    dup = "(중복)" in code
+    # 중복 빈자리 placeholder: 회원명 없이 별표만 표시
+    if str(code).strip() in ("★", "★빈자리") or "(중복)" in str(code):
+        return "⭐"
     raw = base_name(code)
     if is_custom_code(raw):
         g = "남" if raw[1].upper() == "M" else "여" if raw[1].upper() == "W" else ""
@@ -913,8 +915,7 @@ def display_name(code: str) -> str:
             shown = f"{name_part}({g})" if g else name_part
     else:
         shown = raw
-    # 중복 참여자: (중복) 텍스트 대신 별표(⭐) 표시
-    return shown + (" ⭐" if dup else "")
+    return shown
 
 def pname(code: str) -> str:
     raw = base_name(code)
@@ -1319,8 +1320,12 @@ def build_event_round(players, game_counts, mixed_counts,
             tagged = []
             for p in g:
                 pn=base_name(p)
-                tagged.append(pn+"(중복)" if local_counts.get(pn,0)>=min_games else pn)
-                local_counts[pn]=local_counts.get(pn,0)+1
+                # 중복 자리: 회원명 대신 빈자리(★) placeholder로 대체
+                if local_counts.get(pn,0)>=min_games:
+                    tagged.append("★빈자리")
+                else:
+                    tagged.append(pn)
+                    local_counts[pn]=local_counts.get(pn,0)+1
             all_groups.append((g,tagged))
     return all_groups
 
@@ -1338,7 +1343,7 @@ def update_stats(stats, team1, team2, match_type, round_name, league_name):
         s.game_count += 1
         s.type_counts[match_type] = s.type_counts.get(match_type,0)+1
         if is_mixed_match(match_type): s.mixed_count += 1
-        dup = "(중복)" in p_raw
+        dup = "(중복)" in p_raw or "★빈자리" in str(p_raw)
         s.round_records[round_name] = match_type+("★" if dup else "")
 
 
@@ -1385,7 +1390,7 @@ def generate_schedule_from_leagues(league_players, league_configs, num_rounds=3)
             t1,t2 = best_pairing(tagged_g,gs,rs)
             commit_pairing(t1,t2,gs,rs)
             mt = classify_match([base_name(p) for p in list(t1)+list(t2)])
-            has_dup = any("(중복)" in p for p in list(t1)+list(t2))
+            has_dup = any(("(중복)" in str(p)) or ("★빈자리" in str(p)) for p in list(t1)+list(t2))
             note = mt+("(중복)" if has_dup else "")
             for p_raw in list(t1)+list(t2):
                 p=base_name(p_raw); game_counts[p]+=1
@@ -1570,8 +1575,12 @@ def _build_event_round_fully_random(players, game_counts, min_games=3, max_games
             tagged = []
             for p in g:
                 pn = base_name(p)
-                tagged.append(pn+"(중복)" if local_counts.get(pn,0) >= min_games else pn)
-                local_counts[pn] = local_counts.get(pn, 0) + 1
+                # 중복 자리: 회원명 대신 빈자리(★) placeholder로 대체
+                if local_counts.get(pn,0) >= min_games:
+                    tagged.append("★빈자리")
+                else:
+                    tagged.append(pn)
+                    local_counts[pn] = local_counts.get(pn, 0) + 1
             all_groups.append((g, tagged))
     return all_groups
 
@@ -1599,7 +1608,7 @@ def generate_schedule_fully_random(league_players, num_rounds=3):
             t1, t2 = best_pairing_fully_random(tagged_g, gs, event_gs)
             commit_pairing(t1, t2, gs, event_gs)
             mt = classify_match([base_name(p) for p in list(t1)+list(t2)])
-            has_dup = any("(중복)" in p for p in list(t1)+list(t2))
+            has_dup = any(("(중복)" in str(p)) or ("★빈자리" in str(p)) for p in list(t1)+list(t2))
             note = mt+("(중복)" if has_dup else "")
             for p_raw in list(t1)+list(t2):
                 p = base_name(p_raw); game_counts[p] = game_counts.get(p,0)+1
@@ -1852,12 +1861,11 @@ def compute_scoreboard_stats(schedule, scores):
             elif s2 > s1:
                 winners, losers, ws, ls = t2_valid, t1_valid, s2, s1
             else:
-                # 무승부 (0:0 포함)
+                # 무승부 (0:0 포함): 득점만 부여, 실점은 부여하지 않음
                 for p in t1_valid + t2_valid:
                     if p in player_stats:
                         player_stats[p]["무"]   += 1
                         player_stats[p]["득점"] += s1
-                        player_stats[p]["실점"] += s2
                 continue
             for p in winners:
                 if p in player_stats:
@@ -1968,8 +1976,9 @@ def _clean_player_key(raw_code: str) -> str:
 
 
 def _is_duplicate_player(code: str) -> bool:
-    """(중복) 태그가 있는 이벤트 라운드 중복 선수 여부"""
-    return "(중복)" in code
+    """중복 빈자리(★) 또는 (중복) 태그 여부"""
+    c = str(code).strip()
+    return "(중복)" in c or c in ("★", "★빈자리") or "★빈자리" in c
 
 
 def _records_build_session_stats(date_key: str, schedule: list, scores: dict) -> dict:
@@ -2044,11 +2053,10 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
             for k in t1_keys:
                 session_stats[k]["losses"]+=1; session_stats[k]["pf"]+=s1; session_stats[k]["pa"]+=s2
         else:
-            # 무승부: 득점/실점 기록 + draws +1
+            # 무승부: 득점만 부여, 실점은 부여하지 않음
             for k in t1_keys + t2_keys:
                 session_stats[k]["draws"] += 1
-                session_stats[k]["pf"]    += s1
-                session_stats[k]["pa"]    += s2
+                session_stats[k]["pf"]    += s1   # 양팀 동점이므로 s1=s2 (득점만)
     return session_stats
 
 
@@ -2389,11 +2397,17 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
 def _build_matches_df(schedule):
     """대진표 DataFrame 변환."""
     import pandas as _pd
+    def _mtype(d):
+        # 빈자리(★) 포함 경기 → 중복 무승부 표시
+        allp = list(d["team1"]) + list(d["team2"])
+        if any(("★빈자리" in str(p)) or ("(중복)" in str(p)) for p in allp):
+            return "⭐중복(무승부)"
+        return d["type"]
     return _pd.DataFrame([{
         "라운드": d["round"], "리그": d["league"],
         "팀1-A": display_name(d["team1"][0]), "팀1-B": display_name(d["team1"][1]),
         "팀2-A": display_name(d["team2"][0]), "팀2-B": display_name(d["team2"][1]),
-        "매치종류": d["type"],
+        "매치종류": _mtype(d),
     } for d in schedule])
 
 def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict, schedule=None, date_key=""):
@@ -2876,8 +2890,7 @@ def grade_badge(g):
         return '<span class="badge b-grade-none">미지정</span>'
     cls   = f"b-grade-{gs}" if gs in ("1","2","3","4","5") else "b-grade-none"
     lbl   = {"1":"1등급","2":"2등급","3":"3등급","4":"4등급","5":"5등급"}.get(gs, gs)
-    stars = "⭐" * (6 - int(gs)) if gs.isdigit() else ""
-    return f'<span class="badge {cls}">{lbl} {stars}</span>'
+    return f'<span class="badge {cls}">{lbl}</span>'
 
 def gender_html(g):
     c = {"남":"#2563eb","여":"#db2777"}.get(g,"#374151")
@@ -4777,8 +4790,8 @@ if page == "📊 스코어보드":
                 draw_style = "color:#7c3aed;font-weight:900;"  # 무승부: 보라색
                 nrm_style  = "color:#333;font-weight:600;"
 
-                # 이 경기에 중복(★) 선수가 포함되었는지 감지
-                _has_dup_player = any("(중복)" in str(p)
+                # 이 경기에 중복(★) 빈자리가 포함되었는지 감지
+                _has_dup_player = any(("(중복)" in str(p)) or ("★빈자리" in str(p))
                                       for p in list(match.get("team1",[])) + list(match.get("team2",[])))
 
                 border_color = "#a5d6a7" if is_locked else lc
