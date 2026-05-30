@@ -2122,6 +2122,74 @@ def records_delete_by_date(date_key: str):
         pass
 
 
+def records_full_rebuild():
+    """
+    records 시트를 완전히 초기화하고(헤더 포함) 모든 날짜를 재집계.
+    기존 오염 데이터(컬럼 밀림 등)를 근본적으로 정정한다.
+    반환: (성공 날짜 수, 실패 날짜 수, 에러 메시지 or None)
+    """
+    try:
+        ws = _get_records_sheet()
+        if ws is None:
+            return 0, 0, "records 시트 연결 실패"
+
+        # ① 시트 전체 비우고 헤더만 정확히 재작성 (draws 포함, 올바른 순서)
+        import time as _time
+        try:
+            ws.clear()
+            _time.sleep(1)
+            ws.update("A1", [RECORDS_COLUMNS], value_input_option="USER_ENTERED")
+            _time.sleep(1)
+        except Exception as _ce:
+            return 0, 0, f"시트 초기화 실패: {_ce}"
+
+        # ② 모든 저장된 날짜의 세션 통계를 모아 한 번에 append (이벤트 키 제외)
+        all_keys = shelf_list_dates()
+        ok, fail = 0, 0
+        batch_rows = []
+
+        def _pdata_to_row(pdata):
+            mapping = {
+                "date_key":    str(pdata.get("date_key","")),
+                "year_month":  str(pdata.get("year_month","")),
+                "year":        str(pdata.get("year","")),
+                "player_key":  str(pdata.get("player_key","")),
+                "display_name":str(pdata.get("display_name","")),
+                "league":      str(pdata.get("league","")),
+                "wins":        int(pdata.get("wins",0)),
+                "losses":      int(pdata.get("losses",0)),
+                "pf":          int(pdata.get("pf",0)),
+                "pa":          int(pdata.get("pa",0)),
+                "draws":       int(pdata.get("draws",0)),
+            }
+            return [mapping.get(h, "") for h in RECORDS_COLUMNS]
+
+        for dk in all_keys:
+            if "[이벤트]" in str(dk):
+                continue  # 이벤트는 기록실 제외
+            try:
+                sd = shelf_load(dk)
+                if not sd:
+                    continue
+                sched = deserialize_schedule(sd["schedule"])
+                sc    = sd.get("scores", {})
+                if not sc:
+                    continue
+                session_stats = _records_build_session_stats(dk, sched, sc)
+                for pdata in session_stats.values():
+                    batch_rows.append(_pdata_to_row(pdata))
+                ok += 1
+            except Exception:
+                fail += 1
+
+        # ③ 한 번에 append (quota 절약)
+        if batch_rows:
+            ws.append_rows(batch_rows, value_input_option="USER_ENTERED")
+        return ok, fail, None
+    except Exception as _e:
+        return 0, 0, str(_e)
+
+
 # ── 기록실 제외 선수 관리 (shelve 저장) ──────────────────────
 def exclude_list_load() -> list:
     """제외 선수 이름 목록 로드. ['윤지수', '홍길동', ...]"""
@@ -6168,18 +6236,38 @@ elif page == "🏆 기록실":
                         st.success(f"✅ {_ok}개 날짜 재집계 완료! 제외 선수({', '.join(exclude_list_load())})가 모든 기록에서 제거되었습니다.")
                     st.rerun()
 
+            # ── 완전 재구축 (시트 손상 복구용) ──
+            st.markdown("---")
+            st.caption("🛠️ **데이터가 이상하게 표시될 때** (무/패/득점 등이 뒤섞임): "
+                       "아래 버튼으로 records 시트를 완전히 비우고 헤더부터 새로 만든 뒤 모든 날짜를 다시 계산합니다. "
+                       "컬럼 밀림으로 손상된 데이터를 근본적으로 정정합니다.")
+            if st.button("🛠️ 기록실 완전 재구축 (관리자)", type="secondary",
+                         key="full_rebuild_btn",
+                         help="records 시트를 초기화하고 헤더를 새로 작성한 뒤 전체 재집계합니다."):
+                with st.spinner("기록실 완전 재구축 중… (잠시 기다려주세요)"):
+                    _rb_ok, _rb_fail, _rb_err = records_full_rebuild()
+                st.cache_data.clear()
+                if _rb_err:
+                    st.error(f"❌ 재구축 실패: {_rb_err}")
+                elif _rb_fail:
+                    st.warning(f"✅ {_rb_ok}개 날짜 재구축 완료, ⚠️ {_rb_fail}개 오류")
+                else:
+                    st.success(f"✅ {_rb_ok}개 날짜 완전 재구축 완료! 헤더와 모든 데이터가 정정되었습니다.")
+                st.session_state["_draws_reagg_dismissed"] = True
+                st.rerun()
+
 
     _now = date.today()
     
-    # 무승부 컬럼 추가 이후 재집계 필요 안내
+    # 데이터 손상 시 완전 재구축 안내
     if not st.session_state.get("_draws_reagg_dismissed"):
         st.warning(
-            "⚠️ **기록실 데이터 재집계가 필요합니다.**  \n"
-            "무승부(무) 컬럼이 추가되어 기존 점수가 올바르게 반영되려면 "
-            "아래 관리자 메뉴 → **🔁 전체 날짜 일괄 재집계** 버튼을 눌러주세요.",
+            "⚠️ **기록 데이터가 이상하게 보이나요?** (무/패/득점이 뒤섞여 표시되는 경우)  \n"
+            "아래 관리자 메뉴 → **🛠️ 기록실 완전 재구축** 버튼을 한 번 눌러주세요. "
+            "시트를 초기화하고 모든 데이터를 올바르게 다시 계산합니다.",
             icon="⚠️"
         )
-        if st.button("✅ 재집계 완료 (안내 닫기)", key="dismiss_draws_notice"):
+        if st.button("✅ 안내 닫기", key="dismiss_draws_notice"):
             st.session_state["_draws_reagg_dismissed"] = True
             st.rerun()
     _c1, _c2, _c3 = st.columns([3, 3, 2])
