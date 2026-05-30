@@ -2272,6 +2272,43 @@ def records_rows_from_shelf_cached() -> list:
     return _records_rows_from_shelf()
 
 
+# ── 승률왕 선정 기준 상수 ──────────────────────────────────
+WINRATE_MIN_GAMES_MONTHLY = 7    # 월간: 7경기 이상
+WINRATE_MIN_GAMES_YEARLY  = 80   # 연간: 80경기 이상
+WINRATE_YEARLY_2026       = 50   # 2026년 한정: 50경기 이상
+
+def _winrate_min_games(filter_type: str, filter_value: str) -> int:
+    """승률왕 자격 최소 출전 경기 수."""
+    if filter_type == "monthly":
+        return WINRATE_MIN_GAMES_MONTHLY
+    # 연간
+    if str(filter_value).strip() == "2026":
+        return WINRATE_YEARLY_2026
+    return WINRATE_MIN_GAMES_YEARLY
+
+def _pick_winrate_king(df, min_games: int):
+    """
+    승률왕 선정.
+    - 자격: 출전경기 >= min_games  (무승부도 출전경기에 포함됨)
+    - 1순위: 승률(승/출전경기) 최고
+    - 동률 시: ① 출전경기 많은 순 ② 승 많은 순 ③ 득실차 큰 순
+    반환: (winner_series or None, 자격자 수)
+    """
+    if df is None or df.empty:
+        return None, 0
+    cand = df[df["출전경기"] >= min_games].copy()
+    if cand.empty:
+        return None, 0
+    cand["_rate"] = cand["승"] / cand["출전경기"]
+    cand["_diff"] = cand["득점"] - cand["실점"]
+    # 정렬: 승률 desc, 출전 desc, 승 desc, 득실차 desc
+    cand = cand.sort_values(
+        by=["_rate", "출전경기", "승", "_diff"],
+        ascending=[False, False, False, False]
+    )
+    return cand.iloc[0], len(cand)
+
+
 def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     """
     filter_type: 'monthly' 또는 'yearly'
@@ -6411,17 +6448,16 @@ elif page == "🏆 기록실":
                 _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", _ww["이름"],
                                      f"{int(_mw)}승", "#f59e0b",
                                      f"승률 {_ww['승률']}")
-                # 승률왕
-                _df_r2 = _df_all_act[(_df_all_act["승"]+_df_all_act["무"]+_df_all_act["패"])>=2].copy()
-                if not _df_r2.empty:
-                    _df_r2["_rn"] = _df_r2["승"] / (_df_r2["승"]+_df_r2["무"]+_df_r2["패"])
-                    _mr = _df_r2["_rn"].max()
-                    _wr = _df_r2[_df_r2["_rn"]==_mr].iloc[0]
+                # 승률왕 (연간: 80경기 이상, 단 2026년은 50경기 이상)
+                _yr_min = _winrate_min_games("yearly", _yr)
+                _wr, _wr_cnt = _pick_winrate_king(_df_all_act, _yr_min)
+                if _wr is not None:
                     _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", _wr["이름"],
                                          _wr["승률"], "#7c3aed",
-                                         f"{int(_wr['승'])}승 {int(_wr['무'])}무 {int(_wr['패'])}패")
+                                         f"{int(_wr['승'])}승 {int(_wr['무'])}무 {int(_wr['패'])}패 · {int(_wr['출전경기'])}경기")
                 else:
-                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "2경기↑ 필요", "#9ca3af")
+                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—",
+                                         f"{_yr_min}경기↑ 필요", "#9ca3af")
             else:
                 _yr_lbl = f"{_yr[2:]}년 통합"
                 _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", "—", "기록 없음", "#9ca3af")
@@ -6483,17 +6519,16 @@ elif page == "🏆 기록실":
                 _cards_html[1] = _award_card("🥇", _t_wins, _winner_w["이름"],
                                               f"{int(_max_w)}승", "#f59e0b",
                                               f"승률 {_winner_w['승률']}")
-                # 승률왕 (카드 2번)
-                _df_rate = _df_active[(_df_active["승"] + _df_active["무"] + _df_active["패"]) >= 2].copy()
-                if not _df_rate.empty:
-                    _df_rate["_rate_num"] = _df_rate["승"] / (_df_rate["승"] + _df_rate["무"] + _df_rate["패"])
-                    _max_r = _df_rate["_rate_num"].max()
-                    _winner_r = _df_rate[_df_rate["_rate_num"] == _max_r].iloc[0]
+                # 승률왕 (카드 2번) — 월간 7경기↑ / 연간 80경기↑ (2026년 50경기↑)
+                _rate_min = _winrate_min_games(_ft, _fv)
+                _winner_r, _rate_cnt = _pick_winrate_king(_df_active, _rate_min)
+                if _winner_r is not None:
                     _cards_html[2] = _award_card("👑", _t_rate, _winner_r["이름"],
                                                   _winner_r["승률"], "#7c3aed",
-                                                  f"{int(_winner_r['승'])}승 {int(_winner_r['무'])}무 {int(_winner_r['패'])}패")
+                                                  f"{int(_winner_r['승'])}승 {int(_winner_r['무'])}무 {int(_winner_r['패'])}패 · {int(_winner_r['출전경기'])}경기")
                 else:
-                    _cards_html[2] = _award_card("👑", _t_rate, "—", "2경기↑ 필요", "#9ca3af")
+                    _cards_html[2] = _award_card("👑", _t_rate, "—",
+                                                  f"{_rate_min}경기↑ 필요", "#9ca3af")
             else:
                 _cards_html[0] = _award_card("🎯", _t_score, "—", "기록 없음", "#9ca3af")
                 _cards_html[1] = _award_card("🥇", _t_wins,  "—", "기록 없음", "#9ca3af")
