@@ -913,7 +913,8 @@ def display_name(code: str) -> str:
             shown = f"{name_part}({g})" if g else name_part
     else:
         shown = raw
-    return shown + ("(중복)" if dup else "")
+    # 중복 참여자: (중복) 텍스트 대신 별표(⭐) 표시
+    return shown + (" ⭐" if dup else "")
 
 def pname(code: str) -> str:
     raw = base_name(code)
@@ -2746,12 +2747,47 @@ def save_league_to_sheet(member_id: int, league_value: str):
     st.cache_data.clear()
     return True
 
+def _ensure_member_header():
+    """
+    회원 시트(sheet1) 헤더에 RS_COLUMNS의 모든 컬럼이 있는지 확인하고,
+    누락된 컬럼(grade 등)을 맨 끝에 자동 추가. (한 번 실행되면 캐시로 재실행 방지)
+    """
+    if st.session_state.get("_member_header_ok"):
+        return
+    try:
+        sheet   = _get_gsheet_connection().sheet1
+        headers = sheet.row_values(1)
+        if not headers:
+            # 헤더 자체가 없으면 전체 작성
+            sheet.update("A1", [RS_COLUMNS], value_input_option="USER_ENTERED")
+            st.session_state["_member_header_ok"] = True
+            return
+        import time as _t
+        changed = False
+        for col in RS_COLUMNS:
+            if col not in headers:
+                _t.sleep(1)
+                sheet.update_cell(1, len(headers) + 1, col)
+                headers.append(col)
+                changed = True
+        if changed:
+            st.cache_data.clear()
+        st.session_state["_member_header_ok"] = True
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"회원 헤더 마이그레이션 실패: {_e}")
+
 def save_row(df, row, is_new, action_detail=""):
+    _ensure_member_header()
     sheet = _get_gsheet_connection().sheet1
+    # 실제 시트 헤더 순서대로 저장 (컬럼 밀림 방지)
+    headers = sheet.row_values(1)
+    if not headers:
+        headers = RS_COLUMNS
     row["updated_at"] = datetime.today().strftime("%Y-%m-%d %H:%M")
     if "deleted_at" not in row:
         row["deleted_at"] = ""
-    values = [str(row.get(c,"") or "") for c in RS_COLUMNS]
+    values = [str(row.get(c,"") or "") for c in headers]
     action = "등록" if is_new else "수정"
     if is_new:
         _gsheet_with_retry(
@@ -2762,7 +2798,7 @@ def save_row(df, row, is_new, action_detail=""):
         try:
             ri         = all_ids.index(str(row["id"])) + 1
             start_cell = rowcol_to_a1(ri, 1)
-            end_cell   = rowcol_to_a1(ri, len(RS_COLUMNS))
+            end_cell   = rowcol_to_a1(ri, len(headers))
             _gsheet_with_retry(
                 lambda: sheet.update(f"{start_cell}:{end_cell}", [values], value_input_option="USER_ENTERED"),
                 label=f"회원 수정 (id={row.get('id','')})")
@@ -3881,9 +3917,14 @@ def render_roster_page():
     # ─────────────────────────────────────────────────────────
     c_s, c_sb, c_dl, c_add = st.columns([4, 0.8, 1.0, 1.2])
     with c_s:
+        def _on_search_enter():
+            # 엔터 입력 시 호출 — 위젯 값으로 검색 실행
+            st.session_state.search_active = st.session_state.get("roster_search_input", "").strip()
         search_q = st.text_input("검색", value=st.session_state.search_q,
-            placeholder="이름 / 카페ID / 연락처 입력 후 검색 버튼 클릭",
-            label_visibility="collapsed")
+            placeholder="이름 / 카페ID / 연락처 입력 후 Enter 또는 검색 버튼",
+            label_visibility="collapsed",
+            key="roster_search_input",
+            on_change=_on_search_enter)
         st.session_state.search_q = search_q
     with c_sb:
         if st.button("🔍 검색", use_container_width=True):
@@ -4736,10 +4777,15 @@ if page == "📊 스코어보드":
                 draw_style = "color:#7c3aed;font-weight:900;"  # 무승부: 보라색
                 nrm_style  = "color:#333;font-weight:600;"
 
+                # 이 경기에 중복(★) 선수가 포함되었는지 감지
+                _has_dup_player = any("(중복)" in str(p)
+                                      for p in list(match.get("team1",[])) + list(match.get("team2",[])))
+
                 border_color = "#a5d6a7" if is_locked else lc
                 bg_color     = "#f0fff0" if is_locked else "#fff"
                 dup_badge    = ' <span style="font-size:0.65rem;color:#e65100;background:#fff3e0;padding:1px 5px;border-radius:8px;">중복</span>' if is_dup_saved else ""
                 draw_badge   = ' <span style="font-size:0.65rem;color:#7c3aed;background:#ede9fe;padding:1px 6px;border-radius:8px;font-weight:700;">무승부</span>' if is_draw else ""
+                star_badge   = ' <span style="font-size:0.65rem;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:8px;font-weight:700;">⭐중복·6:6무</span>' if _has_dup_player else ""
 
                 _p1 = win_style if t1_win else (draw_style if is_draw else nrm_style)
                 _p2 = win_style if t2_win else (draw_style if is_draw else nrm_style)
@@ -4760,7 +4806,7 @@ if page == "📊 스코어보드":
                     f'</div>'
                     f'</div>'
                     f'<div style="font-size:0.58rem;color:#aaa;text-align:right;margin-top:1px;">'
-                    f'{match_type}{dup_badge}{draw_badge}{" ✅저장완료" if is_locked else ""}'
+                    f'{match_type}{dup_badge}{star_badge}{draw_badge}{" ✅저장완료" if is_locked else ""}'
                     f'</div>'
                     f'</div>', unsafe_allow_html=True)
 
@@ -5489,7 +5535,12 @@ elif page == "📋 대진표생성":
             _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players, schedule=schedule, date_key=rp_key_run)
 
             # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
-            if is_admin():
+            _lock_chk = shelf_load(rp_key_run) or {}
+            _is_sched_locked = bool(_lock_chk.get("is_locked", False))
+            if is_admin() and _is_sched_locked:
+                st.info("🔒 이 대진표는 스코어보드에서 잠금 처리되어 수정할 수 없습니다. "
+                        "수정하려면 스코어보드에서 잠금을 먼저 해제하세요.")
+            elif is_admin():
                 with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
                     st.caption("경기 번호를 선택하고 선수를 재배정할 수 있습니다.")
                     _adj_matches = st.session_state.get("schedule", schedule)
@@ -5898,7 +5949,12 @@ function showMsg() {{
             with tab1:
                 _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r, schedule=schedule, date_key=rp_key_run)
                 # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
-                if is_admin():
+                _lock_chk2 = shelf_load(rp_key_run) or {}
+                _is_sched_locked2 = bool(_lock_chk2.get("is_locked", False))
+                if is_admin() and _is_sched_locked2:
+                    st.info("🔒 이 대진표는 스코어보드에서 잠금 처리되어 수정할 수 없습니다. "
+                            "수정하려면 스코어보드에서 잠금을 먼저 해제하세요.")
+                elif is_admin():
                     with st.expander("🔧 관리자: 페어 수동 조정", expanded=False):
                         st.caption("경기 번호를 선택하고 선수를 재배정할 수 있습니다.")
                         _adj2_matches = list(schedule)
@@ -6407,16 +6463,19 @@ elif page == "🏆 기록실":
 
         # ── 왕 카드 렌더 헬퍼 ─────────────────────────────────
         def _award_card(emoji, title, name, value, color, subtitle=""):
+            _sub = subtitle if subtitle else "&nbsp;"
             return f"""
 <div style="background:linear-gradient(135deg,{color}22,{color}08);
      border:2px solid {color}55;border-radius:14px;padding:14px 16px;
-     text-align:center;box-shadow:0 2px 12px {color}22;">
+     text-align:center;box-shadow:0 2px 12px {color}22;
+     min-height:170px;display:flex;flex-direction:column;
+     align-items:center;justify-content:center;box-sizing:border-box;">
   <div style="font-size:2rem;line-height:1.1">{emoji}</div>
   <div style="font-size:0.68rem;font-weight:700;color:{color};
        letter-spacing:0.5px;margin:4px 0 2px;line-height:1.3">{title}</div>
   <div style="font-size:1.1rem;font-weight:900;color:#1a2e4a;margin:2px 0">{name}</div>
   <div style="font-size:0.85rem;font-weight:700;color:{color}">{value}</div>
-  {"<div style='font-size:0.65rem;color:#9ca3af;margin-top:2px'>"+subtitle+"</div>" if subtitle else ""}
+  <div style="font-size:0.65rem;color:#9ca3af;margin-top:2px">{_sub}</div>
 </div>"""
 
         # ── 연간 모드: 전 리그 통합 수상 ─────────────────────
