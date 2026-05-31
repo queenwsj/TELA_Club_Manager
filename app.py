@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.8
+TELA CLUB Random Match Generator v5.9
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -17,7 +17,11 @@ TELA CLUB Random Match Generator v5.8
 11. 사이드바 로그인·메뉴 라우팅
 12. 페이지: 스코어보드
 13. 페이지: 대진표 생성
-14. 페이지: 기록실
+14. 페이지: 통합기록실 (기존 기록실 — 전체 선수 통계)
+14-B. 페이지: 개인기록실 (v5.9 신규 — 회원 개인 전적 조회)
+    ├─ 14-B-1. 월별 소속 리그 타임라인
+    ├─ 14-B-2. 베스트페어 / 워스트페어 (굿페어/배드페어)
+    └─ 14-B-3. 라이벌 전적 (1:1 상대 전적)
 15. 페이지: 회원명부
 """
 
@@ -2390,8 +2394,281 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     return df[cols]
 
 
+# ========================================================================
+# 08-B. 개인기록실 헬퍼 함수 (v5.9 신규)
+# ========================================================================
 
-# ── [다이어트] 랜덤페어 렌더링 공통 헬퍼 ─────────────────────
+def _personal_get_all_rows() -> list:
+    """전체 기록 rows 반환 (shelf 우선, 폴백 구글시트)."""
+    rows = records_rows_from_shelf_cached()
+    if not rows:
+        rows = records_load_cached()
+    return rows
+
+
+def personal_monthly_leagues(player_name: str, year: str) -> list:
+    """
+    특정 회원의 연도별 월별 소속 리그 목록 반환.
+    반환: [{"month": "2026-01", "leagues": ["A리그", "B리그"]}, ...]
+    """
+    rows = _personal_get_all_rows()
+    excluded = set(exclude_list_load())
+    if player_name in excluded:
+        return []
+
+    month_leagues: dict = {}
+    for r in rows:
+        pkey = str(r.get("player_key", "")).strip()
+        if pkey != player_name:
+            continue
+        ym = str(r.get("year_month", "")).strip()
+        if not ym.startswith(year):
+            continue
+        lg = str(r.get("league", "")).strip()
+        if not lg:
+            continue
+        if ym not in month_leagues:
+            month_leagues[ym] = set()
+        month_leagues[ym].add(lg)
+
+    result = []
+    for month in sorted(month_leagues.keys()):
+        result.append({
+            "month": month,
+            "leagues": sorted(month_leagues[month])
+        })
+    return result
+
+
+def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -> dict:
+    """
+    특정 회원의 파트너별 승무패 통계 계산.
+    filter_type: 'monthly' 또는 'yearly'
+    filter_value: 'YYYY-MM' 또는 'YYYY'
+    반환: {
+        "best": [{"partner": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...],
+        "worst": [...],
+    }
+    """
+    all_date_keys = shelf_list_dates()
+    excluded = set(exclude_list_load())
+
+    pair_agg: dict = {}  # partner_name → {wins, draws, losses}
+
+    for dk in all_date_keys:
+        # 이벤트 제외
+        if "[이벤트]" in str(dk):
+            continue
+        # 기간 필터
+        if filter_type == "monthly":
+            if not dk.startswith(filter_value):
+                continue
+        else:  # yearly
+            if not dk.startswith(filter_value):
+                continue
+
+        sd = shelf_load(dk)
+        if not sd:
+            continue
+        schedule = deserialize_schedule(sd.get("schedule", []))
+        scores_d = sd.get("scores", {})
+        if not scores_d:
+            continue
+
+        for idx, match in enumerate(schedule):
+            sc = scores_d.get(str(idx), {})
+            s1 = sc.get("score1", None)
+            s2 = sc.get("score2", None)
+            if s1 is None or s2 is None:
+                continue
+            if sc.get("is_dup", False):
+                continue
+
+            _match_excl = set(match.get("exclude_players", []))
+            t1_codes = list(match.get("team1", []))
+            t2_codes = list(match.get("team2", []))
+
+            def _skip(code):
+                raw = base_name(code)
+                if "★" in raw: return True
+                if _is_duplicate_player(code): return True
+                if _clean_player_key(code) in excluded: return True
+                if base_name(code) in _match_excl: return True
+                return False
+
+            t1_keys = [_clean_player_key(c) for c in t1_codes if not _skip(c)]
+            t2_keys = [_clean_player_key(c) for c in t2_codes if not _skip(c)]
+
+            # player_name 이 어느 팀에 있는지 확인
+            if player_name in t1_keys:
+                my_team = t1_keys
+                opp_team = t2_keys
+                my_score, opp_score = int(s1), int(s2)
+            elif player_name in t2_keys:
+                my_team = t2_keys
+                opp_team = t1_keys
+                my_score, opp_score = int(s2), int(s1)
+            else:
+                continue
+
+            # 파트너(내 팀 내 나 제외)
+            partners = [p for p in my_team if p != player_name]
+            if not partners:
+                continue
+
+            for partner in partners:
+                if partner in excluded:
+                    continue
+                if partner not in pair_agg:
+                    pair_agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
+                if my_score > opp_score:
+                    pair_agg[partner]["wins"] += 1
+                elif my_score < opp_score:
+                    pair_agg[partner]["losses"] += 1
+                else:
+                    pair_agg[partner]["draws"] += 1
+
+    if not pair_agg:
+        return {"best": [], "worst": []}
+
+    rows = []
+    for partner, rec in pair_agg.items():
+        total = rec["wins"] + rec["draws"] + rec["losses"]
+        if total == 0:
+            continue
+        rate = rec["wins"] / total * 100
+        rows.append({
+            "partner": partner,
+            "wins": rec["wins"],
+            "draws": rec["draws"],
+            "losses": rec["losses"],
+            "games": total,
+            "rate": rate,
+        })
+
+    # 최소 2경기 이상만 의미있는 통계로 포함
+    rows = [r for r in rows if r["games"] >= 2]
+    rows_sorted_best  = sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
+    rows_sorted_worst = sorted(rows, key=lambda x: (x["rate"], -x["games"], x["losses"]))
+
+    return {
+        "best":  rows_sorted_best[:10],
+        "worst": rows_sorted_worst[:10],
+    }
+
+
+def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) -> list:
+    """
+    특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
+    filter_type: 'monthly' 또는 'yearly'
+    filter_value: 'YYYY-MM' 또는 'YYYY'
+    반환: [{"rival": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...]
+    승률 내림차순 정렬
+    """
+    all_date_keys = shelf_list_dates()
+    excluded = set(exclude_list_load())
+
+    rival_agg: dict = {}  # rival_name → {wins, draws, losses}
+
+    for dk in all_date_keys:
+        if "[이벤트]" in str(dk):
+            continue
+        if filter_type == "monthly":
+            if not dk.startswith(filter_value):
+                continue
+        else:
+            if not dk.startswith(filter_value):
+                continue
+
+        sd = shelf_load(dk)
+        if not sd:
+            continue
+        schedule = deserialize_schedule(sd.get("schedule", []))
+        scores_d = sd.get("scores", {})
+        if not scores_d:
+            continue
+
+        for idx, match in enumerate(schedule):
+            sc = scores_d.get(str(idx), {})
+            s1 = sc.get("score1", None)
+            s2 = sc.get("score2", None)
+            if s1 is None or s2 is None:
+                continue
+            if sc.get("is_dup", False):
+                continue
+
+            _match_excl = set(match.get("exclude_players", []))
+            t1_codes = list(match.get("team1", []))
+            t2_codes = list(match.get("team2", []))
+
+            def _skip2(code):
+                raw = base_name(code)
+                if "★" in raw: return True
+                if _is_duplicate_player(code): return True
+                if _clean_player_key(code) in excluded: return True
+                if base_name(code) in _match_excl: return True
+                return False
+
+            t1_keys = [_clean_player_key(c) for c in t1_codes if not _skip2(c)]
+            t2_keys = [_clean_player_key(c) for c in t2_codes if not _skip2(c)]
+
+            if player_name in t1_keys:
+                my_team = t1_keys
+                opp_team = t2_keys
+                my_score, opp_score = int(s1), int(s2)
+            elif player_name in t2_keys:
+                my_team = t2_keys
+                opp_team = t1_keys
+                my_score, opp_score = int(s2), int(s1)
+            else:
+                continue
+
+            # 상대팀 전체가 라이벌
+            for rival in opp_team:
+                if rival in excluded:
+                    continue
+                if rival not in rival_agg:
+                    rival_agg[rival] = {"wins": 0, "draws": 0, "losses": 0}
+                if my_score > opp_score:
+                    rival_agg[rival]["wins"] += 1
+                elif my_score < opp_score:
+                    rival_agg[rival]["losses"] += 1
+                else:
+                    rival_agg[rival]["draws"] += 1
+
+    rows = []
+    for rival, rec in rival_agg.items():
+        total = rec["wins"] + rec["draws"] + rec["losses"]
+        if total == 0:
+            continue
+        rate = rec["wins"] / total * 100
+        rows.append({
+            "rival": rival,
+            "wins": rec["wins"],
+            "draws": rec["draws"],
+            "losses": rec["losses"],
+            "games": total,
+            "rate": rate,
+        })
+
+    rows = sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
+    return rows
+
+
+def personal_get_all_players() -> list:
+    """기록에 존재하는 모든 player_key 목록 반환 (제외 선수 제외, 중복 제거, 정렬)."""
+    rows = _personal_get_all_rows()
+    excluded = set(exclude_list_load())
+    players = sorted({
+        str(r.get("player_key", "")).strip()
+        for r in rows
+        if str(r.get("player_key", "")).strip()
+        and str(r.get("player_key", "")).strip() not in excluded
+    })
+    return players
+
+
+
 # 첫 생성 직후 / 페이지 복귀 후 복원 시 양쪽에서 공통 사용하여 중복 제거.
 
 def _build_matches_df(schedule):
@@ -4410,7 +4687,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.8")
+st.sidebar.caption("v5.9")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -4487,9 +4764,9 @@ else:
 
 st.sidebar.markdown("---")
 # session_state key로 radio 상태 직접 관리 → 1클릭으로 즉시 반영
-_menu_opts = ["🏆 기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부", "🎯 이벤트 팀편성"]
+_menu_opts = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부", "🎯 이벤트 팀편성"]
 if "current_page" not in st.session_state:
-    st.session_state["current_page"] = "🏆 기록실"
+    st.session_state["current_page"] = "🏆 통합기록실"
 page = st.sidebar.radio("메뉴", _menu_opts,
                          key="current_page",
                          label_visibility="collapsed")
@@ -6329,10 +6606,10 @@ function showMsg() {{
 
 
 # ========================================================================
-# 14. 페이지: 기록실
+# 14. 페이지: 통합기록실 (기존 기록실 — 전체 선수 통계)
 # ========================================================================
-elif page == "🏆 기록실":
-    st.markdown("## 🏆 기록실 (누적 통계)")
+elif page == "🏆 통합기록실":
+    st.markdown("## 🏆 통합기록실 (누적 통계)")
     st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 중복 선수 및 제외 지정 선수는 기록에서 제외됩니다.")
 
     # ── 관리자 전용: 기록 제외 선수 관리 ────────────────────────
@@ -6618,6 +6895,370 @@ elif page == "🏆 기록실":
                        if c in _df_lg_disp.columns}
             st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
                          column_config=_cc_cfg)
+
+
+# ========================================================================
+# 14-B. 페이지: 개인기록실 (v5.9 신규)
+# ========================================================================
+elif page == "👤 개인기록실":
+    st.markdown("## 👤 개인기록실")
+    st.caption("회원 개인의 월별 리그 기록, 파트너 궁합, 라이벌 전적을 조회합니다.")
+
+    _now_pr = date.today()
+
+    # ── 회원명 입력 ──────────────────────────────────────────
+    _pr_col1, _pr_col2 = st.columns([3, 1])
+    with _pr_col1:
+        _pr_name_input = st.text_input(
+            "회원명 입력",
+            placeholder="예: 홍길동  (입력 후 엔터)",
+            key="pr_name_input",
+            label_visibility="collapsed"
+        )
+    with _pr_col2:
+        if st.button("🔄 새로고침", key="pr_refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # 자동완성 힌트: 입력 중인 이름과 매칭되는 선수 목록 표시
+    _pr_name = _pr_name_input.strip()
+
+    if not _pr_name:
+        # 안내 화면
+        st.markdown("---")
+        st.info("📝 **위 칸에 회원명을 입력하고 엔터를 누르세요.**\n\n조회 가능한 항목:\n- 📅 월별 소속 리그 타임라인\n- 🤝 베스트페어 / 워스트페어 (파트너 궁합)\n- ⚔️ 라이벌 전적 (상대별 1:1 전적)")
+
+        # 전체 회원 목록 힌트
+        with st.expander("👥 기록이 있는 회원 목록 보기"):
+            with st.spinner("회원 목록 불러오는 중…"):
+                _all_players = personal_get_all_players()
+            if _all_players:
+                _pc = st.columns(4)
+                for _pi, _pn in enumerate(_all_players):
+                    _pc[_pi % 4].markdown(
+                        f'<div style="padding:3px 0;font-size:0.85rem;color:#374151">👤 {_pn}</div>',
+                        unsafe_allow_html=True)
+            else:
+                st.info("기록된 회원이 없습니다.")
+        st.stop()
+
+    # ── 이름 유사 매칭 확인 ──────────────────────────────────
+    with st.spinner("데이터 확인 중…"):
+        _all_players_pr = personal_get_all_players()
+
+    _exact_match = _pr_name in _all_players_pr
+    _similar = [p for p in _all_players_pr if _pr_name in p or p in _pr_name]
+
+    if not _exact_match:
+        if _similar:
+            st.warning(f"⚠️ '{_pr_name}'의 정확한 기록이 없습니다. 비슷한 이름:")
+            _sim_cols = st.columns(min(len(_similar), 4))
+            for _si, _sn in enumerate(_similar[:4]):
+                if _sim_cols[_si].button(f"👤 {_sn}", key=f"pr_sim_{_si}"):
+                    st.session_state["pr_name_input"] = _sn
+                    st.rerun()
+        else:
+            st.error(f"❌ '{_pr_name}'의 기록이 없습니다. 회원명을 다시 확인해주세요.")
+        st.stop()
+
+    # ── 헤더: 선수 이름 배너 ──────────────────────────────────
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#1a2e4a,#2563eb22);'
+        f'border-left:5px solid #2563eb;border-radius:0 14px 14px 0;'
+        f'padding:14px 20px;margin:12px 0 20px;">'
+        f'<span style="color:#1a2e4a;font-weight:900;font-size:1.2rem;">👤 {_pr_name}</span>'
+        f'<span style="color:#6b7280;font-size:0.85rem;margin-left:10px;">개인 기록 조회</span>'
+        f'</div>', unsafe_allow_html=True)
+
+    # ── 탭 구성 ───────────────────────────────────────────────
+    _pr_tab1, _pr_tab2, _pr_tab3 = st.tabs(["📅 월별 리그 타임라인", "🤝 파트너 궁합", "⚔️ 라이벌 전적"])
+
+    # ────────────────────────────────────────────────────────
+    # TAB 1: 월별 소속 리그 타임라인 (14-B-1)
+    # ────────────────────────────────────────────────────────
+    with _pr_tab1:
+        st.markdown("#### 📅 월별 소속 리그")
+        st.caption("해당 월에 경기 기록이 있는 리그를 표시합니다.")
+
+        _tl_years = [str(_now_pr.year - i) for i in range(4)]
+        _tl_year = st.selectbox("연도 선택", _tl_years, key="pr_tl_year")
+
+        with st.spinner("리그 기록 불러오는 중…"):
+            _monthly_data = personal_monthly_leagues(_pr_name, _tl_year)
+
+        if not _monthly_data:
+            st.info(f"📭 {_tl_year}년 {_pr_name}의 기록이 없습니다.")
+        else:
+            # 12개월 전체 표시 (기록 없는 달도 포함)
+            _all_months = [f"{_tl_year}-{m:02d}" for m in range(1, 13)]
+            _month_dict = {d["month"]: d["leagues"] for d in _monthly_data}
+
+            # 리그 색상 맵
+            _tl_html_rows = []
+            for _ym in _all_months:
+                try:
+                    _mm = int(_ym.split("-")[1])
+                except Exception:
+                    _mm = 0
+                _lgs = _month_dict.get(_ym, [])
+                _has_record = bool(_lgs)
+
+                _month_label = f"{_tl_year[2:]}년 {_mm:02d}월"
+                if _has_record:
+                    _lg_badges = " ".join([
+                        f'<span style="background:{get_league_color(lg)}22;'
+                        f'border:1.5px solid {get_league_color(lg)}66;'
+                        f'border-radius:6px;padding:2px 8px;font-size:0.78rem;'
+                        f'font-weight:700;color:{get_league_color(lg)};margin-right:4px;">'
+                        f'{lg}</span>'
+                        for lg in _lgs
+                    ])
+                    _row_bg = "background:#f0f9ff;"
+                    _record_cell = _lg_badges
+                else:
+                    _row_bg = "background:#f9fafb;"
+                    _record_cell = '<span style="color:#d1d5db;font-size:0.8rem;">—</span>'
+
+                _tl_html_rows.append(
+                    f'<tr style="{_row_bg}border-bottom:1px solid #e5e7eb;">'
+                    f'<td style="padding:8px 14px;font-weight:{"700" if _has_record else "400"};'
+                    f'color:{"#1a2e4a" if _has_record else "#9ca3af"};font-size:0.9rem;width:120px;">'
+                    f'{_month_label}</td>'
+                    f'<td style="padding:8px 14px;">{_record_cell}</td>'
+                    f'</tr>'
+                )
+
+            _tl_html = (
+                f'<table style="width:100%;border-collapse:collapse;border-radius:10px;overflow:hidden;">'
+                f'<thead><tr style="background:#1a2e4a;">'
+                f'<th style="padding:10px 14px;text-align:left;color:#fff;font-size:0.85rem;width:120px;">월</th>'
+                f'<th style="padding:10px 14px;text-align:left;color:#fff;font-size:0.85rem;">소속 리그</th>'
+                f'</tr></thead><tbody>'
+                + "".join(_tl_html_rows) +
+                f'</tbody></table>'
+            )
+            st.markdown(_tl_html, unsafe_allow_html=True)
+
+            _record_months = len([d for d in _monthly_data])
+            st.caption(f"📊 {_tl_year}년 총 {_record_months}개월 기록")
+
+    # ────────────────────────────────────────────────────────
+    # TAB 2: 파트너 궁합 — 베스트페어 / 워스트페어 (14-B-2)
+    # ────────────────────────────────────────────────────────
+    with _pr_tab2:
+        st.markdown("#### 🤝 파트너 궁합")
+        st.caption("나와 같은 팀으로 뛰었을 때의 승무패 기록입니다. 최소 2경기 이상만 표시됩니다.")
+
+        _p2_c1, _p2_c2 = st.columns([2, 2])
+        with _p2_c1:
+            _p2_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
+                                 key="pr_pair_mode", label_visibility="collapsed")
+        with _p2_c2:
+            if _p2_mode == "월간":
+                _p2_months = []
+                for i in range(12):
+                    _m2 = _now_pr.month - i
+                    _y2 = _now_pr.year
+                    while _m2 <= 0: _m2 += 12; _y2 -= 1
+                    _p2_months.append(f"{_y2}-{_m2:02d}")
+                _p2_months = sorted(list(dict.fromkeys(_p2_months)), reverse=True)
+                _p2_fv = st.selectbox("월 선택", _p2_months, key="pr_pair_month",
+                                       label_visibility="collapsed")
+                _p2_ft = "monthly"
+                _p2_lbl = f"{_p2_fv} 월간"
+            else:
+                _p2_years = [str(_now_pr.year - i) for i in range(4)]
+                _p2_fv = st.selectbox("연도 선택", _p2_years, key="pr_pair_year",
+                                       label_visibility="collapsed")
+                _p2_ft = "yearly"
+                _p2_lbl = f"{_p2_fv} 연간"
+
+        with st.spinner("파트너 통계 계산 중…"):
+            _pair_data = personal_pair_stats(_pr_name, _p2_ft, _p2_fv)
+
+        _best_list  = _pair_data["best"]
+        _worst_list = _pair_data["worst"]
+
+        def _pair_card_html(rank, partner, wins, draws, losses, rate, games, card_type):
+            _color = "#16a34a" if card_type == "best" else "#dc2626"
+            _emoji = "🏅" if card_type == "best" else "😰"
+            _rate_str = f"{rate:.1f}%"
+            _rank_badge = f'<span style="background:{_color}22;color:{_color};font-weight:900;font-size:0.8rem;padding:1px 7px;border-radius:10px;margin-right:6px;">{rank}위</span>'
+            return (
+                f'<div style="background:#fff;border:1.5px solid {_color}33;border-radius:12px;'
+                f'padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;'
+                f'box-shadow:0 1px 6px {_color}11;">'
+                f'<div style="min-width:30px;font-size:1.2rem;margin-right:10px;">{_emoji}</div>'
+                f'<div style="flex:1;">'
+                f'{_rank_badge}'
+                f'<span style="font-weight:800;color:#1a2e4a;font-size:0.95rem;">{partner}</span>'
+                f'<div style="font-size:0.78rem;color:#6b7280;margin-top:3px;">'
+                f'<span style="color:#16a34a;font-weight:700;">{wins}승</span> '
+                f'<span style="color:#9ca3af;">{draws}무</span> '
+                f'<span style="color:#dc2626;font-weight:700;">{losses}패</span> '
+                f'<span style="color:#6b7280;">· {games}경기</span>'
+                f'</div></div>'
+                f'<div style="font-size:1.1rem;font-weight:900;color:{_color};min-width:56px;text-align:right;">{_rate_str}</div>'
+                f'</div>'
+            )
+
+        _bp_col1, _bp_col2 = st.columns(2)
+
+        with _bp_col1:
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,#16a34a22,transparent);'
+                f'border-left:4px solid #16a34a;border-radius:0 8px 8px 0;'
+                f'padding:8px 14px;margin-bottom:12px;">'
+                f'<span style="color:#16a34a;font-weight:900;font-size:0.95rem;">🏅 베스트페어</span>'
+                f'<span style="color:#6b7280;font-size:0.75rem;margin-left:6px;">— {_p2_lbl} 승률 높은 파트너</span>'
+                f'</div>', unsafe_allow_html=True)
+            if _best_list:
+                for _bi, _bp in enumerate(_best_list[:5]):
+                    st.markdown(
+                        _pair_card_html(_bi+1, _bp["partner"], _bp["wins"],
+                                        _bp["draws"], _bp["losses"], _bp["rate"],
+                                        _bp["games"], "best"),
+                        unsafe_allow_html=True)
+            else:
+                st.info(f"📭 {_p2_lbl} 파트너 기록이 없습니다.")
+
+        with _bp_col2:
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,#dc262622,transparent);'
+                f'border-left:4px solid #dc2626;border-radius:0 8px 8px 0;'
+                f'padding:8px 14px;margin-bottom:12px;">'
+                f'<span style="color:#dc2626;font-weight:900;font-size:0.95rem;">😰 워스트페어</span>'
+                f'<span style="color:#6b7280;font-size:0.75rem;margin-left:6px;">— {_p2_lbl} 승률 낮은 파트너</span>'
+                f'</div>', unsafe_allow_html=True)
+            if _worst_list:
+                for _wi, _wp in enumerate(_worst_list[:5]):
+                    st.markdown(
+                        _pair_card_html(_wi+1, _wp["partner"], _wp["wins"],
+                                        _wp["draws"], _wp["losses"], _wp["rate"],
+                                        _wp["games"], "worst"),
+                        unsafe_allow_html=True)
+            else:
+                st.info(f"📭 {_p2_lbl} 파트너 기록이 없습니다.")
+
+        if _best_list or _worst_list:
+            st.caption("💡 베스트/워스트페어는 최소 2경기 이상 함께 뛴 파트너만 집계됩니다.")
+
+    # ────────────────────────────────────────────────────────
+    # TAB 3: 라이벌 전적 — 상대별 1:1 맞대결 (14-B-3)
+    # ────────────────────────────────────────────────────────
+    with _pr_tab3:
+        st.markdown("#### ⚔️ 라이벌 전적")
+        st.caption("나와 상대팀으로 뛰었던 모든 선수와의 승무패 기록입니다.")
+
+        _r3_c1, _r3_c2 = st.columns([2, 2])
+        with _r3_c1:
+            _r3_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
+                                 key="pr_rival_mode", label_visibility="collapsed")
+        with _r3_c2:
+            if _r3_mode == "월간":
+                _r3_months = []
+                for i in range(12):
+                    _m3 = _now_pr.month - i
+                    _y3 = _now_pr.year
+                    while _m3 <= 0: _m3 += 12; _y3 -= 1
+                    _r3_months.append(f"{_y3}-{_m3:02d}")
+                _r3_months = sorted(list(dict.fromkeys(_r3_months)), reverse=True)
+                _r3_fv = st.selectbox("월 선택", _r3_months, key="pr_rival_month",
+                                       label_visibility="collapsed")
+                _r3_ft = "monthly"
+                _r3_lbl = f"{_r3_fv} 월간"
+            else:
+                _r3_years = [str(_now_pr.year - i) for i in range(4)]
+                _r3_fv = st.selectbox("연도 선택", _r3_years, key="pr_rival_year",
+                                       label_visibility="collapsed")
+                _r3_ft = "yearly"
+                _r3_lbl = f"{_r3_fv} 연간"
+
+        # 상대 선수 선택 (전체 또는 특정 선수)
+        with st.spinner("상대 전적 계산 중…"):
+            _rival_rows = personal_rival_stats(_pr_name, _r3_ft, _r3_fv)
+
+        if not _rival_rows:
+            st.info(f"📭 {_r3_lbl} {_pr_name}의 상대 전적이 없습니다.")
+        else:
+            # 상대 선택 필터
+            _rival_names = ["전체 상대"] + [r["rival"] for r in _rival_rows]
+            _r3_sel = st.selectbox(
+                "상대 선수 선택",
+                _rival_names,
+                key="pr_rival_select",
+                help="특정 상대와의 전적만 보려면 이름을 선택하세요."
+            )
+
+            _disp_rows = _rival_rows if _r3_sel == "전체 상대" else [
+                r for r in _rival_rows if r["rival"] == _r3_sel
+            ]
+
+            # 요약 카드 (전체 선택 시)
+            if _r3_sel == "전체 상대":
+                _total_games_rv = sum(r["games"] for r in _rival_rows)
+                _total_wins_rv  = sum(r["wins"]  for r in _rival_rows)
+                _total_draws_rv = sum(r["draws"] for r in _rival_rows)
+                _total_loss_rv  = sum(r["losses"] for r in _rival_rows)
+                _total_rate_rv  = _total_wins_rv / _total_games_rv * 100 if _total_games_rv else 0
+                st.markdown(
+                    f'<div style="display:flex;gap:10px;margin:10px 0 16px;flex-wrap:wrap;">'
+                    f'<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
+                    f'<div style="font-size:0.7rem;color:#3b82f6;font-weight:700;">총 경기</div>'
+                    f'<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">{_total_games_rv}</div></div>'
+                    f'<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
+                    f'<div style="font-size:0.7rem;color:#16a34a;font-weight:700;">승</div>'
+                    f'<div style="font-size:1.3rem;font-weight:900;color:#16a34a;">{_total_wins_rv}</div></div>'
+                    f'<div style="background:#fafafa;border:1.5px solid #d1d5db;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
+                    f'<div style="font-size:0.7rem;color:#9ca3af;font-weight:700;">무</div>'
+                    f'<div style="font-size:1.3rem;font-weight:900;color:#9ca3af;">{_total_draws_rv}</div></div>'
+                    f'<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
+                    f'<div style="font-size:0.7rem;color:#dc2626;font-weight:700;">패</div>'
+                    f'<div style="font-size:1.3rem;font-weight:900;color:#dc2626;">{_total_loss_rv}</div></div>'
+                    f'<div style="background:#fdf4ff;border:1.5px solid #d8b4fe;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
+                    f'<div style="font-size:0.7rem;color:#7c3aed;font-weight:700;">전체 승률</div>'
+                    f'<div style="font-size:1.3rem;font-weight:900;color:#7c3aed;">{_total_rate_rv:.1f}%</div></div>'
+                    f'</div>', unsafe_allow_html=True)
+
+            # 테이블 렌더링
+            _rv_html_rows = []
+            for _ri, _rv in enumerate(_disp_rows):
+                _rate_val = _rv["rate"]
+                if _rate_val >= 60:
+                    _rate_color = "#16a34a"
+                elif _rate_val >= 40:
+                    _rate_color = "#d97706"
+                else:
+                    _rate_color = "#dc2626"
+                _vs_label = f"{_pr_name} vs {_rv['rival']}"
+                _rv_html_rows.append(
+                    f'<tr style="border-bottom:1px solid #f3f4f6;">'
+                    f'<td style="padding:8px 12px;font-size:0.8rem;color:#9ca3af;text-align:center;width:40px;">{_ri+1}</td>'
+                    f'<td style="padding:8px 12px;font-weight:700;color:#1a2e4a;font-size:0.9rem;">{_vs_label}</td>'
+                    f'<td style="padding:8px 12px;text-align:center;font-size:0.85rem;">'
+                    f'<span style="color:#16a34a;font-weight:700;">{_rv["wins"]}승</span> '
+                    f'<span style="color:#9ca3af;">{_rv["draws"]}무</span> '
+                    f'<span style="color:#dc2626;font-weight:700;">{_rv["losses"]}패</span>'
+                    f'</td>'
+                    f'<td style="padding:8px 12px;text-align:center;color:#6b7280;font-size:0.85rem;">{_rv["games"]}</td>'
+                    f'<td style="padding:8px 12px;text-align:right;font-weight:900;color:{_rate_color};font-size:0.95rem;">{_rate_val:.1f}%</td>'
+                    f'</tr>'
+                )
+
+            _rv_html = (
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<thead><tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">'
+                f'<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;width:40px;">#</th>'
+                f'<th style="padding:9px 12px;text-align:left;font-size:0.8rem;color:#6b7280;">대결</th>'
+                f'<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">승무패</th>'
+                f'<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">경기수</th>'
+                f'<th style="padding:9px 12px;text-align:right;font-size:0.8rem;color:#6b7280;">승률</th>'
+                f'</tr></thead><tbody>'
+                + "".join(_rv_html_rows) +
+                f'</tbody></table>'
+            )
+            st.markdown(_rv_html, unsafe_allow_html=True)
+            st.caption(f"📊 {_r3_lbl} · 총 {len(_disp_rows)}명의 상대와 대결")
 
 
 # ========================================================================
