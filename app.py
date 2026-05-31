@@ -2557,18 +2557,28 @@ def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -
     }
 
 
-def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) -> list:
+def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) -> tuple:
     """
     특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
     filter_type: 'monthly' 또는 'yearly'
     filter_value: 'YYYY-MM' 또는 'YYYY'
-    반환: [{"rival": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...]
-    승률 내림차순 정렬
+
+    ※ 복식 구조 주의:
+      - 개별 라이벌 행: "나 vs 상대A" 기준으로 1경기당 상대A에게 1번만 집계 (정확)
+      - 요약 합계: 상대팀에 2명이 있어도 '경기(매치)' 단위로 1번만 집계해야 함
+        → match_totals 별도 반환으로 이중 집계 방지
+
+    반환: (
+        rows: [{"rival": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...],
+        match_totals: {"games": int, "wins": int, "draws": int, "losses": int}
+    )
     """
     all_date_keys = shelf_list_dates()
     excluded = set(exclude_list_load())
 
     rival_agg: dict = {}  # rival_name → {wins, draws, losses}
+    # 경기(매치) 단위 집계 — 요약 카드용. 상대팀에 2명이어도 경기는 1번만 카운트.
+    match_totals = {"games": 0, "wins": 0, "draws": 0, "losses": 0}
 
     for dk in all_date_keys:
         if "[이벤트]" in str(dk):
@@ -2613,17 +2623,24 @@ def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) 
             t2_keys = [_clean_player_key(c) for c in t2_codes if not _skip2(c)]
 
             if player_name in t1_keys:
-                my_team = t1_keys
                 opp_team = t2_keys
                 my_score, opp_score = int(s1), int(s2)
             elif player_name in t2_keys:
-                my_team = t2_keys
                 opp_team = t1_keys
                 my_score, opp_score = int(s2), int(s1)
             else:
                 continue
 
-            # 상대팀 전체가 라이벌
+            # ── 경기(매치) 단위 요약 집계 (상대팀 인원수 무관, 1경기=1번) ──
+            match_totals["games"] += 1
+            if my_score > opp_score:
+                match_totals["wins"] += 1
+            elif my_score < opp_score:
+                match_totals["losses"] += 1
+            else:
+                match_totals["draws"] += 1
+
+            # ── 개별 라이벌별 집계 (상대팀 각 선수에게 1번씩) ──
             for rival in opp_team:
                 if rival in excluded:
                     continue
@@ -2652,7 +2669,7 @@ def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) 
         })
 
     rows = sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
-    return rows
+    return rows, match_totals
 
 
 def personal_get_all_players() -> list:
@@ -7176,7 +7193,7 @@ elif page == "👤 개인기록실":
 
         # 상대 선수 선택 (전체 또는 특정 선수)
         with st.spinner("상대 전적 계산 중…"):
-            _rival_rows = personal_rival_stats(_pr_name, _r3_ft, _r3_fv)
+            _rival_rows, _match_totals = personal_rival_stats(_pr_name, _r3_ft, _r3_fv)
 
         if not _rival_rows:
             st.info(f"📭 {_r3_lbl} {_pr_name}의 상대 전적이 없습니다.")
@@ -7196,10 +7213,11 @@ elif page == "👤 개인기록실":
 
             # 요약 카드 (전체 선택 시)
             if _r3_sel == "전체 상대":
-                _total_games_rv = sum(r["games"] for r in _rival_rows)
-                _total_wins_rv  = sum(r["wins"]  for r in _rival_rows)
-                _total_draws_rv = sum(r["draws"] for r in _rival_rows)
-                _total_loss_rv  = sum(r["losses"] for r in _rival_rows)
+                # ── 경기(매치) 단위 집계 사용 → 복식 상대 2명 이중 집계 방지 ──
+                _total_games_rv = _match_totals["games"]
+                _total_wins_rv  = _match_totals["wins"]
+                _total_draws_rv = _match_totals["draws"]
+                _total_loss_rv  = _match_totals["losses"]
                 _total_rate_rv  = _total_wins_rv / _total_games_rv * 100 if _total_games_rv else 0
                 st.markdown(
                     f'<div style="display:flex;gap:10px;margin:10px 0 16px;flex-wrap:wrap;">'
