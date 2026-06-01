@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.1
+TELA CLUB Random Match Generator v5.9.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -20,10 +20,10 @@ TELA CLUB Random Match Generator v5.9.1
 13. 페이지: 대진표 생성
 14. 페이지: 통합기록실 (기존 기록실 — 전체 선수 통계)
 14-B. 페이지: 개인기록실
-    ├─ 종합 요약 헤더 (F-2) + 연도 선택
+    ├─ 회원명 검색 + 최근 검색 (F-4) + 종합 요약 헤더 (F-2)
     ├─ 14-B-1. 월별 소속 리그 타임라인 + 월별 성적 추이 그래프 (F-1)
     ├─ 14-B-2. 베스트페어 / 워스트페어 + CSV 내보내기 (F-5)
-    └─ 14-B-3. 라이벌 전적 (1:1 상대 전적) + CSV 내보내기 (F-5)
+    └─ 14-B-3. 라이벌 전적 + 파트너 동반 분석 (F-3) + CSV 내보내기 (F-5)
 15. 페이지: 회원명부
 """
 
@@ -2765,6 +2765,78 @@ def personal_monthly_trend(player_name: str, year: str) -> list:
     return out
 
 
+@st.cache_data(ttl=60)
+def personal_partner_vs_rival(player_name: str, rival_name: str,
+                              filter_type: str, filter_value: str) -> list:
+    """
+    [F-3] 특정 라이벌을 상대했을 때, 어떤 파트너와 팀이면 잘 이기는지 교차 분석.
+
+    player_name 이 rival_name 을 상대팀에 두고 치른 경기만 추린 뒤,
+    그 경기에서 player_name 의 파트너별 승무패를 집계한다.
+
+    filter_value: 'YYYY-MM'(월간) 또는 'YYYY'(연간) — 모두 prefix 일치 방식
+    반환: [{"partner": str, "wins": int, "draws": int, "losses": int,
+            "games": int, "rate": float}, ...]  (승률 내림차순)
+    """
+    matches = _personal_raw_matches_cached()
+    excluded = set(exclude_list_load())
+
+    agg: dict = {}  # partner_name → {wins, draws, losses}
+
+    for m in matches:
+        if not str(m["date_key"]).startswith(filter_value):
+            continue
+
+        t1_keys = m["t1_keys"]
+        t2_keys = m["t2_keys"]
+        s1, s2 = m["s1"], m["s2"]
+
+        if player_name in t1_keys:
+            my_team, opp_team = t1_keys, t2_keys
+            my_score, opp_score = s1, s2
+        elif player_name in t2_keys:
+            my_team, opp_team = t2_keys, t1_keys
+            my_score, opp_score = s2, s1
+        else:
+            continue
+
+        # 이 경기에서 지정한 라이벌이 상대팀에 있어야 함
+        if rival_name not in opp_team:
+            continue
+
+        partners = [p for p in my_team if p != player_name]
+        if not partners:
+            continue
+
+        for partner in partners:
+            if partner in excluded:
+                continue
+            if partner not in agg:
+                agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
+            if my_score > opp_score:
+                agg[partner]["wins"] += 1
+            elif my_score < opp_score:
+                agg[partner]["losses"] += 1
+            else:
+                agg[partner]["draws"] += 1
+
+    rows = []
+    for partner, rec in agg.items():
+        total = rec["wins"] + rec["draws"] + rec["losses"]
+        if total == 0:
+            continue
+        rows.append({
+            "partner": partner,
+            "wins": rec["wins"],
+            "draws": rec["draws"],
+            "losses": rec["losses"],
+            "games": total,
+            "rate": rec["wins"] / total * 100,
+        })
+    rows = sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
+    return rows
+
+
 
 # 첫 생성 직후 / 페이지 복귀 후 복원 시 양쪽에서 공통 사용하여 중복 제거.
 
@@ -4833,7 +4905,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.1")
+st.sidebar.caption("v5.9.2")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -7072,6 +7144,22 @@ elif page == "👤 개인기록실":
     if not _pr_name:
         # 안내 화면
         st.markdown("---")
+
+        # ── [F-4] 최근 검색 ─────────────────────────────────
+        _recent = st.session_state.get("pr_recent_searches", [])
+        if _recent:
+            st.markdown("##### 🕘 최근 검색")
+            _rc_cols = st.columns(min(len(_recent), 5))
+            for _ri, _rn in enumerate(_recent[:5]):
+                if _rc_cols[_ri].button(f"👤 {_rn}", key=f"pr_recent_{_ri}",
+                                        use_container_width=True):
+                    st.session_state["pr_name_input"] = _rn
+                    st.rerun()
+            if st.button("🗑️ 최근 검색 지우기", key="pr_recent_clear"):
+                st.session_state["pr_recent_searches"] = []
+                st.rerun()
+            st.markdown("")
+
         st.info("📝 **위 칸에 회원명을 입력하고 엔터를 누르세요.**\n\n조회 가능한 항목:\n- 📅 월별 소속 리그 타임라인\n- 🤝 베스트페어 / 워스트페어 (파트너 궁합)\n- ⚔️ 라이벌 전적 (상대별 1:1 전적)")
 
         # 전체 회원 목록 힌트
@@ -7106,6 +7194,13 @@ elif page == "👤 개인기록실":
         else:
             st.error(f"❌ '{_pr_name}'의 기록이 없습니다. 회원명을 다시 확인해주세요.")
         st.stop()
+
+    # ── [F-4] 검색 성공 → 최근 검색에 저장 (세션 단위, 최신 우선, 최대 5개) ──
+    _rec_list = st.session_state.get("pr_recent_searches", [])
+    if _pr_name in _rec_list:
+        _rec_list.remove(_pr_name)
+    _rec_list.insert(0, _pr_name)
+    st.session_state["pr_recent_searches"] = _rec_list[:5]
 
     # ── 헤더: 선수 이름 배너 ──────────────────────────────────
     st.markdown(
@@ -7503,6 +7598,59 @@ elif page == "👤 개인기록실":
                 key="pr_rival_csv",
                 use_container_width=True,
             )
+
+            # ── [F-3] 파트너 동반 분석 (특정 상대 선택 시) ──────
+            if _r3_sel != "전체 상대":
+                st.markdown("---")
+                st.markdown(f"##### 🤼 **{_r3_sel}** 상대 시 — 파트너별 성적")
+                st.caption(f"{_r3_sel} 선수를 상대팀에 두고 경기할 때, 누구와 한 팀이면 잘 이기는지 분석합니다.")
+                with st.spinner("동반 분석 계산 중…"):
+                    _pvr = personal_partner_vs_rival(_pr_name, _r3_sel, _r3_ft, _r3_fv)
+                if not _pvr:
+                    st.info(f"📭 {_r3_lbl} {_r3_sel}와(과)의 경기에서 파트너 기록이 없습니다.")
+                else:
+                    _pvr_html_rows = []
+                    for _pi, _pp in enumerate(_pvr):
+                        _pr_rate = _pp["rate"]
+                        if _pr_rate >= 60:
+                            _pr_color = "#16a34a"
+                        elif _pr_rate >= 40:
+                            _pr_color = "#d97706"
+                        else:
+                            _pr_color = "#dc2626"
+                        _pvr_html_rows.append(
+                            f'<tr style="border-bottom:1px solid #f3f4f6;">'
+                            f'<td style="padding:8px 12px;font-size:0.8rem;color:#9ca3af;text-align:center;width:40px;">{_pi+1}</td>'
+                            f'<td style="padding:8px 12px;font-weight:700;color:#1a2e4a;font-size:0.9rem;">🤝 {_pp["partner"]}</td>'
+                            f'<td style="padding:8px 12px;text-align:center;font-size:0.85rem;">'
+                            f'<span style="color:#16a34a;font-weight:700;">{_pp["wins"]}승</span> '
+                            f'<span style="color:#9ca3af;">{_pp["draws"]}무</span> '
+                            f'<span style="color:#dc2626;font-weight:700;">{_pp["losses"]}패</span>'
+                            f'</td>'
+                            f'<td style="padding:8px 12px;text-align:center;color:#6b7280;font-size:0.85rem;">{_pp["games"]}</td>'
+                            f'<td style="padding:8px 12px;text-align:right;font-weight:900;color:{_pr_color};font-size:0.95rem;">{_pr_rate:.1f}%</td>'
+                            f'</tr>'
+                        )
+                    _pvr_html = (
+                        f'<table style="width:100%;border-collapse:collapse;">'
+                        f'<thead><tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">'
+                        f'<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;width:40px;">#</th>'
+                        f'<th style="padding:9px 12px;text-align:left;font-size:0.8rem;color:#6b7280;">파트너</th>'
+                        f'<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">승무패</th>'
+                        f'<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">경기수</th>'
+                        f'<th style="padding:9px 12px;text-align:right;font-size:0.8rem;color:#6b7280;">승률</th>'
+                        f'</tr></thead><tbody>'
+                        + "".join(_pvr_html_rows) +
+                        f'</tbody></table>'
+                    )
+                    st.markdown(_pvr_html, unsafe_allow_html=True)
+                    _pvr_best = _pvr[0]
+                    if _pvr_best["games"] >= 2 and _pvr_best["rate"] >= 50:
+                        st.success(
+                            f"💡 **{_r3_sel}** 상대로는 **{_pvr_best['partner']}**와(과) 팀일 때 "
+                            f"가장 좋습니다 ({_pvr_best['wins']}승 {_pvr_best['draws']}무 {_pvr_best['losses']}패 · "
+                            f"승률 {_pvr_best['rate']:.1f}%)."
+                        )
 
 
 # ========================================================================
