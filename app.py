@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.2
+TELA CLUB Random Match Generator v5.9.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4905,7 +4905,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.2")
+st.sidebar.caption("v5.9.3")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -7125,6 +7125,11 @@ elif page == "👤 개인기록실":
     _now_pr = date.today()
 
     # ── 회원명 입력 ──────────────────────────────────────────
+    # [F-4 버그수정 v5.9.3] 버튼으로 선택한 이름은 위젯 생성 '이전'에 주입해야 함
+    # (위젯 인스턴스화 후 session_state[위젯key] 직접 수정 시 StreamlitAPIException 발생)
+    if "pr_pending_name" in st.session_state:
+        st.session_state["pr_name_input"] = st.session_state.pop("pr_pending_name")
+
     _pr_col1, _pr_col2 = st.columns([3, 1])
     with _pr_col1:
         _pr_name_input = st.text_input(
@@ -7153,7 +7158,7 @@ elif page == "👤 개인기록실":
             for _ri, _rn in enumerate(_recent[:5]):
                 if _rc_cols[_ri].button(f"👤 {_rn}", key=f"pr_recent_{_ri}",
                                         use_container_width=True):
-                    st.session_state["pr_name_input"] = _rn
+                    st.session_state["pr_pending_name"] = _rn
                     st.rerun()
             if st.button("🗑️ 최근 검색 지우기", key="pr_recent_clear"):
                 st.session_state["pr_recent_searches"] = []
@@ -7189,7 +7194,7 @@ elif page == "👤 개인기록실":
             _sim_cols = st.columns(min(len(_similar), 4))
             for _si, _sn in enumerate(_similar[:4]):
                 if _sim_cols[_si].button(f"👤 {_sn}", key=f"pr_sim_{_si}"):
-                    st.session_state["pr_name_input"] = _sn
+                    st.session_state["pr_pending_name"] = _sn
                     st.rerun()
         else:
             st.error(f"❌ '{_pr_name}'의 기록이 없습니다. 회원명을 다시 확인해주세요.")
