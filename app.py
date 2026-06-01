@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9
+TELA CLUB Random Match Generator v5.9.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -12,16 +12,18 @@ TELA CLUB Random Match Generator v5.9
 06. 매칭 알고리즘: 완전 랜덤
 07. 대진표 검증·표시·스코어보드 통계
 08. 기록실 집계·제외 선수 관리
+08-B. 개인기록실 헬퍼 (공통 raw 캐시·페어·라이벌·요약·추이)
 09. 회원명부: 설정·CSS·Google Sheets·검증 함수
 10. 회원명부: 다이얼로그·렌더링
 11. 사이드바 로그인·메뉴 라우팅
 12. 페이지: 스코어보드
 13. 페이지: 대진표 생성
 14. 페이지: 통합기록실 (기존 기록실 — 전체 선수 통계)
-14-B. 페이지: 개인기록실 (v5.9 신규 — 회원 개인 전적 조회)
-    ├─ 14-B-1. 월별 소속 리그 타임라인
-    ├─ 14-B-2. 베스트페어 / 워스트페어 (굿페어/배드페어)
-    └─ 14-B-3. 라이벌 전적 (1:1 상대 전적)
+14-B. 페이지: 개인기록실
+    ├─ 종합 요약 헤더 (F-2) + 연도 선택
+    ├─ 14-B-1. 월별 소속 리그 타임라인 + 월별 성적 추이 그래프 (F-1)
+    ├─ 14-B-2. 베스트페어 / 워스트페어 + CSV 내보내기 (F-5)
+    └─ 14-B-3. 라이벌 전적 (1:1 상대 전적) + CSV 내보내기 (F-5)
 15. 페이지: 회원명부
 """
 
@@ -2395,17 +2397,107 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
 
 
 # ========================================================================
-# 08-B. 개인기록실 헬퍼 함수 (v5.9 신규)
+# 08-B. 개인기록실 헬퍼 함수 (v5.9 / v5.9.1 패치)
 # ========================================================================
 
+@st.cache_data(ttl=60)
+def _personal_raw_matches_cached() -> list:
+    """
+    개인기록실 전용 raw 경기 데이터 캐시.
+
+    파트너/상대 관계 분석을 위해 경기별 팀 구성(team1/team2)과 점수가 필요하므로,
+    집계 dict가 아닌 '경기 단위 정규화 레코드'를 shelf에서 1회만 추출해 캐싱한다.
+    (B-1: 데이터 소스 통일 / B-2: 캐싱으로 반복 순회 제거)
+
+    ※ raw 스케줄(팀 구성)은 shelf에만 존재하고 구글시트 records 탭에는
+       집계값만 저장되므로, 파트너/상대 분석은 시트 폴백이 불가능하다.
+       shelf가 비어 있으면 빈 리스트를 반환한다.
+
+    반환: [
+      {
+        "date_key": str, "year_month": "YYYY-MM", "year": "YYYY",
+        "league": str,
+        "t1_keys": [정제된 이름...], "t2_keys": [정제된 이름...],
+        "s1": int, "s2": int,
+      }, ...
+    ]
+    """
+    from datetime import datetime as _dt
+    excluded = set(exclude_list_load())
+    out = []
+
+    try:
+        all_keys = shelf_list_dates()
+    except Exception:
+        all_keys = []
+
+    for dk in all_keys:
+        if "[이벤트]" in str(dk):
+            continue
+        try:
+            sd = shelf_load(dk)
+            if not sd:
+                continue
+            schedule = deserialize_schedule(sd.get("schedule", []))
+            scores_d = sd.get("scores", {})
+            if not scores_d:
+                continue
+            try:
+                ym = _dt.strptime(dk[:7], "%Y-%m").strftime("%Y-%m")
+                yr = dk[:4]
+            except Exception:
+                ym = "unknown"; yr = "unknown"
+
+            for idx, match in enumerate(schedule):
+                sc = scores_d.get(str(idx), {})
+                s1 = sc.get("score1", None)
+                s2 = sc.get("score2", None)
+                if s1 is None or s2 is None:
+                    continue
+                if sc.get("is_dup", False):
+                    continue
+
+                _match_excl = set(match.get("exclude_players", []))
+                t1_codes = list(match.get("team1", []))
+                t2_codes = list(match.get("team2", []))
+
+                def _skip(code):
+                    raw = base_name(code)
+                    if "★" in raw: return True
+                    if _is_duplicate_player(code): return True
+                    if _clean_player_key(code) in excluded: return True
+                    if base_name(code) in _match_excl: return True
+                    return False
+
+                t1_keys = [_clean_player_key(c) for c in t1_codes if not _skip(c)]
+                t2_keys = [_clean_player_key(c) for c in t2_codes if not _skip(c)]
+                if not t1_keys and not t2_keys:
+                    continue
+
+                out.append({
+                    "date_key":   dk,
+                    "year_month": ym,
+                    "year":       yr,
+                    "league":     match.get("league", ""),
+                    "t1_keys":    t1_keys,
+                    "t2_keys":    t2_keys,
+                    "s1":         int(s1),
+                    "s2":         int(s2),
+                })
+        except Exception:
+            continue
+    return out
+
+
 def _personal_get_all_rows() -> list:
-    """전체 기록 rows 반환 (shelf 우선, 폴백 구글시트)."""
+    """전체 집계 rows 반환 (shelf 우선, 폴백 구글시트). 월별 리그 탭 등 집계용."""
     rows = records_rows_from_shelf_cached()
     if not rows:
         rows = records_load_cached()
     return rows
 
 
+@st.cache_data(ttl=60)
 def personal_monthly_leagues(player_name: str, year: str) -> list:
     """
     특정 회원의 연도별 월별 소속 리그 목록 반환.
@@ -2440,6 +2532,7 @@ def personal_monthly_leagues(player_name: str, year: str) -> list:
     return result
 
 
+@st.cache_data(ttl=60)
 def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -> dict:
     """
     특정 회원의 파트너별 승무패 통계 계산.
@@ -2449,84 +2542,47 @@ def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -
         "best": [{"partner": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...],
         "worst": [...],
     }
+
+    ※ v5.9.1: 공통 캐시(_personal_raw_matches_cached) 사용 — 데이터 소스 통일 + 성능 개선
     """
-    all_date_keys = shelf_list_dates()
+    matches = _personal_raw_matches_cached()
     excluded = set(exclude_list_load())
 
     pair_agg: dict = {}  # partner_name → {wins, draws, losses}
 
-    for dk in all_date_keys:
-        # 이벤트 제외
-        if "[이벤트]" in str(dk):
-            continue
-        # 기간 필터
-        if filter_type == "monthly":
-            if not dk.startswith(filter_value):
-                continue
-        else:  # yearly
-            if not dk.startswith(filter_value):
-                continue
-
-        sd = shelf_load(dk)
-        if not sd:
-            continue
-        schedule = deserialize_schedule(sd.get("schedule", []))
-        scores_d = sd.get("scores", {})
-        if not scores_d:
+    for m in matches:
+        # 기간 필터 (monthly/yearly 모두 prefix 일치)
+        if not str(m["date_key"]).startswith(filter_value):
             continue
 
-        for idx, match in enumerate(schedule):
-            sc = scores_d.get(str(idx), {})
-            s1 = sc.get("score1", None)
-            s2 = sc.get("score2", None)
-            if s1 is None or s2 is None:
+        t1_keys = m["t1_keys"]
+        t2_keys = m["t2_keys"]
+        s1, s2 = m["s1"], m["s2"]
+
+        if player_name in t1_keys:
+            my_team, opp_team = t1_keys, t2_keys
+            my_score, opp_score = s1, s2
+        elif player_name in t2_keys:
+            my_team, opp_team = t2_keys, t1_keys
+            my_score, opp_score = s2, s1
+        else:
+            continue
+
+        partners = [p for p in my_team if p != player_name]
+        if not partners:
+            continue
+
+        for partner in partners:
+            if partner in excluded:
                 continue
-            if sc.get("is_dup", False):
-                continue
-
-            _match_excl = set(match.get("exclude_players", []))
-            t1_codes = list(match.get("team1", []))
-            t2_codes = list(match.get("team2", []))
-
-            def _skip(code):
-                raw = base_name(code)
-                if "★" in raw: return True
-                if _is_duplicate_player(code): return True
-                if _clean_player_key(code) in excluded: return True
-                if base_name(code) in _match_excl: return True
-                return False
-
-            t1_keys = [_clean_player_key(c) for c in t1_codes if not _skip(c)]
-            t2_keys = [_clean_player_key(c) for c in t2_codes if not _skip(c)]
-
-            # player_name 이 어느 팀에 있는지 확인
-            if player_name in t1_keys:
-                my_team = t1_keys
-                opp_team = t2_keys
-                my_score, opp_score = int(s1), int(s2)
-            elif player_name in t2_keys:
-                my_team = t2_keys
-                opp_team = t1_keys
-                my_score, opp_score = int(s2), int(s1)
+            if partner not in pair_agg:
+                pair_agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
+            if my_score > opp_score:
+                pair_agg[partner]["wins"] += 1
+            elif my_score < opp_score:
+                pair_agg[partner]["losses"] += 1
             else:
-                continue
-
-            # 파트너(내 팀 내 나 제외)
-            partners = [p for p in my_team if p != player_name]
-            if not partners:
-                continue
-
-            for partner in partners:
-                if partner in excluded:
-                    continue
-                if partner not in pair_agg:
-                    pair_agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
-                if my_score > opp_score:
-                    pair_agg[partner]["wins"] += 1
-                elif my_score < opp_score:
-                    pair_agg[partner]["losses"] += 1
-                else:
-                    pair_agg[partner]["draws"] += 1
+                pair_agg[partner]["draws"] += 1
 
     if not pair_agg:
         return {"best": [], "worst": []}
@@ -2557,101 +2613,60 @@ def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -
     }
 
 
+@st.cache_data(ttl=60)
 def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) -> tuple:
     """
     특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
     filter_type: 'monthly' 또는 'yearly'
     filter_value: 'YYYY-MM' 또는 'YYYY'
 
-    ※ 복식 구조 주의:
-      - 개별 라이벌 행: "나 vs 상대A" 기준으로 1경기당 상대A에게 1번만 집계 (정확)
-      - 요약 합계: 상대팀에 2명이 있어도 '경기(매치)' 단위로 1번만 집계해야 함
-        → match_totals 별도 반환으로 이중 집계 방지
-
-    반환: (
-        rows: [{"rival": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...],
-        match_totals: {"games": int, "wins": int, "draws": int, "losses": int}
-    )
+    ※ v5.9.1: 공통 캐시(_personal_raw_matches_cached) 사용 — 데이터 소스 통일 + 성능 개선
     """
-    all_date_keys = shelf_list_dates()
+    matches = _personal_raw_matches_cached()
     excluded = set(exclude_list_load())
 
     rival_agg: dict = {}  # rival_name → {wins, draws, losses}
     # 경기(매치) 단위 집계 — 요약 카드용. 상대팀에 2명이어도 경기는 1번만 카운트.
     match_totals = {"games": 0, "wins": 0, "draws": 0, "losses": 0}
 
-    for dk in all_date_keys:
-        if "[이벤트]" in str(dk):
+    for m in matches:
+        if not str(m["date_key"]).startswith(filter_value):
             continue
-        if filter_type == "monthly":
-            if not dk.startswith(filter_value):
-                continue
+
+        t1_keys = m["t1_keys"]
+        t2_keys = m["t2_keys"]
+        s1, s2 = m["s1"], m["s2"]
+
+        if player_name in t1_keys:
+            opp_team = t2_keys
+            my_score, opp_score = s1, s2
+        elif player_name in t2_keys:
+            opp_team = t1_keys
+            my_score, opp_score = s2, s1
         else:
-            if not dk.startswith(filter_value):
-                continue
-
-        sd = shelf_load(dk)
-        if not sd:
-            continue
-        schedule = deserialize_schedule(sd.get("schedule", []))
-        scores_d = sd.get("scores", {})
-        if not scores_d:
             continue
 
-        for idx, match in enumerate(schedule):
-            sc = scores_d.get(str(idx), {})
-            s1 = sc.get("score1", None)
-            s2 = sc.get("score2", None)
-            if s1 is None or s2 is None:
+        # ── 경기(매치) 단위 요약 집계 (상대팀 인원수 무관, 1경기=1번) ──
+        match_totals["games"] += 1
+        if my_score > opp_score:
+            match_totals["wins"] += 1
+        elif my_score < opp_score:
+            match_totals["losses"] += 1
+        else:
+            match_totals["draws"] += 1
+
+        # ── 개별 라이벌별 집계 (상대팀 각 선수에게 1번씩) ──
+        for rival in opp_team:
+            if rival in excluded:
                 continue
-            if sc.get("is_dup", False):
-                continue
-
-            _match_excl = set(match.get("exclude_players", []))
-            t1_codes = list(match.get("team1", []))
-            t2_codes = list(match.get("team2", []))
-
-            def _skip2(code):
-                raw = base_name(code)
-                if "★" in raw: return True
-                if _is_duplicate_player(code): return True
-                if _clean_player_key(code) in excluded: return True
-                if base_name(code) in _match_excl: return True
-                return False
-
-            t1_keys = [_clean_player_key(c) for c in t1_codes if not _skip2(c)]
-            t2_keys = [_clean_player_key(c) for c in t2_codes if not _skip2(c)]
-
-            if player_name in t1_keys:
-                opp_team = t2_keys
-                my_score, opp_score = int(s1), int(s2)
-            elif player_name in t2_keys:
-                opp_team = t1_keys
-                my_score, opp_score = int(s2), int(s1)
-            else:
-                continue
-
-            # ── 경기(매치) 단위 요약 집계 (상대팀 인원수 무관, 1경기=1번) ──
-            match_totals["games"] += 1
+            if rival not in rival_agg:
+                rival_agg[rival] = {"wins": 0, "draws": 0, "losses": 0}
             if my_score > opp_score:
-                match_totals["wins"] += 1
+                rival_agg[rival]["wins"] += 1
             elif my_score < opp_score:
-                match_totals["losses"] += 1
+                rival_agg[rival]["losses"] += 1
             else:
-                match_totals["draws"] += 1
-
-            # ── 개별 라이벌별 집계 (상대팀 각 선수에게 1번씩) ──
-            for rival in opp_team:
-                if rival in excluded:
-                    continue
-                if rival not in rival_agg:
-                    rival_agg[rival] = {"wins": 0, "draws": 0, "losses": 0}
-                if my_score > opp_score:
-                    rival_agg[rival]["wins"] += 1
-                elif my_score < opp_score:
-                    rival_agg[rival]["losses"] += 1
-                else:
-                    rival_agg[rival]["draws"] += 1
+                rival_agg[rival]["draws"] += 1
 
     rows = []
     for rival, rec in rival_agg.items():
@@ -2672,6 +2687,7 @@ def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) 
     return rows, match_totals
 
 
+@st.cache_data(ttl=60)
 def personal_get_all_players() -> list:
     """기록에 존재하는 모든 player_key 목록 반환 (제외 선수 제외, 중복 제거, 정렬)."""
     rows = _personal_get_all_rows()
@@ -2683,6 +2699,70 @@ def personal_get_all_players() -> list:
         and str(r.get("player_key", "")).strip() not in excluded
     })
     return players
+
+
+@st.cache_data(ttl=60)
+def personal_summary(player_name: str, year: str) -> dict:
+    """
+    [F-2] 선수의 연간 종합 요약.
+    반환: {games, wins, draws, losses, rate, main_league, leagues_count}
+    """
+    rows = _personal_get_all_rows()
+    g = w = d = l = 0
+    league_games: dict = {}
+    for r in rows:
+        if str(r.get("player_key", "")).strip() != player_name:
+            continue
+        if not str(r.get("year_month", "")).startswith(year):
+            continue
+        rw = int(r.get("wins", 0)); rl = int(r.get("losses", 0)); rd = int(r.get("draws", 0))
+        w += rw; l += rl; d += rd
+        lg = str(r.get("league", "")).strip()
+        if lg:
+            league_games[lg] = league_games.get(lg, 0) + rw + rl + rd
+    g = w + d + l
+    rate = (w / g * 100) if g else 0.0
+    main_league = max(league_games, key=league_games.get) if league_games else "—"
+    return {
+        "games": g, "wins": w, "draws": d, "losses": l,
+        "rate": rate, "main_league": main_league,
+        "leagues_count": len(league_games),
+    }
+
+
+@st.cache_data(ttl=60)
+def personal_monthly_trend(player_name: str, year: str) -> list:
+    """
+    [F-1] 선수의 월별 성적 추이.
+    반환: [{"month": 1~12, "games": int, "wins": int, "rate": float}, ...] (12개월 고정)
+    """
+    rows = _personal_get_all_rows()
+    by_month: dict = {m: {"games": 0, "wins": 0} for m in range(1, 13)}
+    for r in rows:
+        if str(r.get("player_key", "")).strip() != player_name:
+            continue
+        ym = str(r.get("year_month", "")).strip()
+        if not ym.startswith(year):
+            continue
+        try:
+            mm = int(ym.split("-")[1])
+        except (ValueError, IndexError):
+            continue
+        if mm not in by_month:
+            continue
+        rw = int(r.get("wins", 0)); rl = int(r.get("losses", 0)); rd = int(r.get("draws", 0))
+        by_month[mm]["games"] += rw + rl + rd
+        by_month[mm]["wins"]  += rw
+    out = []
+    for mm in range(1, 13):
+        gm = by_month[mm]["games"]; wm = by_month[mm]["wins"]
+        out.append({
+            "month": mm,
+            "games": gm,
+            "wins": wm,
+            "rate": (wm / gm * 100) if gm else 0.0,
+        })
+    return out
 
 
 
@@ -4753,7 +4833,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9")
+st.sidebar.caption("v5.9.1")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -7036,6 +7116,38 @@ elif page == "👤 개인기록실":
         f'<span style="color:#6b7280;font-size:0.85rem;margin-left:10px;">개인 기록 조회</span>'
         f'</div>', unsafe_allow_html=True)
 
+    # ── [F-2] 종합 요약 헤더 ──────────────────────────────────
+    _sum_years = [str(_now_pr.year - i) for i in range(4)]
+    _sum_year = st.selectbox("요약 기준 연도", _sum_years, key="pr_summary_year")
+    with st.spinner("종합 요약 계산 중…"):
+        _summ = personal_summary(_pr_name, _sum_year)
+    if _summ["games"] > 0:
+        _sr = _summ["rate"]
+        _sr_color = "#16a34a" if _sr >= 60 else ("#d97706" if _sr >= 40 else "#dc2626")
+        st.markdown(
+            f'<div style="display:flex;gap:10px;margin:4px 0 18px;flex-wrap:wrap;">'
+            f'<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
+            f'<div style="font-size:0.7rem;color:#3b82f6;font-weight:700;">{_sum_year} 경기</div>'
+            f'<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">{_summ["games"]}</div></div>'
+            f'<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
+            f'<div style="font-size:0.7rem;color:#16a34a;font-weight:700;">승</div>'
+            f'<div style="font-size:1.3rem;font-weight:900;color:#16a34a;">{_summ["wins"]}</div></div>'
+            f'<div style="background:#fafafa;border:1.5px solid #d1d5db;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
+            f'<div style="font-size:0.7rem;color:#9ca3af;font-weight:700;">무</div>'
+            f'<div style="font-size:1.3rem;font-weight:900;color:#9ca3af;">{_summ["draws"]}</div></div>'
+            f'<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
+            f'<div style="font-size:0.7rem;color:#dc2626;font-weight:700;">패</div>'
+            f'<div style="font-size:1.3rem;font-weight:900;color:#dc2626;">{_summ["losses"]}</div></div>'
+            f'<div style="background:#fdf4ff;border:1.5px solid #d8b4fe;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
+            f'<div style="font-size:0.7rem;color:#7c3aed;font-weight:700;">승률</div>'
+            f'<div style="font-size:1.3rem;font-weight:900;color:{_sr_color};">{_sr:.1f}%</div></div>'
+            f'<div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:10px;padding:10px 18px;text-align:center;min-width:90px;">'
+            f'<div style="font-size:0.7rem;color:#d97706;font-weight:700;">주 리그</div>'
+            f'<div style="font-size:1.1rem;font-weight:900;color:#b45309;margin-top:3px;">{_summ["main_league"]}</div></div>'
+            f'</div>', unsafe_allow_html=True)
+    else:
+        st.info(f"📭 {_sum_year}년 {_pr_name}의 경기 기록이 없습니다.")
+
     # ── 탭 구성 ───────────────────────────────────────────────
     _pr_tab1, _pr_tab2, _pr_tab3 = st.tabs(["📅 월별 리그 타임라인", "🤝 파트너 궁합", "⚔️ 라이벌 전적"])
 
@@ -7107,6 +7219,25 @@ elif page == "👤 개인기록실":
 
             _record_months = len([d for d in _monthly_data])
             st.caption(f"📊 {_tl_year}년 총 {_record_months}개월 기록")
+
+            # ── [F-1] 월별 성적 추이 그래프 ──────────────────
+            with st.spinner("월별 추이 계산 중…"):
+                _trend = personal_monthly_trend(_pr_name, _tl_year)
+            if any(t["games"] > 0 for t in _trend):
+                st.markdown("##### 📈 월별 성적 추이")
+                _trend_df = pd.DataFrame({
+                    "월":   [f"{t['month']}월" for t in _trend],
+                    "경기수": [t["games"] for t in _trend],
+                    "승률(%)": [round(t["rate"], 1) for t in _trend],
+                }).set_index("월")
+                _c_tr1, _c_tr2 = st.columns(2)
+                with _c_tr1:
+                    st.caption("월별 경기수")
+                    st.bar_chart(_trend_df["경기수"], height=200, color="#2563eb")
+                with _c_tr2:
+                    st.caption("월별 승률(%)")
+                    st.line_chart(_trend_df["승률(%)"], height=200, color="#16a34a")
+                st.caption("💡 경기가 없는 달은 승률 0%로 표시됩니다.")
 
     # ────────────────────────────────────────────────────────
     # TAB 2: 파트너 궁합 — 베스트페어 / 워스트페어 (14-B-2)
@@ -7209,6 +7340,30 @@ elif page == "👤 개인기록실":
         if _best_list or _worst_list:
             st.caption("💡 베스트/워스트페어는 최소 2경기 이상 함께 뛴 파트너만 집계됩니다.")
 
+            # ── [F-5] 파트너 전적 CSV 내보내기 ───────────────
+            _seen_p = set()
+            _all_pairs = []
+            for _p in (_best_list + _worst_list):
+                if _p["partner"] in _seen_p:
+                    continue
+                _seen_p.add(_p["partner"])
+                _all_pairs.append(_p)
+            _pcsv_df = pd.DataFrame([{
+                "기준선수": _pr_name,
+                "파트너": p["partner"],
+                "승": p["wins"], "무": p["draws"], "패": p["losses"],
+                "경기수": p["games"], "승률(%)": round(p["rate"], 1),
+            } for p in sorted(_all_pairs, key=lambda x: -x["rate"])])
+            _pcsv_bytes = _pcsv_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ 파트너 전적 CSV 다운로드",
+                data=_pcsv_bytes,
+                file_name=f"{_pr_name}_파트너전적_{_p2_fv}.csv",
+                mime="text/csv",
+                key="pr_pair_csv",
+                use_container_width=True,
+            )
+
     # ────────────────────────────────────────────────────────
     # TAB 3: 라이벌 전적 — 상대별 1:1 맞대결 (14-B-3)
     # ────────────────────────────────────────────────────────
@@ -7286,6 +7441,11 @@ elif page == "👤 개인기록실":
                     f'<div style="font-size:0.7rem;color:#7c3aed;font-weight:700;">전체 승률</div>'
                     f'<div style="font-size:1.3rem;font-weight:900;color:#7c3aed;">{_total_rate_rv:.1f}%</div></div>'
                     f'</div>', unsafe_allow_html=True)
+                st.caption(
+                    "ℹ️ 요약 카드의 '총 경기'는 실제 경기(매치) 수입니다. "
+                    "복식 특성상 한 경기에 상대가 2명이므로, 아래 상대별 표의 경기수를 모두 더하면 "
+                    "요약보다 많을 수 있습니다 (정상)."
+                )
 
             # 테이블 렌더링
             _rv_html_rows = []
@@ -7326,6 +7486,23 @@ elif page == "👤 개인기록실":
             )
             st.markdown(_rv_html, unsafe_allow_html=True)
             st.caption(f"📊 {_r3_lbl} · 총 {len(_disp_rows)}명의 상대와 대결")
+
+            # ── [F-5] CSV 내보내기 ───────────────────────────
+            _csv_df = pd.DataFrame([{
+                "기준선수": _pr_name,
+                "상대": r["rival"],
+                "승": r["wins"], "무": r["draws"], "패": r["losses"],
+                "경기수": r["games"], "승률(%)": round(r["rate"], 1),
+            } for r in _disp_rows])
+            _csv_bytes = _csv_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ 라이벌 전적 CSV 다운로드",
+                data=_csv_bytes,
+                file_name=f"{_pr_name}_라이벌전적_{_r3_fv}.csv",
+                mime="text/csv",
+                key="pr_rival_csv",
+                use_container_width=True,
+            )
 
 
 # ========================================================================
