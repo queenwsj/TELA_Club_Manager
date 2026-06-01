@@ -3020,6 +3020,55 @@ def load_df(include_deleted=False):
     df["deleted_at"] = df["deleted_at"].astype(str).str.strip()
     if not include_deleted:
         df = df[df["deleted_at"] == ""]
+
+    # ── 휴면 기간 기반 category 자동 보정 (v5.9) ────────────────────
+    # dormant_period에 오늘 기준 진행 중인 기간이 있으면 category를 "휴면"으로,
+    # 모든 기간이 종료됐으면 "정회원"으로 메모리상에서 보정.
+    # (시트 원본은 건드리지 않음 — 저장 시에만 갱신)
+    _today = date.today()
+
+    def _correct_category(row):
+        cat = str(row.get("category", "")).strip()
+        # 탈퇴는 건드리지 않음
+        if cat == "탈퇴":
+            return cat
+        dp = str(row.get("dormant_period", "") or "").strip()
+        if not dp:
+            return cat
+        periods = parse_dormant_periods(dp)
+        if not periods:
+            return cat
+        # 오늘 기준 진행 중인 기간 검사 (시작일 <= 오늘, 종료일 없거나 오늘 이후)
+        ongoing = False
+        for p in periods:
+            _s = (p.get("start") or "").strip()
+            _e = (p.get("end")   or "").strip()
+            try:
+                _sd = date.fromisoformat(_s) if _s else None
+                _ed = date.fromisoformat(_e) if _e else None
+                after_start  = (_sd is None) or (_today >= _sd)
+                before_end   = (_ed is None) or (_today <= _ed)
+                if after_start and before_end:
+                    ongoing = True
+                    break
+            except (ValueError, TypeError):
+                continue
+        if ongoing:
+            return "휴면"
+        # 모든 기간 종료 + category가 "휴면"이었다면 → 정회원 복귀
+        all_ended = all(
+            (p.get("end") or "").strip() != "" and
+            date.fromisoformat(p["end"]) < _today
+            for p in periods
+            if (p.get("start") or "").strip()
+        )
+        if all_ended and cat == "휴면":
+            return "정회원"
+        return cat
+
+    df["category"] = df.apply(_correct_category, axis=1)
+    # ── 자동 보정 끝 ────────────────────────────────────────────────
+
     return df
 
 def load_df_for_match() -> pd.DataFrame:
