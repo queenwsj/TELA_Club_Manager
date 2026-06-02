@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.3
+TELA CLUB Random Match Generator v5.9.6
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -12,18 +12,18 @@ TELA CLUB Random Match Generator v5.9.3
 06. 매칭 알고리즘: 완전 랜덤
 07. 대진표 검증·표시·스코어보드 통계
 08. 기록실 집계·제외 선수 관리
-08-B. 개인기록실 헬퍼 (공통 raw 캐시·페어·라이벌·요약·추이)
+08-B. 개인기록실 헬퍼 (공통 UI 헬퍼·raw 캐시·페어·라이벌·요약·추이·교차분석)
 09. 회원명부: 설정·CSS·Google Sheets·검증 함수
 10. 회원명부: 다이얼로그·렌더링
 11. 사이드바 로그인·메뉴 라우팅
 12. 페이지: 스코어보드
 13. 페이지: 대진표 생성
-14. 페이지: 통합기록실 (기존 기록실 — 전체 선수 통계)
+14. 페이지: 통합기록실 (전체 선수 통계 + 개인기록실 이동 F-6)
 14-B. 페이지: 개인기록실
     ├─ 회원명 검색 + 최근 검색 (F-4) + 종합 요약 헤더 (F-2)
     ├─ 14-B-1. 월별 소속 리그 타임라인 + 월별 성적 추이 그래프 (F-1)
     ├─ 14-B-2. 베스트페어 / 워스트페어 + CSV 내보내기 (F-5)
-    └─ 14-B-3. 라이벌 전적 + 파트너 동반 분석 (F-3) + CSV 내보내기 (F-5)
+    └─ 14-B-3. 라이벌 전적 + 동반분석(F-3) + 최근맞대결(F-8) + 전체파트너CSV(F-7), 모바일 스크롤(F-10)
 15. 페이지: 회원명부
 """
 
@@ -1358,6 +1358,77 @@ def update_stats(stats, team1, team2, match_type, round_name, league_name):
 # 05-G. 조건부 랜덤: 전체 스케줄 생성
 # ========================================================================
 
+def merge_insufficient_leagues(league_players: dict, active_leagues: list,
+                               active_prefixes: list, min_players: int = 4):
+    """
+    [과제 A v5.9.6] 인원 부족(min_players 미만) 리그를 인접 리그로 일시 흡수.
+
+    규칙:
+      - 부족 리그가 최상위(A, 인덱스 0)면 → 바로 아래 리그로 내림
+      - 그 외 부족 리그는 → 바로 위(상위) 리그로 올림
+      - 흡수받은 리그가 다시 부족하면 연쇄 처리
+      - 흡수 시 player_code의 리그 접두사를 흡수 리그 접두사로 교체
+        (성별/이름은 보존 → 기록상 player_key 동일 유지, 그날 경기 리그만 변경)
+
+    반환: (merged_league_players: dict, merge_logs: list[str])
+      merge_logs: 사용자 안내용 병합 내역 메시지 리스트
+    """
+    # active_leagues 순서 = 서열 (앞이 상위). 인덱스 맵
+    order = {lg: i for i, lg in enumerate(active_leagues)}
+    prefix_of = {lg: active_prefixes[i] for i, lg in enumerate(active_leagues)}
+
+    # 작업용 복사 (리스트도 복사)
+    merged = {lg: list(league_players.get(lg, [])) for lg in active_leagues}
+    merge_logs = []
+
+    def _retag(code: str, new_prefix: str) -> str:
+        """player_code의 리그 접두(첫 글자)를 new_prefix로 교체. 성별/이름 보존.
+        - 회원 선택 모드: 'AM홍길동' → 'BM홍길동'
+        - 자동 생성 모드: 'AM01'   → 'BM01'
+        둘 다 [리그접두 1글자][성별 1글자][나머지] 구조이므로 첫 글자만 바꾼다.
+        """
+        raw = base_name(code)
+        tag = code[len(raw):] if len(code) > len(raw) else ""  # 괄호 태그(게스트 등) 보존
+        if len(raw) >= 2 and raw[1].upper() in ("M", "W"):
+            # 2번째 글자가 성별(M/W)인 표준 코드 → 첫 글자(리그접두)만 교체
+            return f"{new_prefix}{raw[1:]}{tag}"
+        return code  # 형식 불명 시 원본 유지
+
+    # 하위 리그부터 위로 올리려면, 가장 아래(인덱스 큰)부터 처리하면
+    # 연쇄 흡수가 자연스럽게 위로 누적된다. 단 A(0)는 아래로 내린다.
+    # 1) 비최상위 부족 리그 → 상위로 (아래에서 위로 순회)
+    for lg in sorted(active_leagues, key=lambda x: order[x], reverse=True):
+        if order[lg] == 0:
+            continue  # 최상위는 별도 처리
+        cur = merged.get(lg, [])
+        if 0 < len(cur) < min_players:
+            target = active_leagues[order[lg] - 1]  # 바로 위
+            tgt_pfx = prefix_of[target]
+            retagged = [_retag(c, tgt_pfx) for c in cur]
+            merged[target] = merged.get(target, []) + retagged
+            merged[lg] = []
+            merge_logs.append(
+                f"{lg} 인원 부족({len(cur)}명) → 오늘 경기는 {target}에 포함하여 편성"
+            )
+
+    # 2) 최상위(A)가 부족하면 → 바로 아래로 내림
+    top = active_leagues[0]
+    cur_top = merged.get(top, [])
+    if 0 < len(cur_top) < min_players and len(active_leagues) > 1:
+        target = active_leagues[1]  # 바로 아래(B)
+        tgt_pfx = prefix_of[target]
+        retagged = [_retag(c, tgt_pfx) for c in cur_top]
+        merged[target] = merged.get(target, []) + retagged
+        merged[top] = []
+        merge_logs.append(
+            f"{top} 인원 부족({len(cur_top)}명) → 오늘 경기는 {target}에 포함하여 편성"
+        )
+
+    # 빈 리그 제거
+    merged = {lg: pl for lg, pl in merged.items() if pl}
+    return merged, merge_logs
+
+
 def generate_schedule_from_leagues(league_players, league_configs, num_rounds=3):
     """
     league_players: {league_name: [player_code, ...]}
@@ -2397,8 +2468,67 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
 
 
 # ========================================================================
-# 08-B. 개인기록실 헬퍼 함수 (v5.9 / v5.9.1 패치)
+# 08-B. 개인기록실 헬퍼 함수 (v5.9 ~ v5.9.4)
 # ========================================================================
+
+# ── [B-3] 승률 → 색상 3단계 공통 헬퍼 ────────────────────────
+def _winrate_color(rate: float) -> str:
+    """승률(%)에 따른 표시 색상. 60%↑ 초록 / 40~60% 주황 / 그외 빨강."""
+    if rate >= 60:
+        return "#16a34a"
+    elif rate >= 40:
+        return "#d97706"
+    return "#dc2626"
+
+
+# ── [B-4] 통계 요약 카드 HTML 공통 헬퍼 ──────────────────────
+def _stat_card(label: str, value, *, value_color: str = "#1d4ed8",
+               bg: str = "#eff6ff", border: str = "#93c5fd",
+               label_color: str = "#3b82f6", min_width: int = 80,
+               value_size: str = "1.3rem", value_margin_top: str = "") -> str:
+    """
+    요약 통계 카드 1개의 HTML 문자열 반환.
+    여러 장을 연달아 이어 붙인 뒤 flex 컨테이너로 감싸 사용한다.
+    """
+    _mt = f"margin-top:{value_margin_top};" if value_margin_top else ""
+    return (
+        f'<div style="background:{bg};border:1.5px solid {border};border-radius:10px;'
+        f'padding:10px 18px;text-align:center;min-width:{min_width}px;">'
+        f'<div style="font-size:0.7rem;color:{label_color};font-weight:700;">{label}</div>'
+        f'<div style="font-size:{value_size};font-weight:900;color:{value_color};{_mt}">{value}</div>'
+        f'</div>'
+    )
+
+
+def _stat_card_row(cards_html: str, margin: str = "10px 0 16px") -> str:
+    """_stat_card 들을 감싸는 flex 컨테이너."""
+    return (
+        f'<div style="display:flex;gap:10px;margin:{margin};flex-wrap:wrap;">'
+        f'{cards_html}</div>'
+    )
+
+
+def _scrollable_table(table_html: str, min_width: int = 360) -> str:
+    """
+    [F-10] HTML 테이블을 모바일에서 가로 스크롤 가능하게 감싸는 래퍼.
+    좁은 화면에서 글자가 찌그러지지 않도록 최소 너비를 보장하고 넘치면 스크롤.
+    """
+    return (
+        f'<div style="width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;">'
+        f'<div style="min-width:{min_width}px;">{table_html}</div>'
+        f'</div>'
+    )
+
+
+# 승무패 카드용 표준 색상 팔레트 (라벨/배경/테두리/라벨색)
+_WLD_PALETTE = {
+    "games": ("#eff6ff", "#93c5fd", "#3b82f6", "#1d4ed8"),
+    "wins":  ("#f0fdf4", "#86efac", "#16a34a", "#16a34a"),
+    "draws": ("#fafafa", "#d1d5db", "#9ca3af", "#9ca3af"),
+    "losses":("#fef2f2", "#fca5a5", "#dc2626", "#dc2626"),
+    "rate":  ("#fdf4ff", "#d8b4fe", "#7c3aed", "#7c3aed"),
+}
+
 
 @st.cache_data(ttl=60)
 def _personal_raw_matches_cached() -> list:
@@ -2533,25 +2663,22 @@ def personal_monthly_leagues(player_name: str, year: str) -> list:
 
 
 @st.cache_data(ttl=60)
-def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -> dict:
+def personal_pair_stats(player_name: str, filter_value: str) -> dict:
     """
     특정 회원의 파트너별 승무패 통계 계산.
-    filter_type: 'monthly' 또는 'yearly'
-    filter_value: 'YYYY-MM' 또는 'YYYY'
+    filter_value: 'YYYY-MM'(월간) 또는 'YYYY'(연간) — prefix 일치로 기간 구분
     반환: {
         "best": [{"partner": str, "wins": int, "draws": int, "losses": int, "rate": float, "games": int}, ...],
         "worst": [...],
     }
 
-    ※ v5.9.1: 공통 캐시(_personal_raw_matches_cached) 사용 — 데이터 소스 통일 + 성능 개선
+    ※ v5.9.4: filter_type 미사용 인자 제거, 제외선수는 raw 캐시가 이미 거르므로 재검사 제거
     """
     matches = _personal_raw_matches_cached()
-    excluded = set(exclude_list_load())
 
     pair_agg: dict = {}  # partner_name → {wins, draws, losses}
 
     for m in matches:
-        # 기간 필터 (monthly/yearly 모두 prefix 일치)
         if not str(m["date_key"]).startswith(filter_value):
             continue
 
@@ -2573,8 +2700,6 @@ def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -
             continue
 
         for partner in partners:
-            if partner in excluded:
-                continue
             if partner not in pair_agg:
                 pair_agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
             if my_score > opp_score:
@@ -2614,16 +2739,58 @@ def personal_pair_stats(player_name: str, filter_type: str, filter_value: str) -
 
 
 @st.cache_data(ttl=60)
-def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) -> tuple:
+def personal_pair_stats_all(player_name: str, filter_value: str) -> list:
     """
-    특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
-    filter_type: 'monthly' 또는 'yearly'
-    filter_value: 'YYYY-MM' 또는 'YYYY'
-
-    ※ v5.9.1: 공통 캐시(_personal_raw_matches_cached) 사용 — 데이터 소스 통일 + 성능 개선
+    [F-7] 파트너 궁합 CSV용 — 전체 파트너 목록 (최소 경기수 필터 없음, 1경기도 포함).
+    승률 내림차순 정렬된 전체 파트너 리스트 반환.
     """
     matches = _personal_raw_matches_cached()
-    excluded = set(exclude_list_load())
+    pair_agg: dict = {}
+
+    for m in matches:
+        if not str(m["date_key"]).startswith(filter_value):
+            continue
+        t1_keys, t2_keys = m["t1_keys"], m["t2_keys"]
+        s1, s2 = m["s1"], m["s2"]
+        if player_name in t1_keys:
+            my_team, my_score, opp_score = t1_keys, s1, s2
+        elif player_name in t2_keys:
+            my_team, my_score, opp_score = t2_keys, s2, s1
+        else:
+            continue
+        for partner in [p for p in my_team if p != player_name]:
+            if partner not in pair_agg:
+                pair_agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
+            if my_score > opp_score:
+                pair_agg[partner]["wins"] += 1
+            elif my_score < opp_score:
+                pair_agg[partner]["losses"] += 1
+            else:
+                pair_agg[partner]["draws"] += 1
+
+    rows = []
+    for partner, rec in pair_agg.items():
+        total = rec["wins"] + rec["draws"] + rec["losses"]
+        if total == 0:
+            continue
+        rows.append({
+            "partner": partner,
+            "wins": rec["wins"], "draws": rec["draws"], "losses": rec["losses"],
+            "games": total, "rate": rec["wins"] / total * 100,
+        })
+    return sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
+
+
+@st.cache_data(ttl=60)
+def personal_rival_stats(player_name: str, filter_value: str) -> tuple:
+    """
+    특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
+    filter_value: 'YYYY-MM'(월간) 또는 'YYYY'(연간) — prefix 일치로 기간 구분
+
+    ※ 복식 구조: 개별 라이벌 행은 상대별 1번씩, 요약(match_totals)은 경기 단위 1번씩 집계
+    ※ v5.9.4: filter_type 미사용 인자 제거, 제외선수는 raw 캐시가 이미 거르므로 재검사 제거
+    """
+    matches = _personal_raw_matches_cached()
 
     rival_agg: dict = {}  # rival_name → {wins, draws, losses}
     # 경기(매치) 단위 집계 — 요약 카드용. 상대팀에 2명이어도 경기는 1번만 카운트.
@@ -2657,8 +2824,6 @@ def personal_rival_stats(player_name: str, filter_type: str, filter_value: str) 
 
         # ── 개별 라이벌별 집계 (상대팀 각 선수에게 1번씩) ──
         for rival in opp_team:
-            if rival in excluded:
-                continue
             if rival not in rival_agg:
                 rival_agg[rival] = {"wins": 0, "draws": 0, "losses": 0}
             if my_score > opp_score:
@@ -2767,19 +2932,20 @@ def personal_monthly_trend(player_name: str, year: str) -> list:
 
 @st.cache_data(ttl=60)
 def personal_partner_vs_rival(player_name: str, rival_name: str,
-                              filter_type: str, filter_value: str) -> list:
+                              filter_value: str) -> list:
     """
     [F-3] 특정 라이벌을 상대했을 때, 어떤 파트너와 팀이면 잘 이기는지 교차 분석.
 
     player_name 이 rival_name 을 상대팀에 두고 치른 경기만 추린 뒤,
     그 경기에서 player_name 의 파트너별 승무패를 집계한다.
 
-    filter_value: 'YYYY-MM'(월간) 또는 'YYYY'(연간) — 모두 prefix 일치 방식
+    filter_value: 'YYYY-MM'(월간) 또는 'YYYY'(연간) — prefix 일치 방식
     반환: [{"partner": str, "wins": int, "draws": int, "losses": int,
             "games": int, "rate": float}, ...]  (승률 내림차순)
+
+    ※ v5.9.4: filter_type 미사용 인자 제거, 제외선수는 raw 캐시가 이미 거르므로 재검사 제거
     """
     matches = _personal_raw_matches_cached()
-    excluded = set(exclude_list_load())
 
     agg: dict = {}  # partner_name → {wins, draws, losses}
 
@@ -2809,8 +2975,6 @@ def personal_partner_vs_rival(player_name: str, rival_name: str,
             continue
 
         for partner in partners:
-            if partner in excluded:
-                continue
             if partner not in agg:
                 agg[partner] = {"wins": 0, "draws": 0, "losses": 0}
             if my_score > opp_score:
@@ -2835,6 +2999,47 @@ def personal_partner_vs_rival(player_name: str, rival_name: str,
         })
     rows = sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
     return rows
+
+
+@st.cache_data(ttl=60)
+def personal_rival_recent(player_name: str, rival_name: str,
+                          filter_value: str, limit: int = 10) -> list:
+    """
+    [F-8] 특정 상대와의 최근 맞대결 결과 타임라인 (최신순).
+    rival_name 이 상대팀에 있던 경기만 추려 결과(승/무/패)를 시간순으로 반환.
+    반환: [{"date_key": str, "result": "승"|"무"|"패",
+            "my_score": int, "opp_score": int}, ...]  (최신 → 과거, 최대 limit개)
+    """
+    matches = _personal_raw_matches_cached()
+    recs = []
+    for m in matches:
+        if not str(m["date_key"]).startswith(filter_value):
+            continue
+        t1_keys, t2_keys = m["t1_keys"], m["t2_keys"]
+        s1, s2 = m["s1"], m["s2"]
+        if player_name in t1_keys:
+            opp_team, my_score, opp_score = t2_keys, s1, s2
+        elif player_name in t2_keys:
+            opp_team, my_score, opp_score = t1_keys, s2, s1
+        else:
+            continue
+        if rival_name not in opp_team:
+            continue
+        if my_score > opp_score:
+            result = "승"
+        elif my_score < opp_score:
+            result = "패"
+        else:
+            result = "무"
+        recs.append({
+            "date_key": m["date_key"],
+            "result": result,
+            "my_score": my_score,
+            "opp_score": opp_score,
+        })
+    # 날짜키 기준 최신순 정렬 후 limit
+    recs.sort(key=lambda x: x["date_key"], reverse=True)
+    return recs[:limit]
 
 
 
@@ -4905,7 +5110,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.3")
+st.sidebar.caption("v5.9.6")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -4985,6 +5190,12 @@ st.sidebar.markdown("---")
 _menu_opts = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부", "🎯 이벤트 팀편성"]
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "🏆 통합기록실"
+# [F-6] 페이지 이동 트리거: radio 위젯 생성 '이전'에 주입해야 안전
+# (위젯 인스턴스화 후 session_state[위젯key] 직접 수정 시 StreamlitAPIException)
+if "pr_pending_page" in st.session_state:
+    _pp = st.session_state.pop("pr_pending_page")
+    if _pp in _menu_opts:
+        st.session_state["current_page"] = _pp
 page = st.sidebar.radio("메뉴", _menu_opts,
                          key="current_page",
                          label_visibility="collapsed")
@@ -5877,7 +6088,7 @@ elif page == "📋 대진표생성":
                                       label_visibility="collapsed")
 
     # ── 🔍 디버그 패널 ───────────────────────────────────────
-    with st.expander("🔍 진단 정보 (4명 미만 오류 디버깅)", expanded=False):
+    with st.expander("🔍 진단 정보 (리그 인원·병합 디버깅)", expanded=False):
         _dbg = st.session_state.get("_debug_member_select", {})
         st.write(f"- 캐시 비어있음: `{_dbg.get('cache_empty', '?')}`")
         st.write(f"- 캐시 총 회원수: `{_dbg.get('cache_size', 0)}`")
@@ -5958,13 +6169,27 @@ elif page == "📋 대진표생성":
                 for lg, pl in league_players.items():
                     st.write(f"**{lg}**: {len(pl)}명 → {pl[:5]}")
 
-            # 유효성 검사
+            # ── [과제 A] 인원 부족 리그 → 인접 리그 일시 흡수 ──
+            # 4명 미만 리그가 있어도 막지 않고, 인접 리그에 해당일만 병합하여 편성한다.
+            league_players, _merge_logs = merge_insufficient_leagues(
+                league_players, active_leagues, active_prefixes, min_players=4
+            )
+            if _merge_logs:
+                _merge_msg = "ℹ️ **리그 인원 부족 — 오늘 경기 임시 편성 안내**\n\n" + \
+                             "\n".join(f"- {m}" for m in _merge_logs) + \
+                             "\n\n※ 원본 리그 소속·기록 분류는 그대로이며, 오늘 생성된 대진에만 적용됩니다."
+                st.info(_merge_msg)
+
+            # 유효성 검사 (병합 후에도 4명 미만이면 그때 안내)
             errors = []
             for lg, pl in league_players.items():
                 if 0 < len(pl) < 4:
-                    errors.append(f"{lg} 인원이 4명 미만입니다 ({len(pl)}명).")
+                    errors.append(
+                        f"{lg} 인원이 병합 후에도 4명 미만입니다 ({len(pl)}명). "
+                        f"인접 리그도 인원이 부족해 편성할 수 없습니다."
+                    )
             if not any(len(pl) >= 4 for pl in league_players.values()):
-                errors.append("최소 한 리그에 4명 이상 입력해주세요.")
+                errors.append("전체 인원이 부족합니다. 최소 4명 이상을 선택해주세요.")
             if errors:
                 for e in errors: st.error(e)
                 st.stop()
@@ -7114,6 +7339,28 @@ elif page == "🏆 통합기록실":
             st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
                          column_config=_cc_cfg)
 
+    # ── [F-6] 개인기록실로 바로 이동 ──────────────────────────
+    st.markdown("---")
+    st.markdown("#### 👤 선수 개인 기록 보기")
+    st.caption("선수를 선택하면 개인기록실에서 월별 리그·파트너 궁합·라이벌 전적을 볼 수 있습니다.")
+    _f6_players = personal_get_all_players()
+    if _f6_players:
+        _f6_c1, _f6_c2 = st.columns([4, 1])
+        with _f6_c1:
+            _f6_sel = st.selectbox(
+                "선수 선택",
+                _f6_players,
+                key="f6_jump_select",
+                label_visibility="collapsed",
+            )
+        with _f6_c2:
+            if st.button("📊 개인기록 보기", key="f6_jump_btn", use_container_width=True):
+                st.session_state["pr_pending_name"] = _f6_sel
+                st.session_state["pr_pending_page"] = "👤 개인기록실"
+                st.rerun()
+    else:
+        st.info("아직 기록된 선수가 없습니다.")
+
 
 # ========================================================================
 # 14-B. 페이지: 개인기록실 (v5.9 신규)
@@ -7223,28 +7470,26 @@ elif page == "👤 개인기록실":
         _summ = personal_summary(_pr_name, _sum_year)
     if _summ["games"] > 0:
         _sr = _summ["rate"]
-        _sr_color = "#16a34a" if _sr >= 60 else ("#d97706" if _sr >= 40 else "#dc2626")
-        st.markdown(
-            f'<div style="display:flex;gap:10px;margin:4px 0 18px;flex-wrap:wrap;">'
-            f'<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
-            f'<div style="font-size:0.7rem;color:#3b82f6;font-weight:700;">{_sum_year} 경기</div>'
-            f'<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">{_summ["games"]}</div></div>'
-            f'<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
-            f'<div style="font-size:0.7rem;color:#16a34a;font-weight:700;">승</div>'
-            f'<div style="font-size:1.3rem;font-weight:900;color:#16a34a;">{_summ["wins"]}</div></div>'
-            f'<div style="background:#fafafa;border:1.5px solid #d1d5db;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
-            f'<div style="font-size:0.7rem;color:#9ca3af;font-weight:700;">무</div>'
-            f'<div style="font-size:1.3rem;font-weight:900;color:#9ca3af;">{_summ["draws"]}</div></div>'
-            f'<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
-            f'<div style="font-size:0.7rem;color:#dc2626;font-weight:700;">패</div>'
-            f'<div style="font-size:1.3rem;font-weight:900;color:#dc2626;">{_summ["losses"]}</div></div>'
-            f'<div style="background:#fdf4ff;border:1.5px solid #d8b4fe;border-radius:10px;padding:10px 18px;text-align:center;min-width:78px;">'
-            f'<div style="font-size:0.7rem;color:#7c3aed;font-weight:700;">승률</div>'
-            f'<div style="font-size:1.3rem;font-weight:900;color:{_sr_color};">{_sr:.1f}%</div></div>'
-            f'<div style="background:#fffbeb;border:1.5px solid #fcd34d;border-radius:10px;padding:10px 18px;text-align:center;min-width:90px;">'
-            f'<div style="font-size:0.7rem;color:#d97706;font-weight:700;">주 리그</div>'
-            f'<div style="font-size:1.1rem;font-weight:900;color:#b45309;margin-top:3px;">{_summ["main_league"]}</div></div>'
-            f'</div>', unsafe_allow_html=True)
+        _sr_color = _winrate_color(_sr)
+        _g_pal = _WLD_PALETTE["games"]; _w_pal = _WLD_PALETTE["wins"]
+        _d_pal = _WLD_PALETTE["draws"]; _l_pal = _WLD_PALETTE["losses"]
+        _r_pal = _WLD_PALETTE["rate"]
+        _cards = (
+            _stat_card(f"{_sum_year} 경기", _summ["games"], value_color=_g_pal[3],
+                       bg=_g_pal[0], border=_g_pal[1], label_color=_g_pal[2], min_width=78)
+            + _stat_card("승", _summ["wins"], value_color=_w_pal[3],
+                         bg=_w_pal[0], border=_w_pal[1], label_color=_w_pal[2], min_width=78)
+            + _stat_card("무", _summ["draws"], value_color=_d_pal[3],
+                         bg=_d_pal[0], border=_d_pal[1], label_color=_d_pal[2], min_width=78)
+            + _stat_card("패", _summ["losses"], value_color=_l_pal[3],
+                         bg=_l_pal[0], border=_l_pal[1], label_color=_l_pal[2], min_width=78)
+            + _stat_card("승률", f"{_sr:.1f}%", value_color=_sr_color,
+                         bg=_r_pal[0], border=_r_pal[1], label_color=_r_pal[2], min_width=78)
+            + _stat_card("주 리그", _summ["main_league"], value_color="#b45309",
+                         bg="#fffbeb", border="#fcd34d", label_color="#d97706",
+                         min_width=90, value_size="1.1rem", value_margin_top="3px")
+        )
+        st.markdown(_stat_card_row(_cards, margin="4px 0 18px"), unsafe_allow_html=True)
     else:
         st.info(f"📭 {_sum_year}년 {_pr_name}의 경기 기록이 없습니다.")
 
@@ -7315,7 +7560,7 @@ elif page == "👤 개인기록실":
                 + "".join(_tl_html_rows) +
                 f'</tbody></table>'
             )
-            st.markdown(_tl_html, unsafe_allow_html=True)
+            st.markdown(_scrollable_table(_tl_html, min_width=320), unsafe_allow_html=True)
 
             _record_months = len([d for d in _monthly_data])
             st.caption(f"📊 {_tl_year}년 총 {_record_months}개월 기록")
@@ -7361,17 +7606,15 @@ elif page == "👤 개인기록실":
                 _p2_months = sorted(list(dict.fromkeys(_p2_months)), reverse=True)
                 _p2_fv = st.selectbox("월 선택", _p2_months, key="pr_pair_month",
                                        label_visibility="collapsed")
-                _p2_ft = "monthly"
                 _p2_lbl = f"{_p2_fv} 월간"
             else:
                 _p2_years = [str(_now_pr.year - i) for i in range(4)]
                 _p2_fv = st.selectbox("연도 선택", _p2_years, key="pr_pair_year",
                                        label_visibility="collapsed")
-                _p2_ft = "yearly"
                 _p2_lbl = f"{_p2_fv} 연간"
 
         with st.spinner("파트너 통계 계산 중…"):
-            _pair_data = personal_pair_stats(_pr_name, _p2_ft, _p2_fv)
+            _pair_data = personal_pair_stats(_pr_name, _p2_fv)
 
         _best_list  = _pair_data["best"]
         _worst_list = _pair_data["worst"]
@@ -7440,29 +7683,24 @@ elif page == "👤 개인기록실":
         if _best_list or _worst_list:
             st.caption("💡 베스트/워스트페어는 최소 2경기 이상 함께 뛴 파트너만 집계됩니다.")
 
-            # ── [F-5] 파트너 전적 CSV 내보내기 ───────────────
-            _seen_p = set()
-            _all_pairs = []
-            for _p in (_best_list + _worst_list):
-                if _p["partner"] in _seen_p:
-                    continue
-                _seen_p.add(_p["partner"])
-                _all_pairs.append(_p)
+            # ── [F-5/F-7] 파트너 전적 CSV 내보내기 (전체 파트너, 1경기 포함) ──
+            _all_pairs_csv = personal_pair_stats_all(_pr_name, _p2_fv)
             _pcsv_df = pd.DataFrame([{
                 "기준선수": _pr_name,
                 "파트너": p["partner"],
                 "승": p["wins"], "무": p["draws"], "패": p["losses"],
                 "경기수": p["games"], "승률(%)": round(p["rate"], 1),
-            } for p in sorted(_all_pairs, key=lambda x: -x["rate"])])
+            } for p in _all_pairs_csv])
             _pcsv_bytes = _pcsv_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
-                "⬇️ 파트너 전적 CSV 다운로드",
+                f"⬇️ 파트너 전적 CSV 다운로드 (전체 {len(_all_pairs_csv)}명)",
                 data=_pcsv_bytes,
                 file_name=f"{_pr_name}_파트너전적_{_p2_fv}.csv",
                 mime="text/csv",
                 key="pr_pair_csv",
                 use_container_width=True,
             )
+            st.caption("📄 CSV에는 1경기만 함께한 파트너까지 전체가 포함됩니다.")
 
     # ────────────────────────────────────────────────────────
     # TAB 3: 라이벌 전적 — 상대별 1:1 맞대결 (14-B-3)
@@ -7486,18 +7724,16 @@ elif page == "👤 개인기록실":
                 _r3_months = sorted(list(dict.fromkeys(_r3_months)), reverse=True)
                 _r3_fv = st.selectbox("월 선택", _r3_months, key="pr_rival_month",
                                        label_visibility="collapsed")
-                _r3_ft = "monthly"
                 _r3_lbl = f"{_r3_fv} 월간"
             else:
                 _r3_years = [str(_now_pr.year - i) for i in range(4)]
                 _r3_fv = st.selectbox("연도 선택", _r3_years, key="pr_rival_year",
                                        label_visibility="collapsed")
-                _r3_ft = "yearly"
                 _r3_lbl = f"{_r3_fv} 연간"
 
         # 상대 선수 선택 (전체 또는 특정 선수)
         with st.spinner("상대 전적 계산 중…"):
-            _rival_rows, _match_totals = personal_rival_stats(_pr_name, _r3_ft, _r3_fv)
+            _rival_rows, _match_totals = personal_rival_stats(_pr_name, _r3_fv)
 
         if not _rival_rows:
             st.info(f"📭 {_r3_lbl} {_pr_name}의 상대 전적이 없습니다.")
@@ -7523,24 +7759,22 @@ elif page == "👤 개인기록실":
                 _total_draws_rv = _match_totals["draws"]
                 _total_loss_rv  = _match_totals["losses"]
                 _total_rate_rv  = _total_wins_rv / _total_games_rv * 100 if _total_games_rv else 0
-                st.markdown(
-                    f'<div style="display:flex;gap:10px;margin:10px 0 16px;flex-wrap:wrap;">'
-                    f'<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
-                    f'<div style="font-size:0.7rem;color:#3b82f6;font-weight:700;">총 경기</div>'
-                    f'<div style="font-size:1.3rem;font-weight:900;color:#1d4ed8;">{_total_games_rv}</div></div>'
-                    f'<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
-                    f'<div style="font-size:0.7rem;color:#16a34a;font-weight:700;">승</div>'
-                    f'<div style="font-size:1.3rem;font-weight:900;color:#16a34a;">{_total_wins_rv}</div></div>'
-                    f'<div style="background:#fafafa;border:1.5px solid #d1d5db;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
-                    f'<div style="font-size:0.7rem;color:#9ca3af;font-weight:700;">무</div>'
-                    f'<div style="font-size:1.3rem;font-weight:900;color:#9ca3af;">{_total_draws_rv}</div></div>'
-                    f'<div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
-                    f'<div style="font-size:0.7rem;color:#dc2626;font-weight:700;">패</div>'
-                    f'<div style="font-size:1.3rem;font-weight:900;color:#dc2626;">{_total_loss_rv}</div></div>'
-                    f'<div style="background:#fdf4ff;border:1.5px solid #d8b4fe;border-radius:10px;padding:10px 18px;text-align:center;min-width:80px;">'
-                    f'<div style="font-size:0.7rem;color:#7c3aed;font-weight:700;">전체 승률</div>'
-                    f'<div style="font-size:1.3rem;font-weight:900;color:#7c3aed;">{_total_rate_rv:.1f}%</div></div>'
-                    f'</div>', unsafe_allow_html=True)
+                _g_pal = _WLD_PALETTE["games"]; _w_pal = _WLD_PALETTE["wins"]
+                _d_pal = _WLD_PALETTE["draws"]; _l_pal = _WLD_PALETTE["losses"]
+                _r_pal = _WLD_PALETTE["rate"]
+                _rv_cards = (
+                    _stat_card("총 경기", _total_games_rv, value_color=_g_pal[3],
+                               bg=_g_pal[0], border=_g_pal[1], label_color=_g_pal[2])
+                    + _stat_card("승", _total_wins_rv, value_color=_w_pal[3],
+                                 bg=_w_pal[0], border=_w_pal[1], label_color=_w_pal[2])
+                    + _stat_card("무", _total_draws_rv, value_color=_d_pal[3],
+                                 bg=_d_pal[0], border=_d_pal[1], label_color=_d_pal[2])
+                    + _stat_card("패", _total_loss_rv, value_color=_l_pal[3],
+                                 bg=_l_pal[0], border=_l_pal[1], label_color=_l_pal[2])
+                    + _stat_card("전체 승률", f"{_total_rate_rv:.1f}%", value_color=_r_pal[3],
+                                 bg=_r_pal[0], border=_r_pal[1], label_color=_r_pal[2])
+                )
+                st.markdown(_stat_card_row(_rv_cards), unsafe_allow_html=True)
                 st.caption(
                     "ℹ️ 요약 카드의 '총 경기'는 실제 경기(매치) 수입니다. "
                     "복식 특성상 한 경기에 상대가 2명이므로, 아래 상대별 표의 경기수를 모두 더하면 "
@@ -7551,12 +7785,7 @@ elif page == "👤 개인기록실":
             _rv_html_rows = []
             for _ri, _rv in enumerate(_disp_rows):
                 _rate_val = _rv["rate"]
-                if _rate_val >= 60:
-                    _rate_color = "#16a34a"
-                elif _rate_val >= 40:
-                    _rate_color = "#d97706"
-                else:
-                    _rate_color = "#dc2626"
+                _rate_color = _winrate_color(_rate_val)
                 _vs_label = f"{_pr_name} vs {_rv['rival']}"
                 _rv_html_rows.append(
                     f'<tr style="border-bottom:1px solid #f3f4f6;">'
@@ -7584,7 +7813,7 @@ elif page == "👤 개인기록실":
                 + "".join(_rv_html_rows) +
                 f'</tbody></table>'
             )
-            st.markdown(_rv_html, unsafe_allow_html=True)
+            st.markdown(_scrollable_table(_rv_html, min_width=420), unsafe_allow_html=True)
             st.caption(f"📊 {_r3_lbl} · 총 {len(_disp_rows)}명의 상대와 대결")
 
             # ── [F-5] CSV 내보내기 ───────────────────────────
@@ -7610,19 +7839,14 @@ elif page == "👤 개인기록실":
                 st.markdown(f"##### 🤼 **{_r3_sel}** 상대 시 — 파트너별 성적")
                 st.caption(f"{_r3_sel} 선수를 상대팀에 두고 경기할 때, 누구와 한 팀이면 잘 이기는지 분석합니다.")
                 with st.spinner("동반 분석 계산 중…"):
-                    _pvr = personal_partner_vs_rival(_pr_name, _r3_sel, _r3_ft, _r3_fv)
+                    _pvr = personal_partner_vs_rival(_pr_name, _r3_sel, _r3_fv)
                 if not _pvr:
                     st.info(f"📭 {_r3_lbl} {_r3_sel}와(과)의 경기에서 파트너 기록이 없습니다.")
                 else:
                     _pvr_html_rows = []
                     for _pi, _pp in enumerate(_pvr):
                         _pr_rate = _pp["rate"]
-                        if _pr_rate >= 60:
-                            _pr_color = "#16a34a"
-                        elif _pr_rate >= 40:
-                            _pr_color = "#d97706"
-                        else:
-                            _pr_color = "#dc2626"
+                        _pr_color = _winrate_color(_pr_rate)
                         _pvr_html_rows.append(
                             f'<tr style="border-bottom:1px solid #f3f4f6;">'
                             f'<td style="padding:8px 12px;font-size:0.8rem;color:#9ca3af;text-align:center;width:40px;">{_pi+1}</td>'
@@ -7648,7 +7872,7 @@ elif page == "👤 개인기록실":
                         + "".join(_pvr_html_rows) +
                         f'</tbody></table>'
                     )
-                    st.markdown(_pvr_html, unsafe_allow_html=True)
+                    st.markdown(_scrollable_table(_pvr_html, min_width=420), unsafe_allow_html=True)
                     _pvr_best = _pvr[0]
                     if _pvr_best["games"] >= 2 and _pvr_best["rate"] >= 50:
                         st.success(
@@ -7656,6 +7880,45 @@ elif page == "👤 개인기록실":
                             f"가장 좋습니다 ({_pvr_best['wins']}승 {_pvr_best['draws']}무 {_pvr_best['losses']}패 · "
                             f"승률 {_pvr_best['rate']:.1f}%)."
                         )
+
+                # ── [F-8] 최근 맞대결 추세 ───────────────────
+                _recent_h2h = personal_rival_recent(_pr_name, _r3_sel, _r3_fv, limit=10)
+                if _recent_h2h:
+                    st.markdown(f"##### 📅 **{_r3_sel}** 와의 최근 맞대결 (최신순)")
+                    _badge_map = {
+                        "승": ("#16a34a", "#f0fdf4", "#86efac"),
+                        "무": ("#9ca3af", "#fafafa", "#d1d5db"),
+                        "패": ("#dc2626", "#fef2f2", "#fca5a5"),
+                    }
+                    _h2h_badges = []
+                    for _h in _recent_h2h:
+                        _col, _bg, _bd = _badge_map[_h["result"]]
+                        # date_key에서 날짜 부분만 (YYYY-MM-DD) 추출
+                        _dlabel = str(_h["date_key"])[:10]
+                        _h2h_badges.append(
+                            f'<div style="display:inline-flex;flex-direction:column;align-items:center;'
+                            f'margin:3px;min-width:58px;">'
+                            f'<div style="background:{_bg};border:1.5px solid {_bd};border-radius:8px;'
+                            f'padding:5px 0;width:100%;text-align:center;">'
+                            f'<div style="font-weight:900;color:{_col};font-size:1rem;">{_h["result"]}</div>'
+                            f'<div style="font-size:0.72rem;color:#6b7280;">{_h["my_score"]}:{_h["opp_score"]}</div>'
+                            f'</div>'
+                            f'<div style="font-size:0.62rem;color:#9ca3af;margin-top:2px;">{_dlabel[5:]}</div>'
+                            f'</div>'
+                        )
+                    st.markdown(
+                        f'<div style="display:flex;flex-wrap:wrap;align-items:flex-start;margin:6px 0 4px;">'
+                        + "".join(_h2h_badges) +
+                        f'</div>', unsafe_allow_html=True)
+                    # 최근 추세 요약
+                    _rec_w = sum(1 for _h in _recent_h2h if _h["result"] == "승")
+                    _rec_l = sum(1 for _h in _recent_h2h if _h["result"] == "패")
+                    _rec_d = sum(1 for _h in _recent_h2h if _h["result"] == "무")
+                    st.caption(
+                        f"📊 최근 {len(_recent_h2h)}경기: "
+                        f"{_rec_w}승 {_rec_d}무 {_rec_l}패 "
+                        f"(왼쪽이 최신 경기입니다)"
+                    )
 
 
 # ========================================================================
