@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.10
+TELA CLUB Random Match Generator v5.9.11
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4063,6 +4063,20 @@ def format_dormant_periods(periods):
         parts.append(f"{start}~{end}")
     return "; ".join(parts)
 
+def close_dormant_on_leave(periods, leave_date):
+    """[v5.9.11] 탈퇴일이 있으면 '진행중'(종료일 없는) 휴면 기간의 종료일을
+    탈퇴일로 자동 설정한다. (휴면 중 탈퇴 → 휴면 종료일 = 탈퇴일)"""
+    ld = str(leave_date or "").strip()[:10]
+    if not ld:
+        return periods
+    out = []
+    for p in periods:
+        q = dict(p)
+        if not str(q.get("end") or "").strip():
+            q["end"] = ld
+        out.append(q)
+    return out
+
 def check_dormant_overlap(periods):
     """휴면 기간 겹침 및 진행중 중복 검사. 문제 있으면 에러 문자열 반환, 없으면 None."""
     ongoing_count = 0
@@ -4262,7 +4276,9 @@ def dialog_detail(row):
     dorm_raw = str(row.get("dormant_period","") or "").strip()
     if dorm_raw:
         st.markdown("**💤 휴면 기간 이력**")
-        periods = parse_dormant_periods(dorm_raw)
+        # [v5.9.11] 탈퇴 회원이면 진행중 휴면을 탈퇴일로 종료 처리해 표시
+        _leave_for_dorm = str(row.get("leave_date","") or "").strip()
+        periods = close_dormant_on_leave(parse_dormant_periods(dorm_raw), _leave_for_dorm)
         for i, p in enumerate(periods, 1):
             is_ongoing = not p["end"]
             status_badge = ("<span style='background:#fef9c3;color:#854d0e;padding:1px 8px;"
@@ -4623,6 +4639,13 @@ def dialog_form(df, existing=None):
             overlap_err = check_dormant_overlap(clean_dorm_list)
             if overlap_err:
                 errors.append(f"휴면 기간 겹침 오류: {overlap_err}")
+
+        # [v5.9.11] 탈퇴일이 있으면 진행중 휴면의 종료일을 탈퇴일로 자동 설정
+        #           (탈퇴일이 휴면 시작일 이후일 때만)
+        if ld_str:
+            for _p in clean_dorm_list:
+                if not _p["end"] and ld_str >= _p["start"]:
+                    _p["end"] = ld_str
 
         dorm_str = format_dormant_periods(clean_dorm_list)
 
@@ -5376,7 +5399,9 @@ def render_roster_page():
             # 휴면 기간 요약
             _dorm_raw = str(row.get("dormant_period", "") or "").strip()
             if _dorm_raw:
-                _dl = parse_dormant_periods(_dorm_raw)
+                # [v5.9.11] 탈퇴 회원이면 진행중 휴면을 탈퇴일로 종료 처리
+                _ld_for_dorm = str(row.get("leave_date", "") or "").strip()
+                _dl = close_dormant_on_leave(parse_dormant_periods(_dorm_raw), _ld_for_dorm)
                 _ongoing = [p for p in _dl if not p["end"]]
                 if _ongoing:
                     _dorm_disp = f"{_ongoing[-1]['start']}~"
@@ -5408,46 +5433,42 @@ def render_roster_page():
             _grade_html = grade_badge(_grade_v) if _grade_v in ("1","2","3","4","5") else \
                 "<span style='font-size:10px;color:#9ca3af;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;padding:1px 6px'>미지정</span>"
 
-            _card_html = (
-                f"<div style='border:1px solid #e5e7eb;border-radius:14px;"
-                f"padding:12px 14px;margin:8px 0 0;background:#ffffff;"
-                f"box-shadow:0 2px 10px rgba(15,23,42,0.06);border-left:5px solid {_lg_color}'>"
-                # 헤더: #n · 구분 · 이름 · 성별 · 등급
-                f"<div style='display:flex;align-items:center;gap:7px;flex-wrap:wrap;"
-                f"padding-bottom:8px;margin-bottom:8px;border-bottom:1px dashed #eef2f7'>"
-                f"<span style='font-size:11px;color:#cbd5e1;font-weight:700'>#{idx+1}</span>"
-                f"{badge(_cat)}"
-                f"<span style='font-size:16px;font-weight:800;color:#0f172a;letter-spacing:-0.3px'>{_name}</span>"
-                f"{gender_html(str(row.get('gender','')))}"
-                f"{_grade_html}"
-                f"</div>"
-                # 본문: 2열 그리드
-                f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;"
-                f"font-size:12.5px;color:#475569;line-height:1.4'>"
-                f"{''.join(_cells)}"
-                f"</div>"
-                f"</div>"
-            )
-            st.markdown(_card_html, unsafe_allow_html=True)
+            # [v5.9.11] 카드 컨테이너 안에 정보 + 선택/열람/수정 버튼을 모두 포함
+            with st.container(border=True):
+                st.markdown(
+                    # 리그 색상 상단 액센트 바
+                    f"<div style='height:5px;background:{_lg_color};border-radius:4px;margin:-2px 0 8px'></div>"
+                    # 헤더: #n · 구분 · 이름 · 성별 · 등급
+                    f"<div style='display:flex;align-items:center;gap:7px;flex-wrap:wrap;"
+                    f"padding-bottom:8px;margin-bottom:8px;border-bottom:1px dashed #eef2f7'>"
+                    f"<span style='font-size:11px;color:#cbd5e1;font-weight:700'>#{idx+1}</span>"
+                    f"{badge(_cat)}"
+                    f"<span style='font-size:16px;font-weight:800;color:#0f172a;letter-spacing:-0.3px'>{_name}</span>"
+                    f"{gender_html(str(row.get('gender','')))}"
+                    f"{_grade_html}"
+                    f"</div>"
+                    # 본문: 2열 그리드
+                    f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;"
+                    f"font-size:12.5px;color:#475569;line-height:1.4;margin-bottom:8px'>"
+                    f"{''.join(_cells)}"
+                    f"</div>",
+                    unsafe_allow_html=True)
 
-            # 버튼 줄: 선택 / 열람 / 수정
-            # [v5.9.10] CSS 강제 대신 컴팩트 버튼(use_container_width 미사용)으로
-            #           레이아웃 밖으로 넘치지 않게 함
-            _bc = st.columns([1, 1, 1])
-            with _bc[0]:
-                st.checkbox("선택", key=chk_key, on_change=_toggle_chk_card)
-            with _bc[1]:
-                if st.button("👁️ 열람", key=f"cdetail_{row_id}"):
-                    st.session_state.open_dialog = "detail"
-                    st.session_state.edit_target = {"id": row_id, "name": _name, "type": "detail"}
-                    st.rerun()
-            with _bc[2]:
-                if _is_admin:
-                    if st.button("✏️ 수정", key=f"cedit_{row_id}"):
-                        st.session_state.edit_target = {"type": "edit", "id": row_id, "name": _name}
-                        st.session_state.open_dialog = "edit" if st.session_state.admin_authed else "pw_edit"
+                # 버튼 줄: 선택 / 열람 / 수정 (카드 내부, 컴팩트)
+                _bc = st.columns([1, 1, 1])
+                with _bc[0]:
+                    st.checkbox("선택", key=chk_key, on_change=_toggle_chk_card)
+                with _bc[1]:
+                    if st.button("👁️ 열람", key=f"cdetail_{row_id}", use_container_width=True):
+                        st.session_state.open_dialog = "detail"
+                        st.session_state.edit_target = {"id": row_id, "name": _name, "type": "detail"}
                         st.rerun()
-            st.markdown("<div style='height:2px'></div>", unsafe_allow_html=True)
+                with _bc[2]:
+                    if _is_admin:
+                        if st.button("✏️ 수정", key=f"cedit_{row_id}", use_container_width=True):
+                            st.session_state.edit_target = {"type": "edit", "id": row_id, "name": _name}
+                            st.session_state.open_dialog = "edit" if st.session_state.admin_authed else "pw_edit"
+                            st.rerun()
     else:
         hcols = st.columns(CW)
         # ── 헤더 첫 번째 열: 전체 선택/해제 체크박스 ──
@@ -5535,7 +5556,9 @@ def render_roster_page():
             # 휴면 기간 요약
             dorm_raw = str(row.get('dormant_period','') or '').strip()
             if dorm_raw:
-                dorm_list_disp  = parse_dormant_periods(dorm_raw)
+                # [v5.9.11] 탈퇴 회원이면 진행중 휴면을 탈퇴일로 종료 처리
+                _ld_for_dorm = str(row.get('leave_date','') or '').strip()
+                dorm_list_disp  = close_dormant_on_leave(parse_dormant_periods(dorm_raw), _ld_for_dorm)
                 dorm_cnt        = len(dorm_list_disp)
                 ongoing_periods = [p for p in dorm_list_disp if not p["end"]]
                 if ongoing_periods:
@@ -5592,7 +5615,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.10")
+st.sidebar.caption("v5.9.11")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
