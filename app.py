@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.7
+TELA CLUB Random Match Generator v5.9.8
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -2427,6 +2427,26 @@ def _pick_winrate_king(df, min_games: int):
     return cand.iloc[0], len(cand)
 
 
+def _row_period_keys(r: dict) -> tuple:
+    """
+    [v5.9.8 버그수정] 기록 행에서 (year_month, year)를 도출.
+    - 우선 date_key('YYYY-MM-DD...')에서 직접 계산 → 저장된 year_month가
+      비어있거나 형식이 어긋난 행(구글시트 폴백 등)에서도 월간 조회가 정확.
+    - date_key 파싱 실패 시에만 저장된 year_month / year 컬럼으로 폴백.
+    """
+    from datetime import datetime as _dt
+    dk = str(r.get("date_key", "")).strip()
+    ym = str(r.get("year_month", "")).strip()
+    yr = str(r.get("year", "")).strip()
+    if len(dk) >= 7:
+        try:
+            ym = _dt.strptime(dk[:7], "%Y-%m").strftime("%Y-%m")
+            yr = dk[:4]
+        except Exception:
+            pass
+    return ym, yr
+
+
 def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     """
     filter_type: 'monthly' 또는 'yearly'
@@ -2435,17 +2455,24 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
 
     ※ 집계 소스: 로컬 스코어보드(shelf)에서 직접 계산 → 항상 정확.
       shelf가 비어있으면(서버 재시작 등) 구글시트 records 탭으로 폴백.
+    ※ [v5.9.8] 기간 필터는 저장된 year/year_month 컬럼이 아니라
+      date_key에서 도출한 값으로 비교 → 폴백 데이터의 year_month 누락 대응.
     """
     all_rows = records_rows_from_shelf_cached()
     if not all_rows:
         # 폴백: 구글시트 누적 데이터
         all_rows = records_load_cached()
 
-    col = "year_month" if filter_type == "monthly" else "year"
     excluded = set(exclude_list_load())  # 제외 선수 이름 세트
-    filtered = [r for r in all_rows
-                if str(r.get(col,"")).strip() == filter_value
-                and str(r.get("player_key","")).strip() not in excluded]
+    _is_monthly = (filter_type == "monthly")
+    filtered = []
+    for r in all_rows:
+        if str(r.get("player_key", "")).strip() in excluded:
+            continue
+        _ym, _yr = _row_period_keys(r)
+        _cmp = _ym if _is_monthly else _yr
+        if _cmp == filter_value:
+            filtered.append(r)
     if not filtered:
         return pd.DataFrame()
 
@@ -3457,6 +3484,11 @@ GRADE_LABELS  = {
     "3": "3등급 ⭐⭐⭐",    "4": "4등급 ⭐⭐",
     "5": "5등급 ⭐",        "—": "미지정", "": "미지정",
 }
+# [v5.9.8] 이벤트 팀편성 전용: 별표 없이 숫자등급만 표기
+GRADE_LABELS_PLAIN = {
+    "1": "1등급", "2": "2등급", "3": "3등급",
+    "4": "4등급", "5": "5등급", "—": "미지정", "": "미지정",
+}
 GRADE_COLORS  = {
     "1": "#7c3aed", "2": "#2563eb", "3": "#16a34a",
     "4": "#d97706", "5": "#6b7280",
@@ -3572,6 +3604,29 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stSidebar"] .stCheckbox { margin-bottom: 0px !important; }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div { gap: 4px !important; }
 .match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
+
+/* [v5.9.8] 이슈5: 대진표 '회원 리그 설정' — 모바일에서도 한 사람당 한 줄 유지 */
+@media (max-width: 640px) {
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) {
+    flex-wrap: nowrap !important;
+    gap: 0.25rem !important;
+    align-items: center !important;
+  }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) > div[data-testid="column"] {
+    min-width: 0 !important;
+  }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) [data-baseweb="select"] > div {
+    min-height: 32px !important;
+  }
+  /* 이슈6: 회원명부 카드의 [선택/열람/수정] 버튼 줄 1줄 유지 */
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-cdetail_"]) {
+    flex-wrap: nowrap !important;
+    gap: 0.3rem !important;
+  }
+  div[data-testid="stHorizontalBlock"]:has([class*="st-key-cdetail_"]) > div[data-testid="column"] {
+    min-width: 0 !important;
+  }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -5245,11 +5300,110 @@ def render_roster_page():
     # ─────────────────────────────────────────────────────────
     #  회원 목록 테이블 (체크박스 항상 표시)
     # ─────────────────────────────────────────────────────────
+    # [v5.9.8] 이슈6: 모바일에서 한 사람당 수십 줄로 쪼개지던 문제 →
+    #   '모바일 카드 보기' 토글 시 한 사람당 4줄 카드로 표시 (PC 테이블은 기본 유지)
+    _mobile_card_view = st.toggle(
+        "📱 모바일 카드 보기 (휴대폰 권장)",
+        key="roster_mobile_cards",
+        help="켜면 한 회원을 4줄짜리 카드로 표시합니다. PC에서는 끄면 기존 표 형태로 보입니다.",
+    )
+
     CW  = [0.22, 0.28, 0.55, 0.65, 0.55, 0.82, 0.85, 0.46, 0.38, 0.95, 0.72, 0.75, 1.0, 0.72, 0.68, 1.1, 0.85]
     HDR = ["☑","No.","구분","리그","등급","성명","카페ID","생년","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
     
     if view_df.empty:
         st.info("🎾 해당 조건의 회원이 없습니다.")
+    elif _mobile_card_view:
+        # ── [v5.9.8] 모바일 카드 렌더링 (한 사람당 4줄 + 버튼 1줄) ──
+        for idx, row in view_df.iterrows():
+            row_id  = int(row["id"])
+            chk_key = f"chk_{row_id}"
+
+            def _toggle_chk_card(rid=row_id, k=chk_key):
+                if st.session_state.get(k, False):
+                    st.session_state.bulk_selected.add(rid)
+                else:
+                    st.session_state.bulk_selected.discard(rid)
+
+            if chk_key not in st.session_state:
+                st.session_state[chk_key] = row_id in st.session_state.bulk_selected
+
+            # 표시 값 준비
+            _cat       = row.get("category", "")
+            _name      = row.get("name", "")
+            _grade_v   = str(row.get("grade", "") or "").strip()
+            _lg_val    = str(row.get("league", "") or "").strip()
+            _lg_color  = LEAGUE_COLORS[LEAGUE_NAMES.index(_lg_val)] if _lg_val in LEAGUE_NAMES else "#9ca3af"
+            _cafe      = str(row.get("cafe_id", "") or "—")
+            _by        = int(row["birth_year"]) if pd.notna(row.get("birth_year")) and row.get("birth_year") else "—"
+            _region    = str(row.get("region", "") or "—")
+            _join      = str(row.get("join_date", "") or "—")
+            _leave     = str(row.get("leave_date", "") or "—")
+            _phone     = str(row.get("phone", "") or "—")
+            _app_val   = str(row.get("application", "") or "—")
+            _app_color = {"Yes": "#16a34a", "No": "#dc2626"}.get(_app_val, "#9ca3af")
+            _memo_txt  = str(row.get("memo", "") or "").strip()
+            _memo_disp = (_memo_txt[:24] + "…") if len(_memo_txt) > 24 else (_memo_txt or "—")
+
+            # 휴면 기간 요약
+            _dorm_raw = str(row.get("dormant_period", "") or "").strip()
+            if _dorm_raw:
+                _dl = parse_dormant_periods(_dorm_raw)
+                _ongoing = [p for p in _dl if not p["end"]]
+                if _ongoing:
+                    _dorm_disp = f"{_ongoing[-1]['start']}~"
+                elif len(_dl) == 1:
+                    _dorm_disp = f"{_dl[0]['start']}~{_dl[0]['end']}"
+                else:
+                    _dorm_disp = f"{_dl[-1]['start']}~{_dl[-1]['end']} 외 {len(_dl)-1}건"
+            else:
+                _dorm_disp = "—"
+
+            _card_html = (
+                f"<div style='border:1px solid #e2e8f0;border-radius:10px;"
+                f"padding:9px 12px;margin:6px 0 2px;background:#fff;"
+                f"box-shadow:0 1px 4px rgba(0,0,0,0.05);border-left:4px solid {_lg_color}'>"
+                # 1줄: No · 구분 · 이름 · 성별 · 등급
+                f"<div style='display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:4px'>"
+                f"<span style='font-size:11px;color:#9ca3af'>#{idx+1}</span>"
+                f"{badge(_cat)}"
+                f"<span style='font-size:15px;font-weight:800;color:#1a2e4a'>{_name}</span>"
+                f"{gender_html(str(row.get('gender','')))}"
+                f"{grade_badge(_grade_v)}"
+                f"</div>"
+                # 2줄: 리그 · 카페ID · 생년
+                f"<div style='font-size:12px;color:#475569;margin-bottom:2px'>"
+                f"<span style='color:{_lg_color};font-weight:700'>🏆 {_lg_val or '—'}</span>"
+                f" &nbsp;·&nbsp; 🆔 {_cafe} &nbsp;·&nbsp; 🎂 {_by}</div>"
+                # 3줄: 연락처 · 거주지 · 입회일
+                f"<div style='font-size:12px;color:#475569;margin-bottom:2px'>"
+                f"📞 <span style='color:#2563eb'>{_phone}</span>"
+                f" &nbsp;·&nbsp; 📍 {_region} &nbsp;·&nbsp; 📅 {_join}</div>"
+                # 4줄: 휴면 · 탈퇴 · 신청서 · 메모
+                f"<div style='font-size:12px;color:#475569'>"
+                f"💤 <span style='color:#ca8a04'>{_dorm_disp}</span>"
+                f" &nbsp;·&nbsp; 🚪 <span style='color:#dc2626'>{_leave}</span>"
+                f" &nbsp;·&nbsp; 📝 <span style='color:{_app_color};font-weight:700'>{_app_val}</span>"
+                f" &nbsp;·&nbsp; 🗒️ {_memo_disp}</div>"
+                f"</div>"
+            )
+            st.markdown(_card_html, unsafe_allow_html=True)
+
+            # 버튼 줄: 선택 / 열람 / 수정 (모바일에서도 1줄 유지: st-key-cdetail_ CSS)
+            _bc = st.columns([1, 1, 1])
+            with _bc[0]:
+                st.checkbox("☑ 선택", key=chk_key, on_change=_toggle_chk_card)
+            with _bc[1]:
+                if st.button("👁️ 열람", key=f"cdetail_{row_id}", use_container_width=True):
+                    st.session_state.open_dialog = "detail"
+                    st.session_state.edit_target = {"id": row_id, "name": _name, "type": "detail"}
+                    st.rerun()
+            with _bc[2]:
+                if _is_admin:
+                    if st.button("✏️ 수정", key=f"cedit_{row_id}", use_container_width=True):
+                        st.session_state.edit_target = {"type": "edit", "id": row_id, "name": _name}
+                        st.session_state.open_dialog = "edit" if st.session_state.admin_authed else "pw_edit"
+                        st.rerun()
     else:
         hcols = st.columns(CW)
         # ── 헤더 첫 번째 열: 전체 선택/해제 체크박스 ──
@@ -5394,7 +5548,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.7")
+st.sidebar.caption("v5.9.8")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5860,21 +6014,22 @@ if page == "📊 스코어보드":
 
     st.markdown("---")
     # 점수 전체 초기화: 관리자만
+    # [v5.9.8] 모바일에서 버튼 텍스트가 박스를 넘던 문제 → 세로 배치로 변경
     if is_admin():
-        _rc1, _rc2 = st.columns([2, 8])
-        if _rc1.button("🔄 점수 전체 초기화", type="secondary"):
+        if st.button("🔄 점수 전체 초기화", type="secondary",
+                     use_container_width=True):
             for i in range(len(schedule)):
                 st.session_state.pop(f"locked_{i}", None)
             st.session_state["sb_scores"] = {}
             st.rerun()
-        _rc2.caption("⚠️ 초기화 시 저장된 점수가 모두 삭제됩니다.")
+        st.caption("⚠️ 초기화 시 저장된 점수가 모두 삭제됩니다.")
 
     # ── 관리자 전용: 기록실 재집계 ────────────────────────────
     # 기존 시트 데이터(잘못된 집계)를 현재 코드 기준으로 덮어써서 정정
     if is_admin():
-        _ra1, _ra2 = st.columns([3, 7])
-        if _ra1.button("🔁 기록실 재집계 (관리자)", type="secondary",
-                       help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 구글시트에 덮어씁니다."):
+        if st.button("🔁 기록실 재집계 (관리자)", type="secondary",
+                     use_container_width=True,
+                     help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 구글시트에 덮어씁니다."):
             _reagg_scores = st.session_state.get("sb_scores", {})
             if not _reagg_scores:
                 _sd = shelf_load(selected_key)
@@ -7226,10 +7381,17 @@ function showMsg() {{
                                     unsafe_allow_html=True)
 
                         # ── 회원 목록 (체크박스) ─────────────────
-                        _hc = st.columns([0.5, 3, 1, 2, 1])
-                        _hc[0].markdown("**☑**")
-                        _hc[1].markdown("**이름**"); _hc[2].markdown("**성별**")
-                        _hc[3].markdown("**개별 이동 대상**"); _hc[4].markdown("**저장**")
+                        # [v5.9.8] 헤더를 한 줄 flex로 → 모바일에서도 1줄 유지
+                        st.markdown(
+                            "<div style='display:flex;gap:0.25rem;align-items:center;"
+                            "font-size:11px;font-weight:700;color:#6b7280;"
+                            "border-bottom:2px solid #e2e8f0;padding:4px 0;margin-top:4px'>"
+                            "<span style='flex:0 0 6%'>☑</span>"
+                            "<span style='flex:0 0 40%'>이름</span>"
+                            "<span style='flex:0 0 13%'>성별</span>"
+                            "<span style='flex:0 0 27%'>이동 대상</span>"
+                            "<span style='flex:0 0 13%;text-align:center'>저장</span>"
+                            "</div>", unsafe_allow_html=True)
 
                         for _, _row in _tab_df.iterrows():
                             _g   = "남" if str(_row.get("gender","")).strip() in ("남","M") else "여"
@@ -7258,12 +7420,17 @@ function showMsg() {{
                                 '<span style="background:#2e7d32;color:#fff;border-radius:4px;'
                                 'padding:1px 5px;font-size:0.68rem;font-weight:700;margin-left:4px;">✅정상</span>'
                             )
-                            _name_html = f'{_row["name"]}{_status_badge}'
+                            _name_html = (
+                                f"<div style='font-size:12px;font-weight:600;color:#1a2e4a;"
+                                f"line-height:1.3;padding-top:4px'>{_row['name']}{_status_badge}</div>"
+                            )
 
                             _rc = st.columns([0.5, 3, 1, 2, 1])
                             _rc[0].checkbox("", key=_chk_key, label_visibility="collapsed")
                             _rc[1].markdown(_name_html, unsafe_allow_html=True)
-                            _rc[2].write(_g)
+                            _rc[2].markdown(
+                                f"<div style='font-size:12px;padding-top:4px'>{_g}</div>",
+                                unsafe_allow_html=True)
 
                             # 개별 이동 대상 selectbox
                             _ind_opts   = _target_options
@@ -7519,7 +7686,7 @@ elif page == "🏆 통합기록실":
                             "(구글시트가 원본이므로 로컬에만 있는 항목은 다음 저장 시 시트에도 반영됩니다).")
 
 
-    _now = date.today()
+    _now = kst_today()
     
     # 데이터 손상 시 안내
     if not st.session_state.get("_draws_reagg_dismissed"):
@@ -7984,12 +8151,15 @@ elif page == "👤 개인기록실":
     st.session_state["pr_recent_searches"] = _rec_list[:5]
 
     # ── 헤더: 선수 이름 배너 ──────────────────────────────────
+    # [v5.9.8] 어두운 배경에 묻히던 텍스트 → 밝은 색으로 변경
     st.markdown(
-        f'<div style="background:linear-gradient(135deg,#1a2e4a,#2563eb22);'
-        f'border-left:5px solid #2563eb;border-radius:0 14px 14px 0;'
-        f'padding:14px 20px;margin:12px 0 20px;">'
-        f'<span style="color:#1a2e4a;font-weight:900;font-size:1.2rem;">👤 {_pr_name}</span>'
-        f'<span style="color:#6b7280;font-size:0.85rem;margin-left:10px;">개인 기록 조회</span>'
+        f'<div style="background:linear-gradient(135deg,#1a2e4a,#2563eb);'
+        f'border-left:5px solid #93c5fd;border-radius:0 14px 14px 0;'
+        f'padding:14px 20px;margin:12px 0 20px;'
+        f'box-shadow:0 2px 10px rgba(26,46,74,0.25);">'
+        f'<span style="color:#ffffff;font-weight:900;font-size:1.2rem;'
+        f'text-shadow:0 1px 2px rgba(0,0,0,0.3);">👤 {_pr_name}</span>'
+        f'<span style="color:#dbeafe;font-size:0.85rem;margin-left:10px;">개인 기록 조회</span>'
         f'</div>', unsafe_allow_html=True)
 
     # ── [F-2] 종합 요약 헤더 ──────────────────────────────────
@@ -8021,16 +8191,34 @@ elif page == "👤 개인기록실":
         st.markdown(_stat_card_row(_cards, margin="4px 0 18px"), unsafe_allow_html=True)
 
         # ── [기능3] 기록 카드 이미지 내보내기 ────────────────
+        # [v5.9.8] 앱 내 인라인 미리보기 + 명시적 '닫기' 버튼
+        #   (다운로드만 있으면 OS 다운로드 화면으로 빠져 뒤로가기가 어려움)
         _card_png = make_personal_card_png(_pr_name, _sum_year, _summ)
         if _card_png:
-            st.download_button(
-                "🖼️ 기록 카드 이미지 저장 (카톡 공유용)",
-                data=_card_png,
-                file_name=f"{_pr_name}_{_sum_year}_기록카드.png",
-                mime="image/png",
-                key="pr_card_png",
-                use_container_width=True,
-            )
+            _card_open_key = f"_card_open_{_pr_name}_{_sum_year}"
+            if not st.session_state.get(_card_open_key):
+                if st.button("🖼️ 기록 카드 이미지 보기 (카톡 공유용)",
+                             key="pr_card_open", use_container_width=True):
+                    st.session_state[_card_open_key] = True
+                    st.rerun()
+            else:
+                st.image(_card_png, use_container_width=True,
+                         caption="이미지를 길게 눌러 저장하거나 아래 버튼으로 내려받으세요.")
+                _card_c1, _card_c2 = st.columns(2)
+                with _card_c1:
+                    st.download_button(
+                        "⬇️ 이미지 내려받기",
+                        data=_card_png,
+                        file_name=f"{_pr_name}_{_sum_year}_기록카드.png",
+                        mime="image/png",
+                        key="pr_card_png",
+                        use_container_width=True,
+                    )
+                with _card_c2:
+                    if st.button("✖️ 닫기", key="pr_card_close",
+                                 use_container_width=True):
+                        st.session_state[_card_open_key] = False
+                        st.rerun()
         else:
             st.caption("ℹ️ 이미지 카드 생성에 필요한 한글 폰트가 없어 이미지 저장은 비활성화되었습니다. "
                        "(위 요약 카드를 스크린샷하여 공유하실 수 있습니다.)")
@@ -8487,11 +8675,11 @@ elif page == "🎯 이벤트 팀편성":
     with st.expander("📌 등급 기준 안내", expanded=False):
         _gi_cols = st.columns(5)
         _gi_data = [
-            ("1등급 ⭐⭐⭐⭐⭐","#7c3aed","최상위 실력자"),
-            ("2등급 ⭐⭐⭐⭐",  "#2563eb","상급 · 안정적"),
-            ("3등급 ⭐⭐⭐",    "#16a34a","중급 · 기본기 완성"),
-            ("4등급 ⭐⭐",      "#d97706","초중급 · 성장 중"),
-            ("5등급 ⭐",        "#6b7280","입문 · 기초 단계"),
+            ("1등급","#7c3aed","최상위 실력자"),
+            ("2등급","#2563eb","상급 · 안정적"),
+            ("3등급","#16a34a","중급 · 기본기 완성"),
+            ("4등급","#d97706","초중급 · 성장 중"),
+            ("5등급","#6b7280","입문 · 기초 단계"),
         ]
         for _i, (_lbl, _col, _desc) in enumerate(_gi_data):
             _gi_cols[_i].markdown(
@@ -8538,12 +8726,12 @@ elif page == "🎯 이벤트 팀편성":
                                 f"<div style='font-size:12px;font-weight:700;color:#1a2e4a;margin-bottom:2px'>"
                                 f"{_ge_name}</div>"
                                 f"<div style='font-size:10px;color:{_ge_color};margin-bottom:2px'>"
-                                f"현재: {GRADE_LABELS.get(_ge_cur,'미지정')}</div>",
+                                f"현재: {GRADE_LABELS_PLAIN.get(_ge_cur,'미지정')}</div>",
                                 unsafe_allow_html=True)
                             st.selectbox(
                                 f"등급_{_ge_mid}", GRADE_OPTIONS,
                                 index=GRADE_OPTIONS.index(_ge_cur) if _ge_cur in GRADE_OPTIONS else 0,
-                                format_func=lambda x: GRADE_LABELS.get(x, x),
+                                format_func=lambda x: GRADE_LABELS_PLAIN.get(x, x),
                                 label_visibility="collapsed",
                                 key=f"ge_grade_{_ge_mid}"
                             )
@@ -8679,17 +8867,18 @@ elif page == "🎯 이벤트 팀편성":
         st.stop()
 
     # 옵션 목록 구성
+    # [v5.9.8] 별표 제거 → 숫자등급만 표기 (예: '홍길동 [1등급]', '김민세 [미지정]')
     _member_options = []
     for _, _mr in _all_active.sort_values(["grade","name"]).iterrows():
         _g = _mr["grade"]
-        _stars = "⭐" * (6 - int(_g)) if _g.isdigit() else "○"
-        _member_options.append(f"{_mr['name']} [{_g}등급 {_stars}]")
+        _glabel = f"{_g}등급" if _g.isdigit() else "미지정"
+        _member_options.append(f"{_mr['name']} [{_glabel}]")
 
     _name_to_row = {}
     for _, _mr in _all_active.iterrows():
         _g = _mr["grade"]
-        _stars = "⭐" * (6 - int(_g)) if _g.isdigit() else "○"
-        _name_to_row[f"{_mr['name']} [{_g}등급 {_stars}]"] = _mr
+        _glabel = f"{_g}등급" if _g.isdigit() else "미지정"
+        _name_to_row[f"{_mr['name']} [{_glabel}]"] = _mr
 
     # 수정1: multiselect 동적 key로 전체선택/해제 즉시 반영
     # 버튼 클릭 시 _ev_ms_ver를 증가시켜 위젯을 새로 생성 → default 값이 적용됨
@@ -8849,7 +9038,8 @@ elif page == "🎯 이벤트 팀편성":
                 _mhtml = ""
                 for _pm in _t:
                     _pg    = str(_pm.get("grade","")).strip()
-                    _pstar = "⭐" * (6 - int(_pg)) if _pg.isdigit() else "○"
+                    # [v5.9.8] 별표 제거 → 숫자등급만 표기
+                    _plbl  = f"{_pg}등급" if _pg.isdigit() else "미지정"
                     _pgc   = GRADE_COLORS.get(_pg, "#9ca3af")
                     _gico  = "🔵" if str(_pm.get("gender","")).strip() == "남" else "🔴"
                     _page  = ""
@@ -8861,7 +9051,7 @@ elif page == "🎯 이벤트 팀편성":
                         f"padding:5px 8px;margin:3px 0;background:#fff;border-radius:6px;"
                         f"border-left:3px solid {_pgc};'>"
                         f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>{_gico} {_pm['name']}{_page}</span>"
-                        f"<span style='font-size:11px;color:{_pgc};font-weight:700'>{_pstar}</span>"
+                        f"<span style='font-size:11px;color:{_pgc};font-weight:700'>{_plbl}</span>"
                         f"</div>"
                     )
                 _cols_row[_ci].markdown(
