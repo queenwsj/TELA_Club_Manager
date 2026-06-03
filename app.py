@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.9
+TELA CLUB Random Match Generator v5.9.10
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -2720,6 +2720,24 @@ def _personal_get_all_rows() -> list:
 
 
 @st.cache_data(ttl=60)
+def personal_available_periods(player_name: str) -> dict:
+    """[v5.9.10] 특정 선수가 실제 출전한 월/연도 목록.
+    개인기록 파트너 궁합·라이벌 전적 탭의 드롭다운을 데이터 있는 기간으로 구성."""
+    raw = _personal_raw_matches_cached()
+    pkey = str(player_name).strip()
+    months, years = set(), set()
+    for m in raw:
+        if pkey in m.get("t1_keys", []) or pkey in m.get("t2_keys", []):
+            _ym = str(m.get("year_month", "")).strip()
+            _yr = str(m.get("year", "")).strip()
+            if _ym and len(_ym) == 7 and _ym != "unknown":
+                months.add(_ym)
+            if _yr and len(_yr) == 4 and _yr != "unknown":
+                years.add(_yr)
+    return {"months": sorted(months, reverse=True), "years": sorted(years, reverse=True)}
+
+
+@st.cache_data(ttl=60)
 def personal_monthly_leagues(player_name: str, year: str) -> list:
     """
     특정 회원의 연도별 월별 소속 리그 목록 반환.
@@ -3637,36 +3655,6 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stSidebar"] .stCheckbox { margin-bottom: 0px !important; }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div { gap: 4px !important; }
 .match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
-
-/* [v5.9.9] 모바일 1줄 유지 — :has() 미지원 환경 대비, 컨테이너 key 자손 셀렉터 사용 */
-@media (max-width: 640px) {
-  /* 이슈3: 대진표 '회원 리그 설정' 행 (st.container(key='lgrow_*')) */
-  [class*="st-key-lgrow_"] div[data-testid="stHorizontalBlock"] {
-    flex-wrap: nowrap !important;
-    gap: 0.3rem !important;
-    align-items: center !important;
-  }
-  [class*="st-key-lgrow_"] div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-    min-width: 0 !important;
-  }
-  [class*="st-key-lgrow_"] [data-baseweb="select"] > div { min-height: 34px !important; }
-  [class*="st-key-lgrow_"] .stButton button {
-    padding: 4px 6px !important; font-size: 12px !important; white-space: nowrap !important;
-  }
-
-  /* 이슈4: 회원명부 카드 버튼 줄 (st.container(key='rostbtn_*')) — 3등분 */
-  [class*="st-key-rostbtn_"] div[data-testid="stHorizontalBlock"] {
-    flex-wrap: nowrap !important;
-    gap: 0.3rem !important;
-  }
-  [class*="st-key-rostbtn_"] div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-    min-width: 0 !important;
-    flex: 1 1 0 !important;
-  }
-  [class*="st-key-rostbtn_"] .stButton button {
-    padding: 5px 4px !important; font-size: 12px !important; white-space: nowrap !important;
-  }
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -5442,22 +5430,24 @@ def render_roster_page():
             )
             st.markdown(_card_html, unsafe_allow_html=True)
 
-            # 버튼 줄: 선택 / 열람 / 수정 — keyed 컨테이너로 모바일 1줄 유지
-            with _keyed_container(f"rostbtn_{row_id}"):
-                _bc = st.columns([1, 1, 1])
-                with _bc[0]:
-                    st.checkbox("선택", key=chk_key, on_change=_toggle_chk_card)
-                with _bc[1]:
-                    if st.button("👁️ 열람", key=f"cdetail_{row_id}", use_container_width=True):
-                        st.session_state.open_dialog = "detail"
-                        st.session_state.edit_target = {"id": row_id, "name": _name, "type": "detail"}
+            # 버튼 줄: 선택 / 열람 / 수정
+            # [v5.9.10] CSS 강제 대신 컴팩트 버튼(use_container_width 미사용)으로
+            #           레이아웃 밖으로 넘치지 않게 함
+            _bc = st.columns([1, 1, 1])
+            with _bc[0]:
+                st.checkbox("선택", key=chk_key, on_change=_toggle_chk_card)
+            with _bc[1]:
+                if st.button("👁️ 열람", key=f"cdetail_{row_id}"):
+                    st.session_state.open_dialog = "detail"
+                    st.session_state.edit_target = {"id": row_id, "name": _name, "type": "detail"}
+                    st.rerun()
+            with _bc[2]:
+                if _is_admin:
+                    if st.button("✏️ 수정", key=f"cedit_{row_id}"):
+                        st.session_state.edit_target = {"type": "edit", "id": row_id, "name": _name}
+                        st.session_state.open_dialog = "edit" if st.session_state.admin_authed else "pw_edit"
                         st.rerun()
-                with _bc[2]:
-                    if _is_admin:
-                        if st.button("✏️ 수정", key=f"cedit_{row_id}", use_container_width=True):
-                            st.session_state.edit_target = {"type": "edit", "id": row_id, "name": _name}
-                            st.session_state.open_dialog = "edit" if st.session_state.admin_authed else "pw_edit"
-                            st.rerun()
+            st.markdown("<div style='height:2px'></div>", unsafe_allow_html=True)
     else:
         hcols = st.columns(CW)
         # ── 헤더 첫 번째 열: 전체 선택/해제 체크박스 ──
@@ -5602,7 +5592,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.9")
+st.sidebar.caption("v5.9.10")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -7338,6 +7328,13 @@ function showMsg() {{
         with st.expander("🏷️ 회원 리그 설정 (구글 시트 직접 연동)", expanded=False):
             st.caption("체크박스로 회원을 선택하고 이동 대상 리그를 선택 후 일괄 저장하세요.")
 
+            # [v5.9.10] 회원명부처럼 모바일 보기 토글 (PC는 표, 모바일은 세로 카드)
+            _lg_mobile = st.toggle(
+                "📱 모바일 보기 (휴대폰 권장)",
+                key="lg_mobile_cards",
+                help="켜면 한 회원을 세로 카드(이름 → 이동 대상 → 저장)로 표시합니다.",
+            )
+
             _ref_col, _ = st.columns([1, 4])
             if _ref_col.button("🔄 최신 데이터 로드", key="lg_refresh_btn"):
                 st.cache_data.clear()
@@ -7434,17 +7431,18 @@ function showMsg() {{
                         st.markdown("<div style='border-bottom:1px solid #e2e8f0;margin:4px 0 8px'></div>",
                                     unsafe_allow_html=True)
 
-                        # ── 회원 목록 (체크박스) ─────────────────
-                        # [v5.9.8] 헤더를 한 줄 flex로 → 모바일에서도 1줄 유지
-                        st.markdown(
-                            "<div style='display:flex;gap:0.3rem;align-items:center;"
-                            "font-size:11px;font-weight:700;color:#6b7280;"
-                            "border-bottom:2px solid #e2e8f0;padding:4px 0;margin-top:4px'>"
-                            "<span style='flex:0 0 9%'>☑</span>"
-                            "<span style='flex:1 1 0'>이름 (성별)</span>"
-                            "<span style='flex:1 1 0'>이동 대상</span>"
-                            "<span style='flex:0 0 18%;text-align:center'>저장</span>"
-                            "</div>", unsafe_allow_html=True)
+                        # ── 회원 목록 ─────────────────────────────
+                        # PC(표) 헤더: 모바일 보기일 땐 숨김
+                        if not _lg_mobile:
+                            st.markdown(
+                                "<div style='display:flex;gap:0.3rem;align-items:center;"
+                                "font-size:11px;font-weight:700;color:#6b7280;"
+                                "border-bottom:2px solid #e2e8f0;padding:4px 0;margin-top:4px'>"
+                                "<span style='flex:0 0 9%'>☑</span>"
+                                "<span style='flex:1 1 0'>이름 (성별)</span>"
+                                "<span style='flex:1 1 0'>이동 대상</span>"
+                                "<span style='flex:0 0 18%;text-align:center'>저장</span>"
+                                "</div>", unsafe_allow_html=True)
 
                         for _, _row in _tab_df.iterrows():
                             _g   = "남" if str(_row.get("gender","")).strip() in ("남","M") else "여"
@@ -7466,37 +7464,51 @@ function showMsg() {{
                                         except ValueError: pass
                                 else:
                                     _is_dorm = True
+                            _status_txt = "💤휴면" if _is_dorm else "✅정상"
+                            _status_color = "#FF8F00" if _is_dorm else "#2e7d32"
                             _status_badge = (
-                                '<span style="background:#FF8F00;color:#fff;border-radius:4px;'
-                                'padding:1px 5px;font-size:0.68rem;font-weight:700;margin-left:4px;">💤휴면</span>'
-                                if _is_dorm else
-                                '<span style="background:#2e7d32;color:#fff;border-radius:4px;'
-                                'padding:1px 5px;font-size:0.68rem;font-weight:700;margin-left:4px;">✅정상</span>'
+                                f'<span style="background:{_status_color};color:#fff;border-radius:4px;'
+                                f'padding:1px 5px;font-size:0.68rem;font-weight:700;margin-left:4px;">{_status_txt}</span>'
                             )
-                            # [v5.9.9] 이름+성별 한 셀로 합치고, 행 전체를 keyed 컨테이너로
-                            #          감싸 모바일에서도 한 줄 유지 (CSS: st-key-lgrow_*)
-                            _name_html = (
-                                f"<div style='font-size:12.5px;font-weight:600;color:#1a2e4a;"
-                                f"line-height:1.25;padding-top:6px;white-space:nowrap;"
-                                f"overflow:hidden;text-overflow:ellipsis'>"
-                                f"{_row['name']} <span style='color:#6b7280;font-weight:400'>({_g})</span>"
-                                f"{_status_badge}</div>"
-                            )
+                            _ind_opts = _target_options
 
-                            with _keyed_container(f"lgrow_{_rid}"):
+                            if _lg_mobile:
+                                # ── [v5.9.10] 모바일 세로 카드 (가로 컬럼 미사용) ──
+                                st.markdown(
+                                    f"<div style='border:1px solid #e5e7eb;border-radius:12px;"
+                                    f"padding:10px 12px 4px;margin:8px 0 0;background:#fff;"
+                                    f"box-shadow:0 1px 6px rgba(15,23,42,0.05)'>"
+                                    f"<span style='font-size:14.5px;font-weight:800;color:#0f172a'>{_row['name']}</span>"
+                                    f"<span style='color:#6b7280;font-size:12px'> ({_g})</span>"
+                                    f"{_status_badge}</div>",
+                                    unsafe_allow_html=True)
+                                st.checkbox("일괄 선택에 포함", key=_chk_key)
+                                _ind_sel = st.selectbox(
+                                    "이동 대상", _ind_opts, key=f"lgind_{_rid}")
+                                _ind_val = "" if _ind_sel == "미배정" else _ind_sel
+                                if st.button(f"💾 {_row['name']} 저장", key=f"lgsave_{_rid}",
+                                             use_container_width=True):
+                                    with st.spinner("저장 중…"):
+                                        _ok = save_league_to_sheet(_rid, _ind_val)
+                                    if _ok:
+                                        st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
+                                        st.rerun()
+                                st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+                            else:
+                                # ── PC 표 형태 (가로 4컬럼) ──
+                                _name_html = (
+                                    f"<div style='font-size:12.5px;font-weight:600;color:#1a2e4a;"
+                                    f"line-height:1.25;padding-top:6px'>"
+                                    f"{_row['name']} <span style='color:#6b7280;font-weight:400'>({_g})</span>"
+                                    f"{_status_badge}</div>"
+                                )
                                 _rc = st.columns([0.55, 2.6, 2.1, 1.1])
                                 _rc[0].checkbox("", key=_chk_key, label_visibility="collapsed")
                                 _rc[1].markdown(_name_html, unsafe_allow_html=True)
-
-                                # 개별 이동 대상 selectbox
-                                _ind_opts   = _target_options
-                                _ind_sel    = _rc[2].selectbox(
-                                    "개별리그", _ind_opts,
-                                    key=f"lgind_{_rid}",
-                                    label_visibility="collapsed"
-                                )
+                                _ind_sel = _rc[2].selectbox(
+                                    "개별리그", _ind_opts, key=f"lgind_{_rid}",
+                                    label_visibility="collapsed")
                                 _ind_val = "" if _ind_sel == "미배정" else _ind_sel
-
                                 if _rc[3].button("저장", key=f"lgsave_{_rid}",
                                                  use_container_width=True):
                                     with st.spinner("저장 중…"):
@@ -8275,30 +8287,14 @@ elif page == "👤 개인기록실":
                     st.session_state[_card_open_key] = True
                     st.rerun()
             else:
-                # [v5.9.9] 닫기 버튼을 미리보기 상단에도 배치 → 다운로드 후 돌아와도
-                #          스크롤 없이 바로 닫을 수 있음
+                # [v5.9.10] 상단 닫기 버튼 + 길게 눌러 저장만 유지
+                #           (하단 닫기·내려받기 버튼 제거)
                 if st.button("✖️ 카드 닫기", key="pr_card_close_top",
                              use_container_width=True):
                     st.session_state[_card_open_key] = False
                     st.rerun()
-                st.caption("💾 휴대폰: 아래 이미지를 **길게 눌러 '사진에 추가'** 하면 가장 깔끔하게 저장됩니다. "
-                           "(내려받기 버튼은 기기에 따라 별도 다운로드 화면이 뜰 수 있어요.)")
+                st.caption("💾 휴대폰: 아래 이미지를 **길게 눌러 '사진에 추가'**(또는 '이미지 저장') 하면 카톡 공유용으로 저장됩니다.")
                 st.image(_card_png, use_container_width=True)
-                _card_c1, _card_c2 = st.columns(2)
-                with _card_c1:
-                    st.download_button(
-                        "⬇️ 이미지 내려받기",
-                        data=_card_png,
-                        file_name=f"{_pr_name}_{_sum_year}_기록카드.png",
-                        mime="image/png",
-                        key="pr_card_png",
-                        use_container_width=True,
-                    )
-                with _card_c2:
-                    if st.button("✖️ 닫기", key="pr_card_close",
-                                 use_container_width=True):
-                        st.session_state[_card_open_key] = False
-                        st.rerun()
         else:
             st.caption("ℹ️ 이미지 카드 생성에 필요한 한글 폰트가 없어 이미지 저장은 비활성화되었습니다. "
                        "(위 요약 카드를 스크린샷하여 공유하실 수 있습니다.)")
@@ -8403,27 +8399,34 @@ elif page == "👤 개인기록실":
         st.markdown("#### 🤝 파트너 궁합")
         st.caption("나와 같은 팀으로 뛰었을 때의 승무패 기록입니다. 최소 2경기 이상만 표시됩니다.")
 
+        # [v5.9.10] 데이터가 있는 기간 위주로 구성 + 최신월 자동선택
+        _pp_avail = personal_available_periods(_pr_name)
         _p2_c1, _p2_c2 = st.columns([2, 2])
         with _p2_c1:
             _p2_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
                                  key="pr_pair_mode", label_visibility="collapsed")
         with _p2_c2:
             if _p2_mode == "월간":
-                _p2_months = []
-                for i in range(12):
-                    _m2 = _now_pr.month - i
-                    _y2 = _now_pr.year
-                    while _m2 <= 0: _m2 += 12; _y2 -= 1
-                    _p2_months.append(f"{_y2}-{_m2:02d}")
-                _p2_months = sorted(list(dict.fromkeys(_p2_months)), reverse=True)
+                _p2_cur = f"{_now_pr.year}-{_now_pr.month:02d}"
+                _p2_months = sorted(list(dict.fromkeys(_pp_avail["months"] + [_p2_cur])), reverse=True)
+                _p2_def = _pp_avail["months"][0] if _pp_avail["months"] else _p2_cur
+                if "pr_pair_month" not in st.session_state and _p2_def in _p2_months:
+                    st.session_state["pr_pair_month"] = _p2_def
                 _p2_fv = st.selectbox("월 선택", _p2_months, key="pr_pair_month",
                                        label_visibility="collapsed")
                 _p2_lbl = f"{_p2_fv} 월간"
             else:
-                _p2_years = [str(_now_pr.year - i) for i in range(4)]
+                _p2_cur_y = str(_now_pr.year)
+                _p2_years = sorted(list(dict.fromkeys(
+                    _pp_avail["years"] + [str(_now_pr.year - i) for i in range(4)])), reverse=True)
+                _p2_def_y = _pp_avail["years"][0] if _pp_avail["years"] else _p2_cur_y
+                if "pr_pair_year" not in st.session_state and _p2_def_y in _p2_years:
+                    st.session_state["pr_pair_year"] = _p2_def_y
                 _p2_fv = st.selectbox("연도 선택", _p2_years, key="pr_pair_year",
                                        label_visibility="collapsed")
                 _p2_lbl = f"{_p2_fv} 연간"
+        if _p2_mode == "월간" and _pp_avail["months"]:
+            st.caption(f"🗓️ 기록이 있는 월: {', '.join(_pp_avail['months'][:6])}")
 
         with st.spinner("파트너 통계 계산 중…"):
             _pair_data = personal_pair_stats(_pr_name, _p2_fv)
@@ -8521,27 +8524,34 @@ elif page == "👤 개인기록실":
         st.markdown("#### ⚔️ 라이벌 전적")
         st.caption("나와 상대팀으로 뛰었던 모든 선수와의 승무패 기록입니다.")
 
+        # [v5.9.10] 데이터가 있는 기간 위주로 구성 + 최신월 자동선택
+        _rv_avail = personal_available_periods(_pr_name)
         _r3_c1, _r3_c2 = st.columns([2, 2])
         with _r3_c1:
             _r3_mode = st.radio("기간", ["월간", "연간"], horizontal=True,
                                  key="pr_rival_mode", label_visibility="collapsed")
         with _r3_c2:
             if _r3_mode == "월간":
-                _r3_months = []
-                for i in range(12):
-                    _m3 = _now_pr.month - i
-                    _y3 = _now_pr.year
-                    while _m3 <= 0: _m3 += 12; _y3 -= 1
-                    _r3_months.append(f"{_y3}-{_m3:02d}")
-                _r3_months = sorted(list(dict.fromkeys(_r3_months)), reverse=True)
+                _r3_cur = f"{_now_pr.year}-{_now_pr.month:02d}"
+                _r3_months = sorted(list(dict.fromkeys(_rv_avail["months"] + [_r3_cur])), reverse=True)
+                _r3_def = _rv_avail["months"][0] if _rv_avail["months"] else _r3_cur
+                if "pr_rival_month" not in st.session_state and _r3_def in _r3_months:
+                    st.session_state["pr_rival_month"] = _r3_def
                 _r3_fv = st.selectbox("월 선택", _r3_months, key="pr_rival_month",
                                        label_visibility="collapsed")
                 _r3_lbl = f"{_r3_fv} 월간"
             else:
-                _r3_years = [str(_now_pr.year - i) for i in range(4)]
+                _r3_cur_y = str(_now_pr.year)
+                _r3_years = sorted(list(dict.fromkeys(
+                    _rv_avail["years"] + [str(_now_pr.year - i) for i in range(4)])), reverse=True)
+                _r3_def_y = _rv_avail["years"][0] if _rv_avail["years"] else _r3_cur_y
+                if "pr_rival_year" not in st.session_state and _r3_def_y in _r3_years:
+                    st.session_state["pr_rival_year"] = _r3_def_y
                 _r3_fv = st.selectbox("연도 선택", _r3_years, key="pr_rival_year",
                                        label_visibility="collapsed")
                 _r3_lbl = f"{_r3_fv} 연간"
+        if _r3_mode == "월간" and _rv_avail["months"]:
+            st.caption(f"🗓️ 기록이 있는 월: {', '.join(_rv_avail['months'][:6])}")
 
         # 상대 선수 선택 (전체 또는 특정 선수)
         with st.spinner("상대 전적 계산 중…"):
