@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.6
+TELA CLUB Random Match Generator v5.9.7
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -18,7 +18,7 @@ TELA CLUB Random Match Generator v5.9.6
 11. 사이드바 로그인·메뉴 라우팅
 12. 페이지: 스코어보드
 13. 페이지: 대진표 생성
-14. 페이지: 통합기록실 (전체 선수 통계 + 개인기록실 이동 F-6)
+14. 페이지: 통합기록실 (전체 통계 + 참여 트렌드 + 매치업 예상 + 백업점검 + 개인기록실 이동)
 14-B. 페이지: 개인기록실
     ├─ 회원명 검색 + 최근 검색 (F-4) + 종합 요약 헤더 (F-2)
     ├─ 14-B-1. 월별 소속 리그 타임라인 + 월별 성적 추이 그래프 (F-1)
@@ -985,7 +985,39 @@ def score_pairing(t1, t2, gs, rs) -> int:
             ok = opp_key(x, y)
             if ok in rs.opponent_used: pen += 50
             if ok in gs.opponent_used: pen += 10
+    # [기능5] 체급(등급) 균형: 두 팀 등급 합 차이가 클수록 패널티
+    #   등급 1=최상위, 5=입문. 균형 매칭 활성화 시에만 적용.
+    if _GRADE_BALANCE.get("enabled"):
+        g1 = _team_grade_sum(t1)
+        g2 = _team_grade_sum(t2)
+        if g1 is not None and g2 is not None:
+            pen += abs(g1 - g2) * _GRADE_BALANCE.get("weight", 30)
     return pen
+
+
+# [기능5] 등급 균형 매칭 — 전역 상태 및 헬퍼
+_GRADE_BALANCE = {"enabled": False, "weight": 30}
+_GRADE_MAP: dict = {}   # 순수 이름(player_key) → 등급(int 1~5)
+
+
+def _player_grade(code: str):
+    """player_code에서 등급 조회. 미지정/불명 시 None."""
+    key = _clean_player_key(code)
+    g = _GRADE_MAP.get(key)
+    if g in (1, 2, 3, 4, 5):
+        return g
+    return None
+
+
+def _team_grade_sum(team):
+    """팀(2명)의 등급 합. 한 명이라도 등급 미지정이면 None (균형 비교 제외)."""
+    total = 0
+    for p in team:
+        g = _player_grade(p)
+        if g is None:
+            return None
+        total += g
+    return total
 
 def best_pairing(players4, gs, rs):
     a, b, c, d = players4
@@ -2866,6 +2898,176 @@ def personal_get_all_players() -> list:
     return players
 
 
+# ── [기능2] 참여 트렌드 대시보드 헬퍼 ────────────────────────
+
+@st.cache_data(ttl=60)
+def participation_monthly_trend(year: str) -> list:
+    """
+    [기능2] 월별 참여 추이. 선택 연도의 각 월별 고유 참여 인원·경기 수 집계.
+    반환: [{"month": 1~12, "unique_players": int, "matches": int}, ...] (12개월 고정)
+    """
+    matches = _personal_raw_matches_cached()
+    by_month = {m: {"players": set(), "matches": 0} for m in range(1, 13)}
+    for mt in matches:
+        ym = str(mt.get("year_month", ""))
+        if not ym.startswith(year):
+            continue
+        try:
+            mm = int(ym.split("-")[1])
+        except (ValueError, IndexError):
+            continue
+        if mm not in by_month:
+            continue
+        by_month[mm]["matches"] += 1
+        for p in mt["t1_keys"] + mt["t2_keys"]:
+            by_month[mm]["players"].add(p)
+    return [
+        {"month": mm,
+         "unique_players": len(by_month[mm]["players"]),
+         "matches": by_month[mm]["matches"]}
+        for mm in range(1, 13)
+    ]
+
+
+@st.cache_data(ttl=60)
+def participation_league_activity(filter_value: str) -> list:
+    """
+    [기능2] 리그별 활성도. 기간 내 리그별 경기 수·고유 참여 인원.
+    filter_value: 'YYYY' 또는 'YYYY-MM' (prefix 일치)
+    반환: [{"league": str, "matches": int, "players": int}, ...] (경기수 내림차순)
+    """
+    matches = _personal_raw_matches_cached()
+    agg = {}
+    for mt in matches:
+        if not str(mt["date_key"]).startswith(filter_value):
+            continue
+        lg = str(mt.get("league", "")).strip() or "미지정"
+        if lg not in agg:
+            agg[lg] = {"matches": 0, "players": set()}
+        agg[lg]["matches"] += 1
+        for p in mt["t1_keys"] + mt["t2_keys"]:
+            agg[lg]["players"].add(p)
+    rows = [{"league": lg, "matches": v["matches"], "players": len(v["players"])}
+            for lg, v in agg.items()]
+    return sorted(rows, key=lambda x: -x["matches"])
+
+
+@st.cache_data(ttl=60)
+def participation_inactive_members(months: int = 3) -> list:
+    """
+    [기능2] 최근 N개월간 미참여 회원 목록 (휴면 후보 관리용).
+    경기 기록이 있는 전체 회원 중, 최근 N개월 내 참여가 없는 회원을
+    마지막 참여일과 함께 반환. (제외 선수 제외)
+    반환: [{"player": str, "last_date": "YYYY-MM-DD", "days_ago": int}, ...]
+          (오래된 순 = days_ago 내림차순)
+    """
+    from datetime import datetime as _dt
+    matches = _personal_raw_matches_cached()
+    excluded = set(exclude_list_load())
+    last_seen = {}  # player → 최신 date_key
+    for mt in matches:
+        dk = str(mt["date_key"])
+        for p in mt["t1_keys"] + mt["t2_keys"]:
+            if p in excluded:
+                continue
+            if p not in last_seen or dk > last_seen[p]:
+                last_seen[p] = dk
+
+    today = date.today()
+    cutoff_days = months * 30
+    rows = []
+    for p, dk in last_seen.items():
+        # date_key 앞 10자리(YYYY-MM-DD) 파싱
+        _dstr = dk[:10]
+        try:
+            _d = _dt.strptime(_dstr, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        days_ago = (today - _d).days
+        if days_ago >= cutoff_days:
+            rows.append({"player": p, "last_date": _dstr, "days_ago": days_ago})
+    return sorted(rows, key=lambda x: -x["days_ago"])
+
+
+# ── [기능4] 라이벌 매치업 예상 헬퍼 ──────────────────────────
+
+@st.cache_data(ttl=60)
+def player_career_winrate(player_name: str) -> dict:
+    """선수 통산 승무패·승률 (전체 기간). 반환: {games, wins, draws, losses, rate}."""
+    matches = _personal_raw_matches_cached()
+    w = d = l = 0
+    for m in matches:
+        if player_name in m["t1_keys"]:
+            ms, os = m["s1"], m["s2"]
+        elif player_name in m["t2_keys"]:
+            ms, os = m["s2"], m["s1"]
+        else:
+            continue
+        if ms > os: w += 1
+        elif ms < os: l += 1
+        else: d += 1
+    g = w + d + l
+    return {"games": g, "wins": w, "draws": d, "losses": l,
+            "rate": (w / g * 100) if g else 0.0}
+
+
+def predict_matchup(team_a: list, team_b: list) -> dict:
+    """
+    [기능4] 두 팀의 과거 전적 기반 예상 승률.
+    - 각 팀 통산 승률 평균을 비교해 상대 예상 승률 산출
+    - 두 팀(구성원 간) 직접 맞대결 전적도 함께 집계
+    반환: {
+      "a_rate": float, "b_rate": float,          # 팀 평균 통산 승률
+      "a_expected": float, "b_expected": float,  # 정규화된 예상 승률(합100)
+      "a_members": [{"name","rate","games"}...], "b_members": [...],
+      "h2h": {"a_wins":int, "b_wins":int, "draws":int, "games":int} | None
+    }
+    """
+    def _team_detail(team):
+        details = []
+        for p in team:
+            cw = player_career_winrate(p)
+            details.append({"name": p, "rate": cw["rate"], "games": cw["games"]})
+        rates = [m["rate"] for m in details if m["games"] > 0]
+        avg = sum(rates) / len(rates) if rates else 50.0
+        return details, avg
+
+    a_members, a_rate = _team_detail(team_a)
+    b_members, b_rate = _team_detail(team_b)
+
+    # 정규화 예상 승률 (두 팀 평균 승률 비율 기반, 합 100)
+    total = a_rate + b_rate
+    if total > 0:
+        a_expected = a_rate / total * 100
+        b_expected = b_rate / total * 100
+    else:
+        a_expected = b_expected = 50.0
+
+    # 직접 맞대결 전적 (team_a 전원이 한 팀, team_b 전원이 상대팀인 경기)
+    matches = _personal_raw_matches_cached()
+    set_a, set_b = set(team_a), set(team_b)
+    h2h = {"a_wins": 0, "b_wins": 0, "draws": 0, "games": 0}
+    for m in matches:
+        t1, t2 = set(m["t1_keys"]), set(m["t2_keys"])
+        if set_a <= t1 and set_b <= t2:
+            ms, os = m["s1"], m["s2"]
+        elif set_a <= t2 and set_b <= t1:
+            ms, os = m["s2"], m["s1"]
+        else:
+            continue
+        h2h["games"] += 1
+        if ms > os: h2h["a_wins"] += 1
+        elif ms < os: h2h["b_wins"] += 1
+        else: h2h["draws"] += 1
+
+    return {
+        "a_rate": a_rate, "b_rate": b_rate,
+        "a_expected": a_expected, "b_expected": b_expected,
+        "a_members": a_members, "b_members": b_members,
+        "h2h": h2h if h2h["games"] > 0 else None,
+    }
+
+
 @st.cache_data(ttl=60)
 def personal_summary(player_name: str, year: str) -> dict:
     """
@@ -2928,6 +3130,88 @@ def personal_monthly_trend(player_name: str, year: str) -> list:
             "rate": (wm / gm * 100) if gm else 0.0,
         })
     return out
+
+
+# ── [기능3] 개인 기록 카드 이미지(PNG) 생성 ──────────────────
+
+def _find_korean_font(size: int, bold: bool = False):
+    """한글 렌더 가능한 폰트를 여러 경로에서 탐색. 못 찾으면 None."""
+    from PIL import ImageFont
+    candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if bold
+            else "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold
+            else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return None
+
+
+def make_personal_card_png(player_name: str, year: str, summary: dict):
+    """
+    [기능3] 개인 연간 요약을 카톡 공유용 PNG 카드로 생성.
+    한글 폰트를 찾지 못하면 None 반환 → 호출부에서 HTML 폴백.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+
+    font_title = _find_korean_font(46, bold=True)
+    font_label = _find_korean_font(24)
+    font_value = _find_korean_font(40, bold=True)
+    font_small = _find_korean_font(22)
+    if not all([font_title, font_label, font_value, font_small]):
+        return None
+
+    W, H = 800, 480
+    img = Image.new("RGB", (W, H), "#0f1e36")
+    d = ImageDraw.Draw(img)
+
+    # 상단 배너
+    d.rectangle([0, 0, W, 110], fill="#1a2e4a")
+    d.text((40, 28), player_name, font=font_title, fill="#ffffff")
+    d.text((44, 82), f"{year} 시즌 개인 기록", font=font_small, fill="#9db4d4")
+
+    # 통계 카드 4개 (경기/승/무/패)
+    stats = [
+        ("경기", summary["games"], "#3b82f6"),
+        ("승",   summary["wins"],  "#22c55e"),
+        ("무",   summary["draws"], "#9ca3af"),
+        ("패",   summary["losses"],"#ef4444"),
+    ]
+    cw, ch, gap = 170, 140, 16
+    x0 = (W - (cw * 4 + gap * 3)) // 2
+    y0 = 150
+    for i, (label, value, color) in enumerate(stats):
+        x = x0 + i * (cw + gap)
+        d.rounded_rectangle([x, y0, x + cw, y0 + ch], radius=16, fill="#16284a",
+                            outline=color, width=2)
+        lb = d.textbbox((0, 0), label, font=font_label)
+        d.text((x + (cw - (lb[2]-lb[0])) // 2, y0 + 22), label, font=font_label, fill="#9db4d4")
+        vs = str(value)
+        vb = d.textbbox((0, 0), vs, font=font_value)
+        d.text((x + (cw - (vb[2]-vb[0])) // 2, y0 + 62), vs, font=font_value, fill=color)
+
+    # 하단 승률 · 주 리그
+    d.text((40, 338), f"승률 {summary['rate']:.1f}%", font=font_value, fill="#a855f7")
+    d.text((42, 404), f"주 리그 {summary['main_league']}", font=font_label, fill="#cbd5e1")
+
+    # 워터마크
+    wm = "TELA CLUB"
+    wb = d.textbbox((0, 0), wm, font=font_small)
+    d.text((W - (wb[2]-wb[0]) - 36, H - 44), wm, font=font_small, fill="#5a7299")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
 
 
 @st.cache_data(ttl=60)
@@ -5110,7 +5394,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.6")
+st.sidebar.caption("v5.9.7")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5652,6 +5936,16 @@ elif page == "📋 대진표생성":
         st.sidebar.info("**완전 랜덤페어**\n\n완전 무작위\n\n✅ 남성 vs 여성 대결 제한")
     else:
         st.sidebar.info("**조건부 랜덤페어**\n\n리그별 우선순위·쿼터 적용")
+
+    # ── [기능5] 체급(등급) 균형 매칭 ──────────────────────────
+    use_grade_balance = st.sidebar.checkbox(
+        "⚖️ 체급(등급) 균형 매칭",
+        value=False,
+        help="회원 등급(1~5)을 반영해 두 팀의 실력 합이 비슷하도록 페어를 구성합니다. "
+             "등급이 지정된 회원에만 적용되며, 미지정 회원은 기존 방식대로 배정됩니다.",
+    )
+    if use_grade_balance:
+        st.sidebar.caption("⚖️ 등급 균형 ON — 팀 간 등급 합 차이를 최소화합니다.")
     st.sidebar.markdown("---")
 
     # ── [2] 리그 수 설정 (NEW) ───────────────────────────────
@@ -6207,6 +6501,20 @@ elif page == "📋 대진표생성":
         # 시드 고정 (시드 사용 시 재생성해도 동일 결과)
         if use_seed_run and seed_val_run is not None:
             random.seed(int(seed_val_run))
+
+        # [기능5] 등급 균형 매칭 설정: 이름→등급 맵 구성 후 전역 반영
+        _GRADE_BALANCE["enabled"] = bool(use_grade_balance)
+        if use_grade_balance:
+            try:
+                _gdf = load_df()
+                _GRADE_MAP.clear()
+                for _, _gr in _gdf.iterrows():
+                    _gname = str(_gr.get("name", "")).strip()
+                    _graw  = str(_gr.get("grade", "") or "").strip()
+                    if _gname and _graw in ("1", "2", "3", "4", "5"):
+                        _GRADE_MAP[_gname] = int(_graw)
+            except Exception:
+                _GRADE_BALANCE["enabled"] = False
 
         spinner_msg = "완전 랜덤 대진표 생성 중..." if IS_FULLY_RANDOM_run else "조건부 대진표 생성 중..."
         with st.spinner(spinner_msg):
@@ -7142,6 +7450,74 @@ elif page == "🏆 통합기록실":
                 st.session_state["_draws_reagg_dismissed"] = True
                 st.rerun()
 
+        # ── [기능1] 데이터 백업 상태 점검 · 강제 복원 ──────────
+        with st.expander("🛡️ 데이터 백업 상태 점검 (관리자)", expanded=False):
+            st.caption(
+                "경기 기록(대진표·점수)은 로컬 + 구글시트에 이중 저장됩니다. "
+                "Streamlit Cloud 재시작 시 로컬이 초기화돼도 구글시트에서 자동 복원됩니다. "
+                "아래에서 백업 상태를 확인하고 필요 시 강제 복원할 수 있습니다."
+            )
+            _bk_c1, _bk_c2 = st.columns(2)
+            with _bk_c1:
+                if st.button("🔍 백업 상태 확인", key="backup_check_btn", use_container_width=True):
+                    try:
+                        import shelve as _shv
+                        with _shv.open(SHELF_PATH) as _db:
+                            _local_n = len(list(_db.keys()))
+                    except Exception:
+                        _local_n = 0
+                    try:
+                        _gsheet_keys = _gsheet_sched_list()
+                        _gsheet_n = len(_gsheet_keys)
+                    except Exception:
+                        _gsheet_keys = []
+                        _gsheet_n = 0
+                    st.session_state["_backup_status"] = {
+                        "local": _local_n, "gsheet": _gsheet_n,
+                    }
+            with _bk_c2:
+                if st.button("♻️ 구글시트→로컬 강제 복원", key="backup_restore_btn",
+                             use_container_width=True,
+                             help="구글시트의 모든 경기 데이터를 로컬로 다시 내려받습니다."):
+                    try:
+                        import shelve as _shv
+                        with _shv.open(SHELF_PATH) as _db:
+                            _local_keys = set(_db.keys())
+                        _gkeys = _gsheet_sched_list()
+                        _restored = 0
+                        for _dk in _gkeys:
+                            if _dk in _local_keys:
+                                continue
+                            _val = _gsheet_sched_load(_dk)
+                            if _val:
+                                with _shv.open(SHELF_PATH) as _db:
+                                    _db[_dk] = _val
+                                _restored += 1
+                        st.cache_data.clear()
+                        st.success(f"✅ {_restored}개 경기 데이터를 구글시트에서 복원했습니다.")
+                    except Exception as _e:
+                        st.error(f"복원 중 오류: {_e}")
+
+            _bk_stat = st.session_state.get("_backup_status")
+            if _bk_stat:
+                _g_pal = _WLD_PALETTE["games"]
+                _ok_match = _bk_stat["local"] == _bk_stat["gsheet"]
+                _sync_color = "#16a34a" if _ok_match else "#d97706"
+                _sync_txt = "동기화됨 ✅" if _ok_match else "차이 있음 ⚠️"
+                st.markdown(
+                    _stat_card_row(
+                        _stat_card("로컬 저장", _bk_stat["local"], value_color="#1d4ed8",
+                                   bg="#eff6ff", border="#93c5fd", label_color="#3b82f6", min_width=90)
+                        + _stat_card("구글시트 백업", _bk_stat["gsheet"], value_color="#16a34a",
+                                     bg="#f0fdf4", border="#86efac", label_color="#16a34a", min_width=90)
+                        + _stat_card("상태", _sync_txt, value_color=_sync_color,
+                                     bg="#fffbeb", border="#fcd34d", label_color="#d97706",
+                                     min_width=110, value_size="0.95rem")
+                    ), unsafe_allow_html=True)
+                if not _ok_match:
+                    st.info("로컬과 구글시트 개수가 다릅니다. 위 **강제 복원**으로 맞출 수 있습니다 "
+                            "(구글시트가 원본이므로 로컬에만 있는 항목은 다음 저장 시 시트에도 반영됩니다).")
+
 
     _now = date.today()
     
@@ -7339,6 +7715,159 @@ elif page == "🏆 통합기록실":
             st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
                          column_config=_cc_cfg)
 
+    # ── [기능2] 참여 트렌드 대시보드 ──────────────────────────
+    st.markdown("---")
+    with st.expander("📈 참여 트렌드 대시보드", expanded=False):
+        _trd_year = st.selectbox(
+            "기준 연도",
+            [str(date.today().year - i) for i in range(4)],
+            key="trend_year",
+        )
+
+        # 1) 월별 참여 추이
+        st.markdown("##### 🗓️ 월별 참여 추이")
+        _mtrend = participation_monthly_trend(_trd_year)
+        if any(t["matches"] > 0 for t in _mtrend):
+            _mt_df = pd.DataFrame({
+                "월": [f"{t['month']}월" for t in _mtrend],
+                "참여 인원": [t["unique_players"] for t in _mtrend],
+                "경기 수": [t["matches"] for t in _mtrend],
+            }).set_index("월")
+            _tc1, _tc2 = st.columns(2)
+            with _tc1:
+                st.caption("월별 고유 참여 인원")
+                st.bar_chart(_mt_df["참여 인원"], height=200, color="#2563eb")
+            with _tc2:
+                st.caption("월별 경기 수")
+                st.bar_chart(_mt_df["경기 수"], height=200, color="#16a34a")
+        else:
+            st.info(f"📭 {_trd_year}년 경기 기록이 없습니다.")
+
+        # 2) 리그별 활성도
+        st.markdown("##### 🏆 리그별 활성도")
+        _lg_act = participation_league_activity(_trd_year)
+        if _lg_act:
+            _la_rows = []
+            for _la in _lg_act:
+                _lcolor = get_league_color(_la["league"])
+                _la_rows.append(
+                    f'<tr style="border-bottom:1px solid #f3f4f6;">'
+                    f'<td style="padding:8px 12px;font-weight:700;color:{_lcolor};font-size:0.9rem;">{_la["league"]}</td>'
+                    f'<td style="padding:8px 12px;text-align:center;color:#374151;font-size:0.88rem;">{_la["matches"]}경기</td>'
+                    f'<td style="padding:8px 12px;text-align:center;color:#374151;font-size:0.88rem;">{_la["players"]}명</td>'
+                    f'</tr>'
+                )
+            _la_html = (
+                '<table style="width:100%;border-collapse:collapse;">'
+                '<thead><tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">'
+                '<th style="padding:9px 12px;text-align:left;font-size:0.8rem;color:#6b7280;">리그</th>'
+                '<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">경기 수</th>'
+                '<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">참여 인원</th>'
+                '</tr></thead><tbody>' + "".join(_la_rows) + '</tbody></table>'
+            )
+            st.markdown(_scrollable_table(_la_html, min_width=320), unsafe_allow_html=True)
+        else:
+            st.info(f"📭 {_trd_year}년 리그 활동 기록이 없습니다.")
+
+        # 3) 최근 미참여 회원 (휴면 후보)
+        st.markdown("##### 💤 최근 미참여 회원 (휴면 후보)")
+        _inact_months = st.radio(
+            "기준 기간", [2, 3, 6],
+            format_func=lambda x: f"최근 {x}개월 미참여",
+            horizontal=True, key="inactive_months",
+        )
+        _inactive = participation_inactive_members(_inact_months)
+        if _inactive:
+            st.caption(f"최근 {_inact_months}개월간 경기 기록이 없는 회원 {len(_inactive)}명 "
+                       f"(오래된 순). 휴면 전환 검토에 참고하세요.")
+            _ia_rows = []
+            for _ia in _inactive:
+                _months_ago = _ia["days_ago"] // 30
+                _ia_rows.append(
+                    f'<tr style="border-bottom:1px solid #f3f4f6;">'
+                    f'<td style="padding:8px 12px;font-weight:700;color:#1a2e4a;font-size:0.9rem;">{_ia["player"]}</td>'
+                    f'<td style="padding:8px 12px;text-align:center;color:#6b7280;font-size:0.85rem;">{_ia["last_date"]}</td>'
+                    f'<td style="padding:8px 12px;text-align:right;color:#dc2626;font-weight:700;font-size:0.85rem;">{_months_ago}개월+ 전</td>'
+                    f'</tr>'
+                )
+            _ia_html = (
+                '<table style="width:100%;border-collapse:collapse;">'
+                '<thead><tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">'
+                '<th style="padding:9px 12px;text-align:left;font-size:0.8rem;color:#6b7280;">회원</th>'
+                '<th style="padding:9px 12px;text-align:center;font-size:0.8rem;color:#6b7280;">마지막 참여</th>'
+                '<th style="padding:9px 12px;text-align:right;font-size:0.8rem;color:#6b7280;">경과</th>'
+                '</tr></thead><tbody>' + "".join(_ia_rows) + '</tbody></table>'
+            )
+            st.markdown(_scrollable_table(_ia_html, min_width=340), unsafe_allow_html=True)
+        else:
+            st.success(f"🎉 최근 {_inact_months}개월간 모든 회원이 1회 이상 참여했습니다.")
+
+    # ── [기능4] 라이벌 매치업 예상 ────────────────────────────
+    st.markdown("---")
+    with st.expander("🔮 매치업 예상 (두 팀 전적 비교)", expanded=False):
+        st.caption("두 팀의 선수를 선택하면 과거 통산 전적을 기반으로 예상 승률을 보여줍니다. "
+                   "두 팀이 실제로 맞붙은 기록이 있으면 직접 전적도 표시됩니다.")
+        _mu_players = personal_get_all_players()
+        if len(_mu_players) < 2:
+            st.info("매치업 예상을 하려면 기록된 선수가 2명 이상 필요합니다.")
+        else:
+            _mu_c1, _mu_c2 = st.columns(2)
+            with _mu_c1:
+                st.markdown("**🔵 A팀**")
+                _team_a = st.multiselect("A팀 선수", _mu_players, key="mu_team_a",
+                                          max_selections=2, label_visibility="collapsed")
+            with _mu_c2:
+                st.markdown("**🔴 B팀**")
+                _team_b = st.multiselect("B팀 선수", _mu_players, key="mu_team_b",
+                                          max_selections=2, label_visibility="collapsed")
+
+            _overlap = set(_team_a) & set(_team_b)
+            if _team_a and _team_b and _overlap:
+                st.warning(f"⚠️ 양 팀에 같은 선수({', '.join(_overlap)})가 있습니다. 다르게 선택해주세요.")
+            elif _team_a and _team_b:
+                _pred = predict_matchup(_team_a, _team_b)
+                _ae, _be = _pred["a_expected"], _pred["b_expected"]
+                # 예상 승률 바
+                st.markdown("##### 📊 예상 승률")
+                st.markdown(
+                    f'<div style="display:flex;height:38px;border-radius:10px;overflow:hidden;'
+                    f'font-weight:900;color:#fff;font-size:0.95rem;margin:6px 0 4px;">'
+                    f'<div style="width:{_ae:.0f}%;background:#2563eb;display:flex;align-items:center;'
+                    f'justify-content:center;min-width:48px;">{_ae:.0f}%</div>'
+                    f'<div style="width:{_be:.0f}%;background:#dc2626;display:flex;align-items:center;'
+                    f'justify-content:center;min-width:48px;">{_be:.0f}%</div>'
+                    f'</div>', unsafe_allow_html=True)
+                _a_names = " · ".join(_team_a)
+                _b_names = " · ".join(_team_b)
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;'
+                    f'color:#374151;margin-bottom:10px;">'
+                    f'<span style="color:#2563eb;font-weight:700;">🔵 {_a_names}</span>'
+                    f'<span style="color:#dc2626;font-weight:700;">{_b_names} 🔴</span>'
+                    f'</div>', unsafe_allow_html=True)
+                st.caption(f"팀 통산 평균 승률 — A팀 {_pred['a_rate']:.1f}% vs B팀 {_pred['b_rate']:.1f}% "
+                           f"(예상 승률은 두 팀 평균 승률 비율로 환산한 참고값입니다)")
+
+                # 직접 전적
+                if _pred["h2h"]:
+                    _h = _pred["h2h"]
+                    st.markdown("##### ⚔️ 직접 맞대결 전적")
+                    st.markdown(
+                        _stat_card_row(
+                            _stat_card("A팀 승", _h["a_wins"], value_color="#2563eb",
+                                       bg="#eff6ff", border="#93c5fd", label_color="#3b82f6")
+                            + _stat_card("무", _h["draws"], value_color="#9ca3af",
+                                         bg="#fafafa", border="#d1d5db", label_color="#9ca3af")
+                            + _stat_card("B팀 승", _h["b_wins"], value_color="#dc2626",
+                                         bg="#fef2f2", border="#fca5a5", label_color="#dc2626")
+                            + _stat_card("총 경기", _h["games"], value_color="#7c3aed",
+                                         bg="#fdf4ff", border="#d8b4fe", label_color="#7c3aed")
+                        ), unsafe_allow_html=True)
+                else:
+                    st.info("두 팀이 실제로 맞붙은 기록은 아직 없습니다. (예상 승률은 통산 전적 기반 추정)")
+            else:
+                st.caption("양 팀에 선수를 선택하면 예상 결과가 표시됩니다.")
+
     # ── [F-6] 개인기록실로 바로 이동 ──────────────────────────
     st.markdown("---")
     st.markdown("#### 👤 선수 개인 기록 보기")
@@ -7490,6 +8019,21 @@ elif page == "👤 개인기록실":
                          min_width=90, value_size="1.1rem", value_margin_top="3px")
         )
         st.markdown(_stat_card_row(_cards, margin="4px 0 18px"), unsafe_allow_html=True)
+
+        # ── [기능3] 기록 카드 이미지 내보내기 ────────────────
+        _card_png = make_personal_card_png(_pr_name, _sum_year, _summ)
+        if _card_png:
+            st.download_button(
+                "🖼️ 기록 카드 이미지 저장 (카톡 공유용)",
+                data=_card_png,
+                file_name=f"{_pr_name}_{_sum_year}_기록카드.png",
+                mime="image/png",
+                key="pr_card_png",
+                use_container_width=True,
+            )
+        else:
+            st.caption("ℹ️ 이미지 카드 생성에 필요한 한글 폰트가 없어 이미지 저장은 비활성화되었습니다. "
+                       "(위 요약 카드를 스크린샷하여 공유하실 수 있습니다.)")
     else:
         st.info(f"📭 {_sum_year}년 {_pr_name}의 경기 기록이 없습니다.")
 
