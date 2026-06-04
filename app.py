@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.1.1
+TELA CLUB Random Match Generator v6.1.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3835,7 +3835,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.1.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.1.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -6063,14 +6063,20 @@ if _is_staff:
 # 회원명부: 일반 회원은 제한 열람, 운영진은 전체 관리 — 모두에게 노출
 _nav_groups.append(["👥 회원명부"])
 
-_all_pages = [p for _g in _nav_groups for p in _g]
-if "current_page" not in st.session_state or \
-        st.session_state.get("current_page") not in _all_pages:
-    st.session_state["current_page"] = _all_pages[0]
-# [F-6] 개인기록실 등에서의 페이지 이동 트리거 (권한 없는 페이지는 무시)
+_visible_pages = [p for _g in _nav_groups for p in _g]
+# [v6.1.2 치명버그 수정] current_page 유효성은 '역할 기반 목록'이 아니라
+# '고정 전체 페이지 목록'으로만 판단한다.
+#   기존엔 _all_pages(역할 의존)로 검사 → 권한 판정이 rerun 중 한 번이라도
+#   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
+#   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
+_ALL_KNOWN_PAGES = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드",
+                    "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부"]
+if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
+    st.session_state["current_page"] = "🏆 통합기록실"
+# [F-6] 개인기록실 등에서의 페이지 이동 트리거
 if "pr_pending_page" in st.session_state:
     _pp = st.session_state.pop("pr_pending_page")
-    if _pp in _all_pages:
+    if _pp in _ALL_KNOWN_PAGES:
         st.session_state["current_page"] = _pp
 
 st.sidebar.caption("메뉴")
@@ -6522,7 +6528,7 @@ if page == "📊 스코어보드":
 
 elif page == "📋 대진표생성":
 
-    if not is_sub_admin():
+    if get_app_user() and not is_sub_admin():
         st.warning("🔒 대진표 생성은 관리자·부관리자만 이용할 수 있습니다.")
         st.stop()
 
@@ -9246,7 +9252,7 @@ elif page == "👤 개인기록실":
 # 14-C. 페이지: 대진표 보관함 (v6.0.0 F2 — 지난 대진표 조회·검색)
 # ========================================================================
 elif page == "🗂️ 대진표보관함":
-    if not is_sub_admin():
+    if get_app_user() and not is_sub_admin():
         st.warning("🔒 대진표 보관함은 관리자·부관리자만 이용할 수 있습니다.")
         st.stop()
     st.markdown("## 🗂️ 대진표 보관함")
@@ -9375,7 +9381,7 @@ elif page == "👥 회원명부":
 # 16. 페이지: 이벤트 팀편성 (v5.8)
 # ========================================================================
 elif page == "🎯 이벤트 팀편성":
-    if not is_sub_admin():
+    if get_app_user() and not is_sub_admin():
         st.warning("🔒 이벤트 팀편성은 관리자·부관리자만 이용할 수 있습니다.")
         st.stop()
     st.markdown("""
