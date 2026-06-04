@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.1.2
+TELA CLUB Random Match Generator v6.2.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3835,7 +3835,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.1.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.2.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -3860,6 +3860,7 @@ RS_COLUMNS = [
     "deleted_at",   # 소프트 삭제: 삭제 시각. 비어있으면 정상 회원.
     "league",
     "grade",        # 회원 등급 1~5 (1=최상위, 5=입문)
+    "rejoin_date",  # 재입회일 (탈퇴 후 재가입; 비어있으면 일반 회원·탈퇴일/휴면 이력은 그대로 보존)
 ]
 AUDIT_COLUMNS = ["timestamp", "action", "member_id", "member_name", "detail"]
 TRASH_DAYS    = 90   # 휴지통 보관 기간 (일)
@@ -4596,6 +4597,11 @@ def dialog_detail(row):
         info_row("이메일",    row.get("email",""),    "#2563eb") +
         info_row("거주지",    row.get("region","")) +
         info_row("입회일",    row.get("join_date","")) +
+        (info_row("이전 탈퇴" if str(row.get("rejoin_date","") or "").strip() else "탈퇴일",
+                  row.get("leave_date",""), "#dc2626")
+         if str(row.get("leave_date","") or "").strip() else "") +
+        (info_row("♻️ 재입회", row.get("rejoin_date",""), "#0d9488")
+         if str(row.get("rejoin_date","") or "").strip() else "") +
         info_row("입회신청서", row.get("application","")),
         unsafe_allow_html=True)
 
@@ -4863,6 +4869,22 @@ def dialog_form(df, existing=None):
     )
     leave_date_str = st.session_state[ld_key]
 
+    # ─── 재입회일 (탈퇴 후 재가입 — v6.2) ───
+    #   입력하면 탈퇴일·휴면 이력은 그대로 두고 활동 회원으로 복귀 처리한다.
+    rj_str_existing = ""
+    if existing and existing.get("rejoin_date"):
+        rj_str_existing = str(existing["rejoin_date"]).strip()
+    rj_key = f"rejoin_date_input_{target_id}"
+    if rj_key not in st.session_state:
+        st.session_state[rj_key] = rj_str_existing
+    st.text_input(
+        "♻️ 재입회일 (탈퇴 후 재가입 시 입력 — 입회일·탈퇴일·휴면 이력은 그대로 보존)",
+        key=rj_key,
+        placeholder="YYYY-MM-DD 또는 20260101 (비우면 일반 회원)",
+        on_change=_normalize_date_input, args=(rj_key,)
+    )
+    rejoin_date_str = st.session_state[rj_key]
+
 
     # 행5: 입회신청서 / 메모
     c11,c12 = st.columns([1,2])
@@ -4910,6 +4932,9 @@ def dialog_form(df, existing=None):
         # 탈퇴일 위젯
         if f"leave_date_input_{target_id}" in st.session_state:
             del st.session_state[f"leave_date_input_{target_id}"]
+        # 재입회일 위젯 (v6.2)
+        if f"rejoin_date_input_{target_id}" in st.session_state:
+            del st.session_state[f"rejoin_date_input_{target_id}"]
 
     if cancel_clicked:
         _cleanup_dormant_session()
@@ -4955,6 +4980,13 @@ def dialog_form(df, existing=None):
         if ld_str and not validate_date(ld_str):
             errors.append("탈퇴일 형식이 올바르지 않습니다. (YYYY-MM-DD)")
 
+        # 5-B. 재입회일 — 정규화 후 형식 검증 (v6.2)
+        rj_str = normalize_date(rejoin_date_str.strip())
+        if rj_str and not validate_date(rj_str):
+            errors.append("재입회일 형식이 올바르지 않습니다. (YYYY-MM-DD)")
+        if rj_str and not ld_str:
+            errors.append("재입회일은 탈퇴 이력(탈퇴일)이 있는 회원에만 입력할 수 있습니다.")
+
         # 6. 휴면 기간 검증 + 정규화 + 겹침 검사
         clean_dorm_list = []
         for i, p in enumerate(dorm_list):
@@ -4982,7 +5014,8 @@ def dialog_form(df, existing=None):
 
         # [v5.9.11] 탈퇴일이 있으면 진행중 휴면의 종료일을 탈퇴일로 자동 설정
         #           (탈퇴일이 휴면 시작일 이후일 때만)
-        if ld_str:
+        # [v6.2] 재입회한 회원은 탈퇴일이 '이력'이므로 진행중 휴면을 강제 종료하지 않음
+        if ld_str and not rj_str:
             for _p in clean_dorm_list:
                 if not _p["end"] and ld_str >= _p["start"]:
                     _p["end"] = ld_str
@@ -5010,14 +5043,15 @@ def dialog_form(df, existing=None):
                 for p in clean_dorm_list
                 if p.get("start")
             )
-            if ld_str:
+            if ld_str and not rj_str:
                 final_cat = "탈퇴"
             elif has_ongoing:
                 final_cat = "휴면"
             elif had_dormant and cat == "휴면":
                 final_cat = "정회원"
             else:
-                final_cat = cat
+                # 재입회 회원이 '탈퇴'로 남아있으면 정회원으로 복귀
+                final_cat = "정회원" if (rj_str and cat == "탈퇴") else cat
 
             action_detail = (f"{'신규등록' if not existing else '수정'} → "
                              f"카테고리:{final_cat}, 연락처:{phone_normalized}")
@@ -5040,6 +5074,7 @@ def dialog_form(df, existing=None):
                 # league: 기존 값 보존 (수정 시 league가 지워지는 버그 방지)
                 "league":         existing.get("league", "") if existing else "",
                 "grade":          "" if grade_sel == "—" else grade_sel,
+                "rejoin_date":    rj_str,
             }
             with st.spinner("구글 시트에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None), action_detail=action_detail)
@@ -5106,12 +5141,8 @@ def render_roster_page():
                     st.error(f"오류: {_e}")
             return
 
-        # 인증 성공 → 제한 열람
-        _auth_col, _logout_col = st.columns([5, 1])
-        _auth_col.info(f"🔍 제한 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다.")
-        if _logout_col.button("🔒 나가기", key="guest_auth_logout"):
-            st.session_state["guest_auth_ok"] = False
-            st.rerun()
+        # 인증 성공 → 제한 열람 (v6.2: 카드형, 나가기 버튼 제거)
+        st.info("🔍 제한 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다.")
 
         with st.spinner("📡 구글 시트에서 데이터 불러오는 중…"):
             try:
@@ -5129,9 +5160,6 @@ def render_roster_page():
             return
 
         # ── 정렬: 운영진 상단 고정 → 정회원 이름순 → 휴면 하단 ──
-        # [수정] 기존엔 _sort_key 함수를 정의해 sort_values를 먼저 호출한 뒤
-        # _sort 컬럼으로 다시 정렬했음. 첫 호출은 결과가 즉시 덮어써지므로
-        # 무의미했고 _sort_key 함수도 사용되지 않았음. _sort 컬럼 정렬만 남김.
         df_guest["_sort"] = df_guest.apply(lambda r: (
             0 if r["category"] in OFFICER_CATS_G else (1 if r["category"] == "정회원" else 2),
             OFFICER_CATS_G.index(r["category"]) if r["category"] in OFFICER_CATS_G else 0,
@@ -5145,28 +5173,35 @@ def render_roster_page():
         if gq.strip():
             df_guest = df_guest[df_guest["name"].str.contains(gq.strip(), na=False)]
 
-        _g_fs = "font-size:12px"
-        hc = st.columns([1, 2, 2])
-        hc[0].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>구분</div>", unsafe_allow_html=True)
-        hc[1].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>성명</div>", unsafe_allow_html=True)
-        hc[2].markdown(f"<div style='{_g_fs};font-weight:700;color:#6b7280;border-bottom:2px solid #e2e8f0;padding:4px 0'>연락처</div>", unsafe_allow_html=True)
-
+        # ── 카드형 렌더링 (관리자 카드와 유사하되 구분·성명·연락처만) ──
+        _GROUP_LABEL = {0: "운영진", 1: "정회원", 2: "휴면"}
         _prev_group = None
         for _, row in df_guest.iterrows():
-            cat = row.get("category","")
-            # 그룹 구분선
+            cat = row.get("category", "")
             cur_group = 0 if cat in OFFICER_CATS_G else (1 if cat == "정회원" else 2)
-            if _prev_group is not None and cur_group != _prev_group:
-                st.markdown("<div style='border-bottom:2px solid #e2e8f0;margin:4px 0'></div>",
-                            unsafe_allow_html=True)
-            _prev_group = cur_group
-
-            rc = st.columns([1, 2, 2])
-            rc[0].markdown(f"<div style='padding:5px 0'>{badge(cat)}</div>", unsafe_allow_html=True)
-            rc[1].markdown(f"<div style='{_g_fs};padding:7px 0;font-weight:600;color:#1a2e4a'>{row.get('name','')}</div>", unsafe_allow_html=True)
-            phone_val = str(row.get('phone','') or '—')
-            rc[2].markdown(phone_cell(phone_val), unsafe_allow_html=True)
-            st.markdown("<div style='border-bottom:1px solid #f1f5f9'></div>", unsafe_allow_html=True)
+            if cur_group != _prev_group:
+                st.markdown(
+                    f"<div style='margin:10px 0 4px;font-size:12px;font-weight:800;"
+                    f"color:#94a3b8;letter-spacing:0.5px'>{_GROUP_LABEL[cur_group]}</div>",
+                    unsafe_allow_html=True)
+                _prev_group = cur_group
+            _gname  = str(row.get("name", "") or "")
+            _gphone = str(row.get("phone", "") or "—")
+            _gtel   = "" if _gphone in ("—", "", "nan") else _gphone
+            _phone_html = (f"<a href='tel:{_gtel}' style='color:#2563eb;text-decoration:none'>{_gphone}</a>"
+                           if _gtel else "<span style='color:#9ca3af'>—</span>")
+            st.markdown(
+                f"<div style='border:1px solid #e5e7eb;border-radius:10px;"
+                f"padding:9px 14px;margin-bottom:7px;background:#fff;"
+                f"box-shadow:0 1px 2px rgba(0,0,0,0.04)'>"
+                f"<div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px'>"
+                f"{badge(cat)}"
+                f"<span style='font-size:15px;font-weight:800;color:#0f172a'>{_gname}</span>"
+                f"{gender_html(str(row.get('gender','')))}"
+                f"</div>"
+                f"<div style='font-size:13px;color:#475569'>📞 {_phone_html}</div>"
+                f"</div>",
+                unsafe_allow_html=True)
         return
 
     # ── 로그인 상태: 기존 roster_app 기능 전체 ────────────────
@@ -5732,6 +5767,7 @@ def render_roster_page():
             _region    = str(row.get("region", "") or "—")
             _join      = str(row.get("join_date", "") or "—")
             _leave     = str(row.get("leave_date", "") or "—")
+            _rejoin    = str(row.get("rejoin_date", "") or "").strip()
             _phone     = str(row.get("phone", "") or "—")
             _app_val   = str(row.get("application", "") or "—")
             _app_color = {"Yes": "#16a34a", "No": "#dc2626"}.get(_app_val, "#9ca3af")
@@ -5766,7 +5802,10 @@ def render_roster_page():
             if _dorm_disp != "—":
                 _cells.append(f"<div>💤 <span style='color:#ca8a04'>{_dorm_disp}</span></div>")
             if _leave not in ("—", "", "nan"):
-                _cells.append(f"<div>🚪 <span style='color:#dc2626'>{_leave}</span></div>")
+                _leave_lbl = "이전 탈퇴" if _rejoin else "탈퇴"
+                _cells.append(f"<div>🚪 <span style='color:#dc2626'>{_leave_lbl} {_leave}</span></div>")
+            if _rejoin:
+                _cells.append(f"<div>♻️ <span style='color:#0d9488;font-weight:700'>재입회 {_rejoin}</span></div>")
             if _app_val in ("Yes", "No"):
                 _cells.append(f"<div>📝 신청 <b style='color:{_app_color}'>{_app_val}</b></div>")
             if _memo_disp != "—":
@@ -5788,6 +5827,9 @@ def render_roster_page():
                     f"<span style='font-size:16px;font-weight:800;color:#0f172a;letter-spacing:-0.3px'>{_name}</span>"
                     f"{gender_html(str(row.get('gender','')))}"
                     f"{_grade_html}"
+                    + (f"<span style='font-size:10px;color:#0f766e;background:#ccfbf1;"
+                       f"border:1px solid #5eead4;border-radius:6px;padding:1px 6px;font-weight:700'>"
+                       f"♻️ 재입회</span>" if _rejoin else "") +
                     f"</div>"
                     # 본문: 2열 그리드
                     f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;"
