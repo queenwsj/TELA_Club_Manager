@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.1.0
+TELA CLUB Random Match Generator v6.1.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3835,7 +3835,8 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-st.set_page_config(page_title="TELA CLUB v5.8", page_icon="🎾", layout="wide")
+APP_VERSION = "6.1.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
 
@@ -5073,9 +5074,11 @@ def render_roster_page():
     </div>""", unsafe_allow_html=True)
 
     # ── 비로그인: 본인 인증 후 제한 열람 모드 ───────────────────
-    if not _logged_in:
-        # 본인 인증 상태 확인
-        _authed_guest = st.session_state.get("guest_auth_ok", False)
+    # ── 일반 회원(로그인) 또는 비로그인 → 제한 열람 모드 ─────────
+    # 운영진(관리자·부관리자)만 전체 관리 화면. 그 외에는 제한 열람.
+    if not is_sub_admin():
+        # 로그인한 일반 회원은 이미 본인 인증됨 → 이름/연락처 재확인 불필요
+        _authed_guest = st.session_state.get("guest_auth_ok", False) or _logged_in
 
         if not _authed_guest:
             st.warning("🔒 회원명부는 등록된 본인 이름과 연락처를 입력해야 열람할 수 있습니다.\n\n운영진이 아닌 일반 회원은 제한된 열람만 가능합니다.")
@@ -5954,7 +5957,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v6.1.0")
+st.sidebar.caption(f"v{APP_VERSION}")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -6057,7 +6060,8 @@ _nav_groups = [
 ]
 if _is_staff:
     _nav_groups.append(["📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성"])
-    _nav_groups.append(["👥 회원명부"])
+# 회원명부: 일반 회원은 제한 열람, 운영진은 전체 관리 — 모두에게 노출
+_nav_groups.append(["👥 회원명부"])
 
 _all_pages = [p for _g in _nav_groups for p in _g]
 if "current_page" not in st.session_state or \
@@ -9364,9 +9368,6 @@ elif page == "🗂️ 대진표보관함":
 # 15. 페이지: 회원명부
 # ========================================================================
 elif page == "👥 회원명부":
-    if not is_sub_admin():
-        st.warning("🔒 회원명부는 관리자·부관리자만 이용할 수 있습니다.")
-        st.stop()
     render_roster_page()
 
 
