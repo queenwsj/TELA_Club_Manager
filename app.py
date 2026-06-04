@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.0.0
+TELA CLUB Random Match Generator v6.1.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -423,6 +423,99 @@ def user_change_pw(user_id: str, new_pw: str):
     if user_id in data:
         data[user_id]["pw_hash"] = _hash_pw(new_pw)
         user_save_all(data)
+
+
+# ── [v6.1] 회원(명부 cafe_id) 로그인 · 기본 비밀번호 · 강제 변경 ──────────
+DEFAULT_MEMBER_PW = "tela1234!"   # 회원 최초 비밀번호 (로그인 후 변경 필수)
+
+
+def _roster_cafe_map() -> dict:
+    """활성 회원(명부)의 {cafe_id소문자: (원본cafe_id, 이름)} 맵.
+    회원 로그인 시 아이디(cafe_id) 검증에 사용. 로드 실패 시 빈 dict."""
+    try:
+        df = load_df(include_deleted=False)   # 명부 DataFrame (정의는 하단 섹션)
+    except Exception:
+        return {}
+    out = {}
+    try:
+        for _, r in df.iterrows():
+            cid = str(r.get("cafe_id", "") or "").strip()
+            if cid:
+                out[cid.lower()] = (cid, str(r.get("name", "") or "").strip())
+    except Exception:
+        return {}
+    return out
+
+
+def app_authenticate(user_id: str, password: str) -> Optional[dict]:
+    """[v6.1] 통합 로그인.
+    ① users 저장소(관리자/부관리자/비번 변경한 회원) 우선 검증.
+    ② 저장소에 없으면 명부 cafe_id + 기본 비밀번호로 회원 인증.
+    회원 계정 id는 cafe_id 소문자로 정규화한다."""
+    uid = (user_id or "").strip()
+    if not uid:
+        return None
+    # ① 저장소 (원본 id: 관리자/부관리자 등)
+    r = user_authenticate(uid, password)
+    if r:
+        return r
+    # ② 저장소 (소문자 id: 비밀번호를 이미 변경한 회원)
+    if uid.lower() != uid:
+        r = user_authenticate(uid.lower(), password)
+        if r:
+            return r
+    # ③ 명부 회원 + 기본 비밀번호 (최초 로그인)
+    hit = _roster_cafe_map().get(uid.lower())
+    if hit and (password or "").strip() == DEFAULT_MEMBER_PW:
+        # 이미 저장소에 계정(=비번 변경 완료)이 있으면 기본 비번 로그인 차단
+        if uid.lower() in user_load_all():
+            return None
+        return {"id": uid.lower(), "role": "member", "name": hit[1] or hit[0]}
+    return None
+
+
+def current_user_must_change_pw() -> bool:
+    """현재 사용자가 기본 비밀번호 상태인지(=변경 필수) 여부.
+    - 저장소에 없는 회원(=최초 로그인) → True
+    - 저장소 계정이지만 pw가 기본 비번(tela1234!) → True  (부관리자 포함)
+    - 관리자 기본 비번(1223 등)은 여기 해당 없음."""
+    u = get_app_user()
+    if not u:
+        return False
+    rec = user_load_all().get(u.get("id", ""))
+    if rec is None:
+        return u.get("role") == "member"
+    return rec.get("pw_hash") == _hash_pw(DEFAULT_MEMBER_PW)
+
+
+def _render_force_pw_change(u: dict):
+    """[v6.1] 기본 비밀번호 사용자에게 강제 비밀번호 변경 화면을 표시."""
+    st.markdown("## 🔐 비밀번호 변경이 필요합니다")
+    st.info(f"**{u.get('name','')}**님, 처음 로그인하셨거나 기본 비밀번호(`{DEFAULT_MEMBER_PW}`)를 "
+            "사용 중입니다. 보안을 위해 새 비밀번호를 설정해야 계속 이용할 수 있습니다.")
+    _p1 = st.text_input("새 비밀번호", type="password", key="force_pw1",
+                        placeholder="6자 이상")
+    _p2 = st.text_input("새 비밀번호 확인", type="password", key="force_pw2")
+    if st.button("비밀번호 변경", type="primary", use_container_width=True,
+                 key="force_pw_btn"):
+        if len((_p1 or "").strip()) < 6:
+            st.error("비밀번호는 6자 이상이어야 합니다.")
+            return
+        if _p1 != _p2:
+            st.error("두 비밀번호가 일치하지 않습니다.")
+            return
+        if (_p1 or "").strip() == DEFAULT_MEMBER_PW:
+            st.error("기본 비밀번호와 다른 비밀번호를 설정하세요.")
+            return
+        data = user_load_all()
+        if u.get("id") in data:
+            user_change_pw(u["id"], _p1)
+        else:
+            user_add(u["id"], _p1, u.get("role", "member"), u.get("name", u["id"]))
+        st.session_state.pop("force_pw1", None)
+        st.session_state.pop("force_pw2", None)
+        st.success("✅ 비밀번호가 변경되었습니다. 잠시 후 메뉴로 이동합니다.")
+        st.rerun()
 
 
 # ========================================================================
@@ -5861,7 +5954,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v6.0.0")
+st.sidebar.caption("v6.1.0")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5874,7 +5967,7 @@ if "app_user" not in st.session_state:
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
 _u = get_app_user()
 if _u:
-    role_label = "🔑 관리자" if _u["role"] == "admin" else "🗝️ 부관리자"
+    role_label = {"admin": "🔑 관리자", "sub_admin": "🗝️ 부관리자"}.get(_u["role"], "👤 회원")
     st.sidebar.markdown(
         f'<div style="background:#d1fae5;border-radius:8px;padding:8px 10px;'
         f'font-size:0.8rem;color:#065f46;font-weight:700;margin-bottom:6px;">'
@@ -5898,7 +5991,7 @@ else:
             _id = st.session_state.get("login_id", "")
             _pw = st.session_state.get("login_pw", "")
             if _id and _pw:
-                _r = user_authenticate(_id, _pw)
+                _r = app_authenticate(_id, _pw)
                 if _r:
                     st.session_state["app_user"] = _r
                     _cookie_save_user(_r)
@@ -5910,7 +6003,7 @@ else:
                 else:
                     st.session_state["_login_fail"] = True
 
-        _lid = st.text_input("아이디", key="login_id", placeholder="영문+숫자 ID")
+        _lid = st.text_input("아이디", key="login_id", placeholder="카페ID (회원) 또는 운영진 ID")
         _lpw = st.text_input("비밀번호", type="password", key="login_pw",
                               placeholder="입력 후 엔터", on_change=_on_login_enter)
 
@@ -5919,7 +6012,7 @@ else:
             st.rerun()
 
         if st.button("로그인", key="login_btn", type="primary", use_container_width=True):
-            _result = user_authenticate(_lid, _lpw)
+            _result = app_authenticate(_lid, _lpw)
             if _result:
                 st.session_state["app_user"] = _result
                 _cookie_save_user(_result)
@@ -5934,22 +6027,59 @@ else:
 
         if st.session_state.pop("_login_fail", False):
             st.error("아이디 또는 비밀번호가 틀렸습니다.")
-        st.caption("비회원은 회원명부 열람(제한)만 가능합니다.")
+        st.caption(f"회원은 **카페ID**로 로그인합니다. 최초 비밀번호는 `{DEFAULT_MEMBER_PW}` 이며, "
+                   "로그인 후 비밀번호를 변경해야 합니다.")
+
+# ── [v6.1 수정1] 전체 열람: 로그인 필수 (등록 회원만) ────────
+if not _u:
+    st.sidebar.markdown("---")
+    st.markdown("## 🔐 로그인이 필요합니다")
+    st.info("테라클럽 앱은 **등록된 회원만** 이용할 수 있습니다. "
+            "사이드바에서 **카페ID**와 비밀번호로 로그인해주세요.\n\n"
+            f"- 최초 비밀번호: `{DEFAULT_MEMBER_PW}` (로그인 후 변경 필수)\n"
+            "- 카페ID가 회원명부에 등록돼 있어야 로그인할 수 있습니다. (문의: 운영진)")
+    st.stop()
+
+# ── [v6.1 수정1] 기본 비밀번호 사용자 → 강제 변경 (부관리자 포함) ──
+if current_user_must_change_pw():
+    _render_force_pw_change(_u)
+    st.stop()
 
 st.sidebar.markdown("---")
-# session_state key로 radio 상태 직접 관리 → 1클릭으로 즉시 반영
-_menu_opts = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "📋 대진표생성", "🗂️ 대진표보관함", "👥 회원명부", "🎯 이벤트 팀편성"]
-if "current_page" not in st.session_state:
-    st.session_state["current_page"] = "🏆 통합기록실"
-# [F-6] 페이지 이동 트리거: radio 위젯 생성 '이전'에 주입해야 안전
-# (위젯 인스턴스화 후 session_state[위젯key] 직접 수정 시 StreamlitAPIException)
+
+# ── [v6.1 수정2·3] 기능별 그룹 네비게이션 ────────────────────
+# 일반 회원: 통합기록실 / 개인기록실 / 스코어보드만.
+# 운영진(관리자·부관리자): 대진표생성·보관함·이벤트·회원명부 추가 노출.
+_is_staff = is_sub_admin()
+_nav_groups = [
+    ["🏆 통합기록실", "👤 개인기록실"],
+    ["📊 스코어보드"],
+]
+if _is_staff:
+    _nav_groups.append(["📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성"])
+    _nav_groups.append(["👥 회원명부"])
+
+_all_pages = [p for _g in _nav_groups for p in _g]
+if "current_page" not in st.session_state or \
+        st.session_state.get("current_page") not in _all_pages:
+    st.session_state["current_page"] = _all_pages[0]
+# [F-6] 개인기록실 등에서의 페이지 이동 트리거 (권한 없는 페이지는 무시)
 if "pr_pending_page" in st.session_state:
     _pp = st.session_state.pop("pr_pending_page")
-    if _pp in _menu_opts:
+    if _pp in _all_pages:
         st.session_state["current_page"] = _pp
-page = st.sidebar.radio("메뉴", _menu_opts,
-                         key="current_page",
-                         label_visibility="collapsed")
+
+st.sidebar.caption("메뉴")
+for _gi, _grp in enumerate(_nav_groups):
+    if _gi > 0:
+        st.sidebar.markdown("---")   # 그룹 구분 가로줄
+    for _opt in _grp:
+        _cur = (st.session_state["current_page"] == _opt)
+        if st.sidebar.button(_opt, key=f"nav_{_opt}", use_container_width=True,
+                             type=("primary" if _cur else "secondary")):
+            st.session_state["current_page"] = _opt
+            st.rerun()
+page = st.session_state["current_page"]
 st.sidebar.markdown("---")
 
 
@@ -6388,8 +6518,8 @@ if page == "📊 스코어보드":
 
 elif page == "📋 대진표생성":
 
-    if not is_logged_in():
-        st.warning("🔐 대진표생성은 로그인 후 이용할 수 있습니다. 사이드바에서 로그인해주세요.")
+    if not is_sub_admin():
+        st.warning("🔒 대진표 생성은 관리자·부관리자만 이용할 수 있습니다.")
         st.stop()
 
     # ── [1] 페어링 방식 ──────────────────────────────────────
@@ -9112,6 +9242,9 @@ elif page == "👤 개인기록실":
 # 14-C. 페이지: 대진표 보관함 (v6.0.0 F2 — 지난 대진표 조회·검색)
 # ========================================================================
 elif page == "🗂️ 대진표보관함":
+    if not is_sub_admin():
+        st.warning("🔒 대진표 보관함은 관리자·부관리자만 이용할 수 있습니다.")
+        st.stop()
     st.markdown("## 🗂️ 대진표 보관함")
     st.caption("저장된 지난 대진표를 날짜별로 다시 보거나, 회원 이름으로 검색합니다.")
 
@@ -9231,6 +9364,9 @@ elif page == "🗂️ 대진표보관함":
 # 15. 페이지: 회원명부
 # ========================================================================
 elif page == "👥 회원명부":
+    if not is_sub_admin():
+        st.warning("🔒 회원명부는 관리자·부관리자만 이용할 수 있습니다.")
+        st.stop()
     render_roster_page()
 
 
@@ -9238,6 +9374,9 @@ elif page == "👥 회원명부":
 # 16. 페이지: 이벤트 팀편성 (v5.8)
 # ========================================================================
 elif page == "🎯 이벤트 팀편성":
+    if not is_sub_admin():
+        st.warning("🔒 이벤트 팀편성은 관리자·부관리자만 이용할 수 있습니다.")
+        st.stop()
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">🎯</span>
