@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v5.9.11
+TELA CLUB Random Match Generator v6.0.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -18,12 +18,15 @@ TELA CLUB Random Match Generator v5.9.11
 11. 사이드바 로그인·메뉴 라우팅
 12. 페이지: 스코어보드
 13. 페이지: 대진표 생성
+    └─ [v6.0.0] F1 대진표 공유 이미지 카드 · F3 결원 부분 재배정(노쇼/취소)
 14. 페이지: 통합기록실 (전체 통계 + 참여 트렌드 + 매치업 예상 + 백업점검 + 개인기록실 이동)
+    └─ [v6.0.0] F4 기간 비교 분석 (참여·성적·리그 균형)
 14-B. 페이지: 개인기록실
     ├─ 회원명 검색 + 최근 검색 (F-4) + 종합 요약 헤더 (F-2)
     ├─ 14-B-1. 월별 소속 리그 타임라인 + 월별 성적 추이 그래프 (F-1)
     ├─ 14-B-2. 베스트페어 / 워스트페어 + CSV 내보내기 (F-5)
     └─ 14-B-3. 라이벌 전적 + 동반분석(F-3) + 최근맞대결(F-8) + 전체파트너CSV(F-7), 모바일 스크롤(F-10)
+14-C. 페이지: 대진표 보관함 [v6.0.0 F2] (지난 대진표 날짜별 조회·회원 이름 검색)
 15. 페이지: 회원명부
 """
 
@@ -3292,6 +3295,249 @@ def make_personal_card_png(player_name: str, year: str, summary: dict):
     return buf.getvalue()
 
 
+# ========================================================================
+# [v6.0.0] F1 대진표 공유 이미지 카드 · F3 결원 부분 재배정 헬퍼
+# ========================================================================
+import re as _re_v6
+_EMOJI_RE_V6 = _re_v6.compile(
+    "[\U0001F000-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF\uFE0F]"
+)
+
+
+def _strip_emoji_v6(s) -> str:
+    """PNG 폰트가 렌더 못 하는 이모지 제거 (Nanum/Noto는 이모지 미지원)."""
+    return _EMOJI_RE_V6.sub("", str(s)).strip()
+
+
+def _png_name_v6(code) -> str:
+    """PNG 카드용 표시 이름. 빈자리/중복은 '빈자리', 긴 이름은 절단."""
+    if str(code).strip() in ("★", "★빈자리") or "(중복)" in str(code):
+        return "빈자리"
+    s = _strip_emoji_v6(display_name(code))
+    return s if len(s) <= 9 else s[:9] + "…"
+
+
+def make_bracket_card_png(schedule, mode_label, date_key):
+    """[v6.0.0 F1] 대진표를 카톡·네이버카페 공유용 PNG 카드로 생성.
+    한글 폰트를 못 찾으면 None 반환 → 호출부에서 텍스트 복사로 폴백."""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+    if not schedule:
+        return None
+    f_title = _find_korean_font(38, bold=True)
+    f_sub   = _find_korean_font(20)
+    f_round = _find_korean_font(26, bold=True)
+    f_lg    = _find_korean_font(21, bold=True)
+    f_match = _find_korean_font(23)
+    if not all([f_title, f_sub, f_round, f_lg, f_match]):
+        return None
+
+    # 라운드 순서 보존
+    rounds, _seen = [], set()
+    for m in schedule:
+        r = str(m.get("round", ""))
+        if r not in _seen:
+            rounds.append(r); _seen.add(r)
+
+    # 표시 항목 구조화: (kind, text, meta)
+    items = []
+    for rnd in rounds:
+        items.append(("round", _strip_emoji_v6(rnd) or rnd, None))
+        cur = None
+        for m in schedule:
+            if str(m.get("round", "")) != rnd:
+                continue
+            lg = str(m.get("league", ""))
+            if lg != cur:
+                cur = lg
+                items.append(("league", lg, get_league_color(lg)))
+            t1 = list(m.get("team1", ())); t2 = list(m.get("team2", ()))
+            if len(t1) < 2 or len(t2) < 2:
+                continue
+            txt = (f"{_png_name_v6(t1[0])} · {_png_name_v6(t1[1])}"
+                   f"     vs     {_png_name_v6(t2[0])} · {_png_name_v6(t2[1])}")
+            items.append(("match", txt, _strip_emoji_v6(str(m.get("type", "")))))
+
+    W = 920
+    TOP, ROUND_H, LG_H, MATCH_H, BOTTOM = 124, 50, 38, 46, 56
+    body = sum(ROUND_H if k == "round" else LG_H if k == "league" else MATCH_H
+               for k, _, _ in items)
+    H = min(TOP + body + BOTTOM, 6000)
+
+    img = Image.new("RGB", (W, H), "#0f1e36")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, W, TOP], fill="#1a2e4a")
+    d.text((40, 26), "TELA CLUB 대진표", font=f_title, fill="#ffffff")
+    d.text((42, 78), f"{date_key}     ·     {_strip_emoji_v6(mode_label)}",
+           font=f_sub, fill="#9db4d4")
+
+    y = TOP + 8
+    for kind, text, meta in items:
+        if y > H - 28:
+            break
+        if kind == "round":
+            d.text((40, y + 10), text, font=f_round, fill="#fbbf24")
+            y += ROUND_H
+        elif kind == "league":
+            d.rounded_rectangle([40, y + 6, 58, y + 26], radius=4,
+                                fill=(meta or "#888888"))
+            d.text((70, y + 6), text, font=f_lg, fill="#cbd5e1")
+            y += LG_H
+        else:
+            d.text((70, y + 8), text, font=f_match, fill="#e5edf7")
+            if meta:
+                tb = d.textbbox((0, 0), meta, font=f_sub)
+                d.text((W - (tb[2] - tb[0]) - 36, y + 12), meta,
+                       font=f_sub, fill="#7d93b3")
+            y += MATCH_H
+
+    wm = "TELA CLUB"
+    wb = d.textbbox((0, 0), wm, font=f_sub)
+    d.text((W - (wb[2] - wb[0]) - 30, H - 36), wm, font=f_sub, fill="#5a7299")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _render_bracket_share_card(schedule, mode_label, date_key, key_prefix="bc"):
+    """[v6.0.0 F1] 대진표 PNG 카드 미리보기. 폰트 없으면 안내만 표시."""
+    import streamlit as _st
+    png = make_bracket_card_png(schedule, mode_label, date_key)
+    if not png:
+        _st.caption("ℹ️ 한글 폰트가 없어 대진표 이미지 카드는 비활성화되었습니다. "
+                    "(위 표를 스크린샷하거나 카카오톡 복사를 이용하세요.)")
+        return
+    open_key = f"_{key_prefix}_open_{date_key}"
+    if not _st.session_state.get(open_key):
+        if _st.button("🖼️ 대진표 이미지 카드 보기 (카톡·카페 공유용)",
+                      key=f"{key_prefix}_open_{date_key}", use_container_width=True):
+            _st.session_state[open_key] = True
+            _st.rerun()
+    else:
+        if _st.button("✖️ 카드 닫기", key=f"{key_prefix}_close_{date_key}",
+                      use_container_width=True):
+            _st.session_state[open_key] = False
+            _st.rerun()
+        _st.caption("💾 휴대폰: 아래 이미지를 **길게 눌러 '사진에 추가'**(또는 '이미지 저장')하면 "
+                    "카톡·네이버카페 공유용으로 저장됩니다.")
+        _st.image(png, use_container_width=True)
+
+
+def _render_player_substitution(schedule, date_key, is_fully_random, key_prefix="sub"):
+    """[v6.0.0 F3] 노쇼·당일 취소 시 한 선수를 전체 경기에서 일괄 교체/빈자리 처리.
+    매칭 알고리즘은 건드리지 않고, 해당 선수가 포함된 경기의 '자리'만 치환한다."""
+    import streamlit as _st
+    if not schedule:
+        _st.info("재배정할 대진표가 없습니다.")
+        return
+    # 현재 스케줄 등장 선수 코드 수집 (빈자리/중복 제외, 이름 기준 중복 제거)
+    codes, seen = [], set()
+    for m in schedule:
+        for p in list(m.get("team1", ())) + list(m.get("team2", ())):
+            b = base_name(p)
+            if (not b) or b in ("★", "★빈자리") or "(중복)" in str(p):
+                continue
+            if b not in seen:
+                seen.add(b); codes.append(p)
+    if not codes:
+        _st.info("교체할 선수가 없습니다.")
+        return
+
+    code_labels = {display_name(c): c for c in codes}
+    _st.caption("빠진 선수를 고르고, 대체 선수 이름을 넣거나 '빈자리(무승부) 처리'를 선택하세요. "
+                "선택한 선수가 포함된 **모든 경기**가 한 번에 바뀝니다. "
+                "(대진 전체를 다시 돌리지 않습니다.)")
+    _drop_label = _st.selectbox("빠질 선수 (노쇼/취소)", list(code_labels.keys()),
+                                key=f"{key_prefix}_drop_{date_key}")
+    _drop_code = code_labels.get(_drop_label, "")
+    _mode = _st.radio("처리 방식", ["다른 회원으로 교체", "빈자리(무승부) 처리"],
+                      key=f"{key_prefix}_mode_{date_key}", horizontal=True)
+    _new_name = ""
+    if _mode == "다른 회원으로 교체":
+        _new_name = _st.text_input(
+            "대체 선수 이름", key=f"{key_prefix}_name_{date_key}",
+            placeholder="예: 김철수 (빠진 선수와 같은 리그·성별로 자동 배정)")
+    _affected = sum(1 for m in schedule
+                    if any(base_name(p) == base_name(_drop_code)
+                           for p in list(m.get("team1", ())) + list(m.get("team2", ()))))
+    _st.caption(f"🔎 영향받는 경기: **{_affected}경기**")
+
+    if _st.button("✅ 교체 적용", key=f"{key_prefix}_apply_{date_key}",
+                  type="primary", use_container_width=True):
+        if _mode == "다른 회원으로 교체":
+            nn = _new_name.strip()
+            if not nn:
+                _st.error("대체 선수 이름을 입력하세요.")
+                return
+            new_code = str(_drop_code)[:2] + nn   # 같은 리그·성별 접두사 유지
+        else:
+            new_code = "★빈자리"
+        new_sched = []
+        for m in schedule:
+            mm = dict(m)
+            mm["team1"] = tuple(new_code if base_name(p) == base_name(_drop_code) else p
+                                for p in m.get("team1", ()))
+            mm["team2"] = tuple(new_code if base_name(p) == base_name(_drop_code) else p
+                                for p in m.get("team2", ()))
+            new_sched.append(mm)
+        # 기존 점수 보존
+        _ex = shelf_load(date_key) or {}
+        _ex_scores = _ex.get("scores", {})
+        _st.session_state["schedule"]    = new_sched
+        _st.session_state["rp_schedule"] = new_sched
+        _st.session_state["sb_schedule"] = new_sched
+        shelf_save(date_key, serialize_schedule(new_sched), _ex_scores, is_fully_random)
+        try:
+            records_commit(date_key, new_sched, _ex_scores)
+            _st.cache_data.clear()
+        except Exception:
+            pass
+        _dest = "빈자리(무승부)" if _mode != "다른 회원으로 교체" else display_name(new_code)
+        _st.success(f"✅ '{_drop_label}' → {_dest} 교체 완료 ({_affected}경기). "
+                    f"스코어보드·대진표가 갱신되었습니다.")
+        _st.rerun()
+
+
+# ========================================================================
+# [v6.0.0] F4 기간 비교 분석 헬퍼
+# ========================================================================
+def _winrate_to_float_v6(rate_str) -> float:
+    """'52.3%' → 52.3, '-' → 0.0"""
+    try:
+        return float(str(rate_str).replace("%", "").strip())
+    except Exception:
+        return 0.0
+
+
+def season_compare_summary(period_type: str, val_a: str, val_b: str) -> dict:
+    """[v6.0.0 F4] 두 기간(val_a=기준, val_b=비교)의 집계 요약·증감 비교.
+    period_type: 'monthly' 또는 'yearly'. records_get_df를 재사용한다.
+    반환: {a:{...}, b:{...}, league_balance_a:[...], league_balance_b:[...]}"""
+    def _agg(df):
+        if df is None or df.empty:
+            return {"players": 0, "games": 0, "wins": 0, "draws": 0,
+                    "losses": 0, "leagues": {}}
+        games = int(df["출전경기"].sum())
+        # 경기 수는 (출전 합/4)로 근사 — 한 경기에 4명 출전
+        return {
+            "players": int(df["이름"].nunique()),
+            "games":   games,
+            "wins":    int(df["승"].sum()),
+            "draws":   int(df["무"].sum()),
+            "losses":  int(df["패"].sum()),
+            "leagues": {lg: int(g["출전경기"].sum())
+                        for lg, g in df.groupby("리그")},
+        }
+
+    df_a = records_get_df(period_type, val_a)
+    df_b = records_get_df(period_type, val_b)
+    return {"a": _agg(df_a), "b": _agg(df_b), "df_a": df_a, "df_b": df_b}
+
+
 @st.cache_data(ttl=60)
 def personal_partner_vs_rival(player_name: str, rival_name: str,
                               filter_value: str) -> list:
@@ -5615,7 +5861,7 @@ def render_roster_page():
 
 # ── 네비게이션 ───────────────────────────────────────────────
 st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
-st.sidebar.caption("v5.9.11")
+st.sidebar.caption("v6.0.0")
 st.sidebar.markdown("---")
 
 # ── 최초 관리자 계정 보장 ────────────────────────────────────
@@ -5692,7 +5938,7 @@ else:
 
 st.sidebar.markdown("---")
 # session_state key로 radio 상태 직접 관리 → 1클릭으로 즉시 반영
-_menu_opts = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "📋 대진표생성", "👥 회원명부", "🎯 이벤트 팀편성"]
+_menu_opts = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "📋 대진표생성", "🗂️ 대진표보관함", "👥 회원명부", "🎯 이벤트 팀편성"]
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "🏆 통합기록실"
 # [F-6] 페이지 이동 트리거: radio 위젯 생성 '이전'에 주입해야 안전
@@ -6950,6 +7196,13 @@ elif page == "📋 대진표생성":
                         st.session_state["_adj_success_msg"] = f"✅ #{_sel_mi+1} 적용 완료{_excl_msg}"
                         st.rerun()
 
+            # ── [v6.0.0 F3] 결원 부분 재배정 (노쇼/당일 취소) ──
+            if is_admin() and not _is_sched_locked:
+                with st.expander("🔁 결원 교체 (노쇼·당일 취소 부분 재배정)", expanded=False):
+                    _cur_sched_sub = st.session_state.get("schedule", schedule)
+                    _render_player_substitution(_cur_sched_sub, rp_key_run,
+                                                IS_FULLY_RANDOM_run, key_prefix="sub1")
+
             # ── 카카오톡 복사 버튼 (5번 기능) ─────────────────
             # [다이어트] _json2 별칭 제거 - 상단의 json 모듈 직접 사용
 
@@ -7022,6 +7275,12 @@ function showMsg() {{
 </script>
 """
             st.components.v1.html(kakao_html, height=55)
+
+            # ── [v6.0.0 F1] 대진표 공유 이미지 카드 ────────────
+            st.markdown("---")
+            st.markdown("**🖼️ 대진표 이미지 공유**")
+            st.caption("텍스트 복사 대신 한 장짜리 이미지로 카톡·네이버카페에 공유할 수 있습니다.")
+            _render_bracket_share_card(schedule, mode_label, rp_key_run, key_prefix="bc1")
 
             # ── QR코드 (8번 기능) ──────────────────────────────
             st.markdown("---")
@@ -7333,6 +7592,19 @@ function showMsg() {{
                             _excl_msg2 = f" (제외: {', '.join(_new_excl2)})" if _new_excl2 else ""
                             st.session_state["_adj_success_msg"] = f"✅ #{_sel_mi2+1} 적용 완료{_excl_msg2}"
                             st.rerun()
+
+                # ── [v6.0.0 F3] 결원 부분 재배정 (노쇼/당일 취소) ──
+                if is_admin() and not _is_sched_locked2:
+                    with st.expander("🔁 결원 교체 (노쇼·당일 취소 부분 재배정)", expanded=False):
+                        _cur_sched_sub2 = st.session_state.get("schedule", schedule)
+                        _render_player_substitution(_cur_sched_sub2, rp_key_run,
+                                                    IS_FULLY_RANDOM_run, key_prefix="sub2")
+
+                # ── [v6.0.0 F1] 대진표 공유 이미지 카드 ────────────
+                st.markdown("---")
+                st.markdown("**🖼️ 대진표 이미지 공유**")
+                st.caption("한 장짜리 이미지로 카톡·네이버카페에 공유할 수 있습니다.")
+                _render_bracket_share_card(schedule, mode_label, rp_key_run, key_prefix="bc2")
             with tab2:
                 st.subheader("선수별 출전 현황")
                 st.dataframe(df_display, use_container_width=True, height=700)
@@ -8143,6 +8415,76 @@ elif page == "🏆 통합기록실":
             else:
                 st.caption("양 팀에 선수를 선택하면 예상 결과가 표시됩니다.")
 
+    # ── [v6.0.0 F4] 기간 비교 분석 ────────────────────────────
+    with st.expander("📊 기간 비교 분석 (참여·성적·리그 균형)", expanded=False):
+        st.caption("두 기간을 골라 참여 인원·경기 수·승/무/패·리그별 참여 분포를 비교합니다. "
+                   "(자동 리그 배정의 '승격 비율'을 정할 때 근거 자료로 쓸 수 있습니다.)")
+        _av = records_available_periods()
+        _cmp_type = st.radio("비교 단위", ["월간", "연간"], key="f4_type", horizontal=True)
+        _opts = _av["months"] if _cmp_type == "월간" else _av["years"]
+        if len(_opts) < 2:
+            st.info("비교하려면 기록이 있는 기간이 2개 이상 필요합니다.")
+        else:
+            _ft = "monthly" if _cmp_type == "월간" else "yearly"
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _pa = st.selectbox("기준 기간 (A)", _opts, index=0, key="f4_a")
+            with _c2:
+                _pb = st.selectbox("비교 기간 (B)", _opts, index=1, key="f4_b")
+            if _pa == _pb:
+                st.warning("서로 다른 두 기간을 선택하세요.")
+            else:
+                with st.spinner("집계 중…"):
+                    _res = season_compare_summary(_ft, _pa, _pb)
+                _A, _B = _res["a"], _res["b"]
+
+                def _delta(cur, prev):
+                    d = cur - prev
+                    if d > 0:   return f"▲ {d}"
+                    if d < 0:   return f"▼ {abs(d)}"
+                    return "—"
+
+                _ga, _gb = _A["games"], _B["games"]
+                _ma, _mb = _ga // 4, _gb // 4   # 4인 1경기 근사
+                _ta = _A["wins"] + _A["draws"] + _A["losses"]
+                _tb = _B["wins"] + _B["draws"] + _B["losses"]
+                _ra = (_A["wins"] / _ta * 100) if _ta else 0.0
+                _rb = (_B["wins"] / _tb * 100) if _tb else 0.0
+
+                st.markdown(f"##### {_pa} (A)  vs  {_pb} (B)")
+                _m1, _m2, _m3 = st.columns(3)
+                _m1.metric("참여 인원", f"{_A['players']}명", _delta(_A["players"], _B["players"]))
+                _m2.metric("추정 경기 수", f"{_ma}경기", _delta(_ma, _mb))
+                _m3.metric("평균 승률", f"{_ra:.1f}%",
+                           f"{_ra - _rb:+.1f}%p" if _tb else None)
+                st.caption(f"A: {_A['wins']}승 {_A['draws']}무 {_A['losses']}패 · "
+                           f"B: {_B['wins']}승 {_B['draws']}무 {_B['losses']}패 "
+                           f"(승/무/패는 전체 선수 합계)")
+
+                # 리그별 참여 분포 (출전 횟수 기준)
+                _all_lgs = list(dict.fromkeys(
+                    list(_A["leagues"].keys()) + list(_B["leagues"].keys())))
+                if _all_lgs:
+                    st.markdown("**🏷️ 리그별 참여 분포 (출전 횟수)**")
+                    _lg_rows = []
+                    for _lg in _all_lgs:
+                        _va = _A["leagues"].get(_lg, 0)
+                        _vb = _B["leagues"].get(_lg, 0)
+                        _share_a = (_va / _ga * 100) if _ga else 0.0
+                        _share_b = (_vb / _gb * 100) if _gb else 0.0
+                        _lg_rows.append({
+                            "리그": _lg,
+                            f"A({_pa})": _va,
+                            "A 비중": f"{_share_a:.0f}%",
+                            f"B({_pb})": _vb,
+                            "B 비중": f"{_share_b:.0f}%",
+                            "증감": _delta(_va, _vb),
+                        })
+                    st.dataframe(pd.DataFrame(_lg_rows), use_container_width=True,
+                                 hide_index=True)
+                st.caption("ℹ️ '추정 경기 수'는 출전 횟수 합계를 4로 나눈 근사값입니다 "
+                           "(한 경기 4명 기준).")
+
     # ── [F-6] 개인기록실로 바로 이동 ──────────────────────────
     st.markdown("---")
     st.markdown("#### 👤 선수 개인 기록 보기")
@@ -8764,6 +9106,125 @@ elif page == "👤 개인기록실":
                         f"{_rec_w}승 {_rec_d}무 {_rec_l}패 "
                         f"(왼쪽이 최신 경기입니다)"
                     )
+
+
+# ========================================================================
+# 14-C. 페이지: 대진표 보관함 (v6.0.0 F2 — 지난 대진표 조회·검색)
+# ========================================================================
+elif page == "🗂️ 대진표보관함":
+    st.markdown("## 🗂️ 대진표 보관함")
+    st.caption("저장된 지난 대진표를 날짜별로 다시 보거나, 회원 이름으로 검색합니다.")
+
+    _arch_keys = shelf_list_dates()
+    if not _arch_keys:
+        st.info("📭 저장된 대진표가 없습니다. 대진표를 생성하면 여기에 보관됩니다.")
+    else:
+        def _arch_label(k):
+            base = str(k)[:10]
+            suffix = str(k)[10:]
+            return _date_with_weekday(base) + (suffix if suffix else "")
+
+        _arch_tab1, _arch_tab2 = st.tabs(["📅 날짜별 조회", "🔍 회원 이름 검색"])
+
+        # ── 날짜별 조회 ──────────────────────────────────────
+        with _arch_tab1:
+            _sel_key = st.selectbox(
+                "대진표 선택", _arch_keys,
+                format_func=_arch_label, key="arch_date_sel")
+            if _sel_key:
+                _loaded = shelf_load(_sel_key)
+                if not _loaded or not _loaded.get("schedule"):
+                    st.warning("이 대진표를 불러올 수 없습니다 (데이터 없음/손상).")
+                else:
+                    _a_sched = deserialize_schedule(_loaded["schedule"])
+                    _a_scores = _loaded.get("scores", {}) or {}
+                    _a_fr = bool(_loaded.get("is_fully_random", False))
+                    _a_mode = "완전 랜덤" if _a_fr else "조건부 랜덤"
+                    _a_locked = bool(_loaded.get("is_locked", False))
+
+                    _a_lgs = list(dict.fromkeys(m["league"] for m in _a_sched))
+                    _a_df = _build_matches_df(_a_sched)
+                    _lock_badge = " · 🔒잠금" if _a_locked else ""
+                    st.markdown(f"#### 📋 {_arch_label(_sel_key)}  [{_a_mode}]{_lock_badge}")
+
+                    # 점수 입력 현황 요약
+                    _n_scored = sum(1 for v in _a_scores.values()
+                                    if isinstance(v, dict) and "score1" in v)
+                    st.caption(f"총 {len(_a_sched)}경기 · 점수 입력 {_n_scored}경기")
+
+                    # 점수가 있으면 대진표에 결과 열 추가
+                    if _a_scores:
+                        _res_col = []
+                        for _i in range(len(_a_sched)):
+                            _sc = _a_scores.get(str(_i), {})
+                            if _sc and "score1" in _sc and "score2" in _sc:
+                                _res_col.append(f"{_sc['score1']} : {_sc['score2']}")
+                            else:
+                                _res_col.append("—")
+                        _a_df = _a_df.copy()
+                        _a_df["결과"] = _res_col
+
+                    _render_match_table(_a_df, _a_lgs, "보관함", _a_mode,
+                                        {}, schedule=_a_sched, date_key=_sel_key)
+
+                    # 공유 이미지 카드
+                    st.markdown("---")
+                    st.markdown("**🖼️ 대진표 이미지 공유**")
+                    _render_bracket_share_card(_a_sched, _a_mode, _sel_key,
+                                               key_prefix="bcA")
+
+                    # 관리자 삭제
+                    if is_admin():
+                        st.markdown("---")
+                        with st.expander("🗑️ 관리자: 이 대진표 삭제", expanded=False):
+                            st.warning("삭제하면 보관함과 구글시트에서 영구 제거됩니다. "
+                                       "(통합기록실 집계는 별도 — 필요 시 재집계 하세요.)")
+                            _del_ok = st.checkbox(
+                                f"'{_arch_label(_sel_key)}' 대진표를 삭제하겠습니다.",
+                                key="arch_del_confirm")
+                            if st.button("영구 삭제", key="arch_del_btn",
+                                         disabled=not _del_ok, type="primary"):
+                                shelf_delete(_sel_key)
+                                st.cache_data.clear()
+                                st.success(f"✅ '{_arch_label(_sel_key)}' 삭제 완료.")
+                                st.rerun()
+
+        # ── 회원 이름 검색 ───────────────────────────────────
+        with _arch_tab2:
+            st.caption("이름을 입력하면 최근 대진표(최대 60건)에서 그 회원이 출전한 경기를 찾아줍니다.")
+            _q = st.text_input("회원 이름", key="arch_search_name",
+                               placeholder="예: 홍길동 (입력 후 엔터)").strip()
+            if _q:
+                _scan_keys = _arch_keys[:60]
+                _hits = []
+                with st.spinner(f"{len(_scan_keys)}건 검색 중…"):
+                    for _k in _scan_keys:
+                        _ld = shelf_load(_k)
+                        if not _ld or not _ld.get("schedule"):
+                            continue
+                        _sd = deserialize_schedule(_ld["schedule"])
+                        _scr = _ld.get("scores", {}) or {}
+                        for _mi, _m in enumerate(_sd):
+                            _allp = list(_m.get("team1", ())) + list(_m.get("team2", ()))
+                            _names = [display_name(p) for p in _allp]
+                            if any(_q in str(n) for n in _names):
+                                _sc = _scr.get(str(_mi), {})
+                                _res = (f"{_sc['score1']}:{_sc['score2']}"
+                                        if _sc and "score1" in _sc else "—")
+                                _t1 = " · ".join(display_name(p) for p in _m.get("team1", ()))
+                                _t2 = " · ".join(display_name(p) for p in _m.get("team2", ()))
+                                _hits.append({
+                                    "날짜": _arch_label(_k),
+                                    "라운드": _m.get("round", ""),
+                                    "리그": _m.get("league", ""),
+                                    "팀1": _t1, "팀2": _t2,
+                                    "결과": _res,
+                                })
+                if _hits:
+                    st.success(f"🔎 '{_q}' 출전 경기 {len(_hits)}건")
+                    st.dataframe(pd.DataFrame(_hits), use_container_width=True, height=520)
+                else:
+                    st.info(f"'{_q}' 회원의 경기를 최근 대진표에서 찾지 못했습니다.")
 
 
 # ========================================================================
