@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.2.3
+TELA CLUB Random Match Generator v6.3.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -381,13 +381,33 @@ def user_save_all(data: dict):
     # 구글시트 동기화
     try:
         _gsheet_users_save(data)
+    except Exception as e:
+        _app_log_error("계정/권한 구글시트 저장 실패", e)
+
+
+_BG_ERRORS = []   # [v6.3] 백그라운드 스레드 오류 큐 (세션 접근 불가 → 메인 스레드가 비움)
+
+
+def _app_log_error(context: str, exc=None) -> None:
+    """[v6.3] 조용히 삼키던 예외를 세션 오류 로그(_gsheet_errors)에 기록.
+    앱은 중단하지 않고, 관리자 화면의 '시스템 오류 로그'에서 확인할 수 있다."""
+    try:
+        _ts = datetime.now().strftime("%m-%d %H:%M:%S")
     except Exception:
-        pass
+        _ts = "?"
+    _msg = f"[{_ts}] {context}" + (f": {type(exc).__name__}: {exc}" if exc is not None else "")
+    _log = st.session_state.setdefault("_gsheet_errors", [])
+    _log.append(_msg)
+    del _log[:-100]   # 최근 100건만 유지
+
 
 def user_ensure_admin():
-    """secrets의 ADMIN_ID/ADMIN_PASSWORD로 최초 관리자 계정 보장"""
+    """secrets의 ADMIN_ID/ADMIN_PASSWORD로 최초 관리자 계정 보장.
+    [v6.3] ADMIN_PASSWORD가 없으면 기본값(1223)으로 만들지 않고 건너뛴다(보안)."""
     admin_id = st.secrets.get("ADMIN_ID", "admin")
-    admin_pw = st.secrets.get("ADMIN_PASSWORD", "1223")
+    admin_pw = st.secrets.get("ADMIN_PASSWORD")   # 기본값 없음
+    if not admin_pw:
+        return   # secrets 미설정 → 기본 비번 관리자 계정을 생성하지 않음
     data = user_load_all()
     if admin_id not in data:
         data[admin_id] = {
@@ -3845,7 +3865,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.2.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.3.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -3854,11 +3874,10 @@ st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", lay
 # 09-B. 회원명부 설정 · CSS · 세션 상태
 # ========================================================================
 
-# ─────────────────────────────────────────────────────────
-# 비밀번호: 우선 st.secrets에서 읽고, 없으면 기본값(개발용)
+# 비밀번호: st.secrets에서만 읽음 (기본값 없음 — 미설정 시 인증 자체가 차단됨)
 # 운영 시 반드시 .streamlit/secrets.toml 또는 Streamlit Cloud Secrets에 등록:
-#   ADMIN_PASSWORD = "원하는비번"  (Secrets에서 ADMIN_PASSWORD 키 사용)
-RS_ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "1223")
+#   ADMIN_PASSWORD = "원하는비번"
+RS_ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
 RS_SCOPES = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
@@ -4519,7 +4538,10 @@ def dialog_pw(target):
     pw = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
     col_ok, col_cancel = st.columns(2)
     if col_ok.button("✅ 확인", type="primary", use_container_width=True):
-        if pw == RS_ADMIN_PASSWORD:
+        if not RS_ADMIN_PASSWORD:
+            st.error("⚠️ 관리자 비밀번호가 설정되지 않았습니다. "
+                     "Streamlit Secrets에 ADMIN_PASSWORD를 등록해야 사용할 수 있습니다.")
+        elif pw == RS_ADMIN_PASSWORD:
             # 인증 성공 → 세션 전체 인증 플래그 설정
             st.session_state.admin_authed = True
             st.session_state.auth_time    = datetime.now()   # 타임아웃 기산점
@@ -5276,15 +5298,29 @@ def render_roster_page():
     # ── 계정 관리 탭 (관리자 전용) ──────────────────────────
     if _is_admin:
         with st.expander("🔑 계정 관리 (관리자 전용)", expanded=False):
+            # [v6.3] 시스템 오류 로그 (조용히 삼키던 저장 실패 등)
+            while _BG_ERRORS:
+                st.session_state.setdefault("_gsheet_errors", []).append(_BG_ERRORS.pop(0))
+            _sys_errs = st.session_state.get("_gsheet_errors", [])
+            if _sys_errs:
+                st.error(f"⚠️ 시스템 오류 로그 {len(_sys_errs)}건 — 최근 항목 확인")
+                with st.expander(f"오류 로그 보기 ({len(_sys_errs)}건)", expanded=False):
+                    for _e in _sys_errs[-30:]:
+                        st.caption(_e)
+                    if st.button("로그 비우기", key="acct_clear_errlog"):
+                        st.session_state["_gsheet_errors"] = []
+                        st.rerun()
+            st.markdown("---")
             all_users = user_load_all()
             st.markdown(f"**등록 계정 ({len(all_users)}개)**")
 
             # 계정 목록
+            _ROLE_KO = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}
             _admin_id = st.secrets.get("ADMIN_ID", "admin")
             for uid, uinfo in list(all_users.items()):
                 ucols = st.columns([2, 2, 1, 1, 1])
                 ucols[0].write(uid)
-                ucols[1].write(f"{uinfo.get('name','')} ({'관리자' if uinfo.get('role')=='admin' else '부관리자'})")
+                ucols[1].write(f"{uinfo.get('name','')} ({_ROLE_KO.get(uinfo.get('role',''), uinfo.get('role',''))})")
                 # 비밀번호 변경
                 new_pw_key = f"chpw_{uid}"
                 new_pw = ucols[2].text_input("새PW", key=new_pw_key,
@@ -6245,13 +6281,19 @@ if page == "📊 스코어보드":
     st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
 
     # 스코어보드 열람은 누구나 가능, 점수 입력은 부관리자 이상 (_can_edit로 제어)
-    # 구글시트 동기화 오류 표시 (디버깅용, 관리자만)
+    # [v6.3] 백그라운드 스레드 오류를 세션 로그로 흡수
+    while _BG_ERRORS:
+        st.session_state.setdefault("_gsheet_errors", []).append(_BG_ERRORS.pop(0))
+    # 구글시트 동기화 오류 표시 (관리자만, 비우지 않고 '계정 관리'에서도 조회 가능)
     if is_admin():
-        _errs = st.session_state.pop("_gsheet_errors", [])
+        _errs = st.session_state.get("_gsheet_errors", [])
         if _errs:
-            with st.expander(f"⚠️ 구글시트 동기화 오류 {len(_errs)}건", expanded=True):
-                for _e in _errs:
+            with st.expander(f"⚠️ 시스템 오류 로그 {len(_errs)}건", expanded=False):
+                for _e in _errs[-30:]:
                     st.error(_e)
+                if st.button("로그 비우기", key="sb_clear_errlog"):
+                    st.session_state["_gsheet_errors"] = []
+                    st.rerun()
 
     today_str  = kst_today_str("%Y-%m-%d")
     saved_keys = shelf_list_dates()
@@ -6390,9 +6432,19 @@ if page == "📊 스코어보드":
     # 부관리자 이상 편집 가능, 잠금 중이면 불가
     _can_edit = is_sub_admin() and not _sb_locked
 
+    # [v6.3] 최근 점수 입력자·시각 (audit) 표시
+    _audit = [(v.get("at", ""), v.get("by", "")) for v in scores.values()
+              if isinstance(v, dict) and v.get("by")]
+    if _audit:
+        _latest = max(_audit)
+        st.caption(f"🖊️ 최근 점수 입력: {_latest[1]} · {_latest[0]}")
+
     def _save_score(idx, s1, s2):
         """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
-        scores[str(idx)] = {"score1": int(s1), "score2": int(s2)}
+        # [v6.3] 수정자·시각 기록 (audit)
+        _editor = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
+        scores[str(idx)] = {"score1": int(s1), "score2": int(s2),
+                            "by": _editor, "at": datetime.now().strftime("%m-%d %H:%M")}
         st.session_state["sb_scores"] = scores
         st.session_state[f"locked_{idx}"] = True
         st.session_state.pop(f"editing_{idx}", None)
@@ -6410,8 +6462,9 @@ if page == "📊 스코어보드":
             def _bg_commit(_dk, _sched, _sc):
                 try:
                     records_commit(_dk, _sched, dict(_sc))
-                except Exception:
-                    pass
+                except Exception as _e:
+                    # 스레드에서는 st.session_state 접근 불가 → 모듈 큐에 기록
+                    _BG_ERRORS.append(f"records_commit 백그라운드 실패 (key={_dk}): {_e}")
             _threading.Thread(
                 target=_bg_commit,
                 args=(selected_key, list(_cur_schedule), dict(scores)),
