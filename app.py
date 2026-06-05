@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.2.2
+TELA CLUB Random Match Generator v6.2.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3845,7 +3845,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.2.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.2.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -5828,6 +5828,15 @@ def render_roster_page():
                     "border:1px solid #fdba74;border-radius:6px;padding:1px 6px;"
                     "font-weight:700;margin-left:4px'>🔑 관리자</span>")
         return ""
+
+    def _staff_icon_for(cafe_id_val):
+        """PC 표용: 텍스트 없이 아이콘만(줄바꿈 방지). 마우스 올리면 권한 표시."""
+        _r = _role_by_cid.get(str(cafe_id_val or "").strip().lower())
+        if _r == "sub_admin":
+            return "<span title='부관리자' style='margin-left:3px'>🗝️</span>"
+        if _r == "admin":
+            return "<span title='관리자' style='margin-left:3px'>🔑</span>"
+        return ""
     
     if view_df.empty:
         st.info("🎾 해당 조건의 회원이 없습니다.")
@@ -6020,7 +6029,7 @@ def render_roster_page():
                 f"<div style='padding:5px 0'>{grade_badge(gd_val)}</div>",
                 unsafe_allow_html=True
             )
-            rc[col_offset+4].markdown(cell(str(row.get('name','')) + _staff_badge_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
+            rc[col_offset+4].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
             rc[col_offset+5].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
             rc[col_offset+6].markdown(cell(by_val), unsafe_allow_html=True)
             rc[col_offset+7].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True)
