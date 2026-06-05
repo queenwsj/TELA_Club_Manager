@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.3.2
+TELA CLUB Random Match Generator v6.3.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -143,6 +143,42 @@ def _get_tab(sheet_name: str, headers: list):
         return None
 
 
+_LAST_PRUNE = {}   # [v6.3.3] 시트별 마지막 정리 시각(epoch) — 과도한 API 호출 방지
+
+
+def _prune_log_sheet(ws, sheet_name, ts_col_idx=0, days=30, min_interval=1800):
+    """[v6.3.3] 로그 탭에서 'days'일 이전 행을 삭제(보관기간 제한).
+    - 타임스탬프 앞 10자(YYYY-MM-DD)만 비교 → 시·분 표기/로케일 영향 없음.
+    - YYYY-MM-DD 패턴이 아닌 행은 건드리지 않음(안전).
+    - min_interval초 이내 재호출은 건너뜀(스레드/메인 공용 모듈 throttle)."""
+    import time as _time
+    _now = _time.time()
+    if _now - _LAST_PRUNE.get(sheet_name, 0) < min_interval:
+        return
+    _LAST_PRUNE[sheet_name] = _now
+    try:
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        import re as _re
+        cutoff = ((_dt.now(_tz.utc) + _td(hours=9)) - _td(days=days)).strftime("%Y-%m-%d")
+        rows = ws.get_all_values()
+        if len(rows) <= 1:
+            return
+        _pat = _re.compile(r"^\d{4}-\d{2}-\d{2}")
+        to_del = []
+        for i in range(1, len(rows)):
+            cell = rows[i][ts_col_idx] if ts_col_idx < len(rows[i]) else ""
+            d = str(cell)[:10]
+            if _pat.match(d) and d < cutoff:
+                to_del.append(i + 1)   # 1-based 시트 행번호
+        for ri in sorted(to_del, reverse=True):
+            try:
+                ws.delete_rows(ri)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _error_log_to_sheet(timestamp, page, operation, user, message, tb=""):
     """[v6.3.1] error_logs 탭에 1행 추가 (best-effort, 비재귀).
     실패해도 절대 _app_log_error를 다시 부르지 않는다(무한루프 방지)."""
@@ -159,7 +195,8 @@ def _error_log_to_sheet(timestamp, page, operation, user, message, tb=""):
 
 
 def _score_audit_to_sheet(timestamp, date_key, match_idx, matchup, editor, frm, to):
-    """[v6.3.1] score_audit 탭에 점수 수정 1건 추가 (append-only, 영구 보존)."""
+    """[v6.3.1] score_audit 탭에 점수 수정 1건 추가 (append-only).
+    [v6.3.3] 시각은 텍스트(RAW)로 저장하고 1개월 지난 행은 자동 정리."""
     try:
         ws = _get_tab(SCORE_AUDIT_SHEET, SCORE_AUDIT_COLS)
         if ws is None:
@@ -167,7 +204,8 @@ def _score_audit_to_sheet(timestamp, date_key, match_idx, matchup, editor, frm, 
         ws.append_row(
             [str(timestamp), str(date_key), str(match_idx),
              str(matchup or "")[:120], str(editor or ""), str(frm or ""), str(to or "")],
-            value_input_option="USER_ENTERED")
+            value_input_option="RAW")
+        _prune_log_sheet(ws, SCORE_AUDIT_SHEET, ts_col_idx=0, days=30)
     except Exception:
         pass
 
@@ -512,7 +550,7 @@ def user_ensure_admin():
         data[admin_id] = {
             "pw_hash": _hash_pw(admin_pw),
             "role":    "admin",
-            "name":    st.secrets.get("ADMIN_NAME", "관리자"),
+            "name":    st.secrets.get("ADMIN_NAME", "관리자"),   # 등록된 이름 그대로 사용
         }
         user_save_all(data)
 
@@ -542,16 +580,6 @@ def user_change_pw(user_id: str, new_pw: str):
     if user_id in data:
         data[user_id]["pw_hash"] = _hash_pw(new_pw)
         user_save_all(data)
-
-
-def user_set_name(user_id: str, name: str) -> bool:
-    """[v6.3.2] 계정 표시명 변경 (점수 audit·로그의 editor 이름에 사용)."""
-    data = user_load_all()
-    if user_id in data and str(name or "").strip():
-        data[user_id]["name"] = name.strip()
-        user_save_all(data)
-        return True
-    return False
 
 
 def user_set_role(user_id: str, role: str) -> bool:
@@ -3975,7 +4003,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.3.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.3.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4189,13 +4217,17 @@ def get_audit_sheet():
         return asheet
 
 def log_audit(action: str, member_id, member_name: str, detail: str = ""):
-    """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except."""
+    """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except.
+    [v6.3.3] 최신 로그가 상단에 오도록 2행에 삽입(헤더 아래), 시각은 텍스트(RAW),
+             1개월 지난 행은 자동 정리."""
     try:
         ts = kst_now_str("%Y-%m-%d %H:%M:%S")
-        get_audit_sheet().append_row(
+        ws = get_audit_sheet()
+        ws.insert_row(
             [ts, action, str(member_id), member_name, detail],
-            value_input_option="USER_ENTERED"
+            index=2, value_input_option="RAW"
         )
+        _prune_log_sheet(ws, "audit_log", ts_col_idx=0, days=30)
     except Exception:
         pass
 
@@ -4645,11 +4677,13 @@ def dialog_pw(target):
     action_label = "수정" if target["type"] == "edit" else "삭제"
     st.markdown(f"**[{target['name']}]** 회원 {action_label}을 위해 비밀번호를 입력하세요.")
     st.caption("💡 관리자 로그인 비밀번호와 동일합니다. 한 번 인증하면 브라우저를 닫기 전까지 다시 묻지 않습니다.")
-    pw = st.text_input("비밀번호", type="password", placeholder="관리자 로그인 비밀번호")
-    col_ok, col_cancel = st.columns(2)
-    if col_ok.button("✅ 확인", type="primary", use_container_width=True):
-        # [v6.3.2] 관리자 '로그인 비밀번호'와 동기화 — 정적 secrets 값이 아니라
-        #          실제 관리자 계정 자격증명으로 검증(비번 변경 시 자동 일치).
+    # [v6.3.3] st.form → 비밀번호 입력 후 Enter로도 제출됨
+    with st.form("rs_pw_form", clear_on_submit=False):
+        pw = st.text_input("비밀번호", type="password", placeholder="관리자 로그인 비밀번호")
+        _submit = st.form_submit_button("✅ 확인", type="primary", use_container_width=True)
+    if _submit:
+        # 관리자 '로그인 비밀번호'와 동기화 — 정적 secrets 값이 아니라
+        # 실제 관리자 계정 자격증명으로 검증(비번 변경 시 자동 일치).
         _admin_id = st.secrets.get("ADMIN_ID", "admin")
         if _admin_id not in user_load_all():
             st.error("⚠️ 관리자 계정이 설정되지 않았습니다. "
@@ -4666,7 +4700,7 @@ def dialog_pw(target):
             st.rerun()
         else:
             st.error("❌ 비밀번호가 틀렸습니다. (관리자 로그인 비밀번호와 동일합니다)")
-    if col_cancel.button("취소", use_container_width=True):
+    if st.button("취소", use_container_width=True, key="rs_pw_cancel"):
         st.session_state.open_dialog  = None
         st.session_state.edit_target  = None
         st.rerun()
@@ -5495,19 +5529,6 @@ def render_roster_page():
                         st.rerun()
                 else:
                     ucols[4].caption("주계정")
-                # [v6.3.2] 표시명 변경 — 점수 audit·로그의 editor 이름에 사용
-                _nm_cols = st.columns([3, 1])
-                _new_nm = _nm_cols[0].text_input(
-                    "표시명", key=f"chnm_{uid}", value=uinfo.get("name", ""),
-                    label_visibility="collapsed", placeholder="표시명(이름)")
-                if _nm_cols[1].button("이름변경", key=f"chnmbtn_{uid}"):
-                    if user_set_name(uid, _new_nm):
-                        st.success(f"'{uid}' 표시명 변경 완료 → {_new_nm.strip()}")
-                        st.rerun()
-                    else:
-                        st.warning("이름을 입력하세요.")
-                st.markdown("<div style='border-bottom:1px solid #f1f5f9;margin:3px 0'></div>",
-                            unsafe_allow_html=True)
 
             st.markdown("---")
             st.markdown("**신규 계정 추가**")
