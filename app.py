@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.2.0
+TELA CLUB Random Match Generator v6.2.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -423,6 +423,16 @@ def user_change_pw(user_id: str, new_pw: str):
     if user_id in data:
         data[user_id]["pw_hash"] = _hash_pw(new_pw)
         user_save_all(data)
+
+
+def user_set_role(user_id: str, role: str) -> bool:
+    """[v6.2.1] 기존 계정의 권한(role)만 변경. 'admin'은 보호(변경 안 함)."""
+    data = user_load_all()
+    if user_id in data and data[user_id].get("role") != "admin":
+        data[user_id]["role"] = role
+        user_save_all(data)
+        return True
+    return False
 
 
 # ── [v6.1] 회원(명부 cafe_id) 로그인 · 기본 비밀번호 · 강제 변경 ──────────
@@ -3835,7 +3845,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.2.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.2.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4885,6 +4895,29 @@ def dialog_form(df, existing=None):
     )
     rejoin_date_str = st.session_state[rj_key]
 
+    # ─── 부관리자 권한 (v6.2.1 — 관리자 전용, 기존 회원만) ───
+    #   회원명부 수정에서 바로 부관리자를 지정/해제. (별도 ID/비번 입력 불필요)
+    _grant_subadmin = False
+    if is_admin() and existing:
+        _cid_now = str(cafe_id or "").strip()
+        _cid_now_l = _cid_now.lower()
+        _udata_now = user_load_all()
+        _member_is_subadmin = (_udata_now.get(_cid_now_l, {}).get("role") == "sub_admin")
+        _is_admin_acct = (_udata_now.get(_cid_now_l, {}).get("role") == "admin")
+        if _is_admin_acct:
+            st.caption("ℹ️ 이 회원의 카페ID는 관리자 계정입니다. (권한 변경 불가)")
+        else:
+            _grant_subadmin = st.checkbox(
+                "🗝️ 부관리자 권한 부여 (체크 시 이 회원이 운영진 메뉴를 사용)",
+                value=_member_is_subadmin, key=f"subadmin_chk_{target_id}")
+            if _grant_subadmin and not _cid_now:
+                st.caption("⚠️ 부관리자로 지정하려면 카페ID를 먼저 입력하세요 "
+                           "(로그인 아이디로 사용됩니다). 최초 비밀번호는 "
+                           f"`{DEFAULT_MEMBER_PW}` 이며 로그인 후 변경하게 됩니다.")
+            elif _grant_subadmin and not _member_is_subadmin:
+                st.caption(f"💡 계정이 없으면 카페ID `{_cid_now}` 로 자동 생성됩니다 "
+                           f"(최초 비밀번호 `{DEFAULT_MEMBER_PW}`, 로그인 후 변경 필수).")
+
 
     # 행5: 입회신청서 / 메모
     c11,c12 = st.columns([1,2])
@@ -4935,6 +4968,9 @@ def dialog_form(df, existing=None):
         # 재입회일 위젯 (v6.2)
         if f"rejoin_date_input_{target_id}" in st.session_state:
             del st.session_state[f"rejoin_date_input_{target_id}"]
+        # 부관리자 체크박스 (v6.2.1)
+        if f"subadmin_chk_{target_id}" in st.session_state:
+            del st.session_state[f"subadmin_chk_{target_id}"]
 
     if cancel_clicked:
         _cleanup_dormant_session()
@@ -5078,6 +5114,21 @@ def dialog_form(df, existing=None):
             }
             with st.spinner("구글 시트에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None), action_detail=action_detail)
+
+            # ── 부관리자 권한 반영 (v6.2.1) ──
+            if is_admin() and existing:
+                _cid_s   = str(cafe_id or "").strip()
+                _cid_s_l = _cid_s.lower()
+                _udata_s = user_load_all()
+                if _grant_subadmin and _cid_s:
+                    if _cid_s_l in _udata_s:
+                        if _udata_s[_cid_s_l].get("role") != "admin":
+                            user_set_role(_cid_s_l, "sub_admin")
+                    else:
+                        user_add(_cid_s_l, DEFAULT_MEMBER_PW, "sub_admin", name.strip())
+                elif (not _grant_subadmin) and _cid_s_l in _udata_s \
+                        and _udata_s[_cid_s_l].get("role") == "sub_admin":
+                    user_set_role(_cid_s_l, "member")
 
             st.success(f"✅ {'수정' if existing else '등록'} 완료! — {final_cat} {name.strip()}")
             _cleanup_dormant_session()
@@ -5463,6 +5514,18 @@ def render_roster_page():
             key="filter_league_radio"
         )
         st.session_state["filter_league"] = filter_league
+
+    # ── 등급 필터 (v6.2.1) ──
+    GRADE_FILTER_OPTIONS = ["전체 등급", "1", "2", "3", "4", "5"]
+    if st.session_state.get("filter_grade") not in GRADE_FILTER_OPTIONS:
+        st.session_state["filter_grade"] = "전체 등급"
+    filter_grade = st.radio(
+        "등급 필터", GRADE_FILTER_OPTIONS,
+        index=GRADE_FILTER_OPTIONS.index(st.session_state["filter_grade"]),
+        horizontal=True, label_visibility="collapsed", key="filter_grade_radio",
+        format_func=lambda x: x if x == "전체 등급" else f"{x}등급",
+    )
+    st.session_state["filter_grade"] = filter_grade
     
     # ── 카테고리 변경 감지: 필터가 바뀌면 정렬 위젯도 자동 초기화 ──
     # 사용자 의도에 따라:
@@ -5587,6 +5650,10 @@ def render_roster_page():
         _fl = st.session_state.get("filter_league", "전체 리그")
         if _fl and _fl != "전체 리그":
             data = data[data["league"].astype(str).str.strip() == _fl]
+        # 등급 필터 (v6.2.1)
+        _fg = st.session_state.get("filter_grade", "전체 등급")
+        if _fg and _fg != "전체 등급":
+            data = data[data["grade"].astype(str).str.strip() == _fg]
         q = st.session_state.search_active.lower()
         if q:
             mask = (data["name"].str.lower().str.contains(q,na=False) |
