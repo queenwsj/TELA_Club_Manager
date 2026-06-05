@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.3.1
+TELA CLUB Random Match Generator v6.3.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -63,6 +63,11 @@ def kst_today() -> date:
 def kst_today_str(fmt: str = "%Y-%m-%d") -> str:
     """KST 기준 오늘 날짜 문자열."""
     return kst_today().strftime(fmt)
+
+def kst_now_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """[v6.3.2] KST(UTC+9) 기준 현재 시각 문자열. (서버가 UTC여도 한국시간으로 기록)"""
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime(fmt)
 
 def _date_with_weekday(date_str: str) -> str:
     """'2026-05-23' → '2026-05-23(토)'. 파싱 실패 시 원본 반환."""
@@ -467,7 +472,7 @@ def _app_log_error(context: str, exc=None, page=None) -> None:
     ⚠️ st.session_state·구글시트에 접근하므로 '메인 스레드'에서만 호출할 것.
     (백그라운드 스레드 오류는 _BG_ERRORS에 넣고, 메인 스레드가 비우며 이 함수로 기록한다.)"""
     try:
-        _ts_full = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _ts_full = kst_now_str("%Y-%m-%d %H:%M:%S")
     except Exception:
         _ts_full = "?"
     _msg = f"[{_ts_full}] {context}" + (f": {type(exc).__name__}: {exc}" if exc is not None else "")
@@ -507,7 +512,7 @@ def user_ensure_admin():
         data[admin_id] = {
             "pw_hash": _hash_pw(admin_pw),
             "role":    "admin",
-            "name":    "관리자",
+            "name":    st.secrets.get("ADMIN_NAME", "관리자"),
         }
         user_save_all(data)
 
@@ -537,6 +542,16 @@ def user_change_pw(user_id: str, new_pw: str):
     if user_id in data:
         data[user_id]["pw_hash"] = _hash_pw(new_pw)
         user_save_all(data)
+
+
+def user_set_name(user_id: str, name: str) -> bool:
+    """[v6.3.2] 계정 표시명 변경 (점수 audit·로그의 editor 이름에 사용)."""
+    data = user_load_all()
+    if user_id in data and str(name or "").strip():
+        data[user_id]["name"] = name.strip()
+        user_save_all(data)
+        return True
+    return False
 
 
 def user_set_role(user_id: str, role: str) -> bool:
@@ -3960,7 +3975,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.3.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.3.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4176,7 +4191,7 @@ def get_audit_sheet():
 def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except."""
     try:
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = kst_now_str("%Y-%m-%d %H:%M:%S")
         get_audit_sheet().append_row(
             [ts, action, str(member_id), member_name, detail],
             value_input_option="USER_ENTERED"
@@ -4629,14 +4644,17 @@ def get_long_dormant_members(df, months=3):
 def dialog_pw(target):
     action_label = "수정" if target["type"] == "edit" else "삭제"
     st.markdown(f"**[{target['name']}]** 회원 {action_label}을 위해 비밀번호를 입력하세요.")
-    st.caption("💡 한 번 인증하면 브라우저를 닫기 전까지 다시 묻지 않습니다.")
-    pw = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+    st.caption("💡 관리자 로그인 비밀번호와 동일합니다. 한 번 인증하면 브라우저를 닫기 전까지 다시 묻지 않습니다.")
+    pw = st.text_input("비밀번호", type="password", placeholder="관리자 로그인 비밀번호")
     col_ok, col_cancel = st.columns(2)
     if col_ok.button("✅ 확인", type="primary", use_container_width=True):
-        if not RS_ADMIN_PASSWORD:
-            st.error("⚠️ 관리자 비밀번호가 설정되지 않았습니다. "
+        # [v6.3.2] 관리자 '로그인 비밀번호'와 동기화 — 정적 secrets 값이 아니라
+        #          실제 관리자 계정 자격증명으로 검증(비번 변경 시 자동 일치).
+        _admin_id = st.secrets.get("ADMIN_ID", "admin")
+        if _admin_id not in user_load_all():
+            st.error("⚠️ 관리자 계정이 설정되지 않았습니다. "
                      "Streamlit Secrets에 ADMIN_PASSWORD를 등록해야 사용할 수 있습니다.")
-        elif pw == RS_ADMIN_PASSWORD:
+        elif user_authenticate(_admin_id, pw):
             # 인증 성공 → 세션 전체 인증 플래그 설정
             st.session_state.admin_authed = True
             st.session_state.auth_time    = datetime.now()   # 타임아웃 기산점
@@ -4647,7 +4665,7 @@ def dialog_pw(target):
             st.session_state.edit_target = target
             st.rerun()
         else:
-            st.error("❌ 비밀번호가 틀렸습니다.")
+            st.error("❌ 비밀번호가 틀렸습니다. (관리자 로그인 비밀번호와 동일합니다)")
     if col_cancel.button("취소", use_container_width=True):
         st.session_state.open_dialog  = None
         st.session_state.edit_target  = None
@@ -5206,8 +5224,24 @@ def dialog_form(df, existing=None):
                 # 재입회 회원이 '탈퇴'로 남아있으면 정회원으로 복귀
                 final_cat = "정회원" if (rj_str and cat == "탈퇴") else cat
 
-            action_detail = (f"{'신규등록' if not existing else '수정'} → "
-                             f"카테고리:{final_cat}, 연락처:{phone_normalized}")
+            # [v6.3.2] 상세 변경 로그 — 수정 시 항목별 diff, 신규 시 주요 항목
+            _grade_disp = "미지정" if grade_sel == "—" else f"{grade_sel}등급"
+            if existing:
+                _chgs = []
+                def _diff(lbl, old, new):
+                    o = str(old or "").strip(); n = str(new or "").strip()
+                    if o != n:
+                        _chgs.append(f"{lbl}:{o or '∅'}→{n or '∅'}")
+                _diff("카테고리", existing.get("category"), final_cat)
+                _diff("등급", existing.get("grade"), "" if grade_sel == "—" else grade_sel)
+                _diff("연락처", existing.get("phone"), phone_normalized)
+                _diff("탈퇴일", existing.get("leave_date"), ld_str)
+                _diff("재입회일", existing.get("rejoin_date"), rj_str)
+                _diff("이름", existing.get("name"), name.strip())
+                action_detail = "수정 → " + (", ".join(_chgs) if _chgs else "변경 없음")
+            else:
+                action_detail = (f"신규등록 → 카테고리:{final_cat}, 등급:{_grade_disp}, "
+                                 f"연락처:{phone_normalized}")
             row_data = {
                 "id":             existing["id"] if existing else next_id(df),
                 "category":       final_cat,
@@ -5232,20 +5266,25 @@ def dialog_form(df, existing=None):
             with st.spinner("구글 시트에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None), action_detail=action_detail)
 
-            # ── 부관리자 권한 반영 (v6.2.1) ──
+            # ── 부관리자 권한 반영 (v6.2.1) + 권한변경 감사 로그 (v6.3.2) ──
             if is_admin() and existing:
                 _cid_s   = str(cafe_id or "").strip()
                 _cid_s_l = _cid_s.lower()
                 _udata_s = user_load_all()
+                _was_sub = (_udata_s.get(_cid_s_l, {}).get("role") == "sub_admin")
                 if _grant_subadmin and _cid_s:
                     if _cid_s_l in _udata_s:
                         if _udata_s[_cid_s_l].get("role") != "admin":
                             user_set_role(_cid_s_l, "sub_admin")
                     else:
                         user_add(_cid_s_l, DEFAULT_MEMBER_PW, "sub_admin", name.strip())
-                elif (not _grant_subadmin) and _cid_s_l in _udata_s \
-                        and _udata_s[_cid_s_l].get("role") == "sub_admin":
+                    if not _was_sub:
+                        log_audit("권한변경", row_data["id"], name.strip(),
+                                  f"부관리자 권한 부여 (계정:{_cid_s})")
+                elif (not _grant_subadmin) and _was_sub:
                     user_set_role(_cid_s_l, "member")
+                    log_audit("권한변경", row_data["id"], name.strip(),
+                              f"부관리자 권한 해제 (계정:{_cid_s})")
 
             st.success(f"✅ {'수정' if existing else '등록'} 완료! — {final_cat} {name.strip()}")
             _cleanup_dormant_session()
@@ -5456,6 +5495,19 @@ def render_roster_page():
                         st.rerun()
                 else:
                     ucols[4].caption("주계정")
+                # [v6.3.2] 표시명 변경 — 점수 audit·로그의 editor 이름에 사용
+                _nm_cols = st.columns([3, 1])
+                _new_nm = _nm_cols[0].text_input(
+                    "표시명", key=f"chnm_{uid}", value=uinfo.get("name", ""),
+                    label_visibility="collapsed", placeholder="표시명(이름)")
+                if _nm_cols[1].button("이름변경", key=f"chnmbtn_{uid}"):
+                    if user_set_name(uid, _new_nm):
+                        st.success(f"'{uid}' 표시명 변경 완료 → {_new_nm.strip()}")
+                        st.rerun()
+                    else:
+                        st.warning("이름을 입력하세요.")
+                st.markdown("<div style='border-bottom:1px solid #f1f5f9;margin:3px 0'></div>",
+                            unsafe_allow_html=True)
 
             st.markdown("---")
             st.markdown("**신규 계정 추가**")
@@ -6559,8 +6611,8 @@ if page == "📊 스코어보드":
         """점수 저장: shelf 즉시 저장 → 구글시트(records·audit)는 백그라운드 처리"""
         # [v6.3] 수정자·시각, [v6.3.1] 전체 수정 이력(history) 기록
         _editor   = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
-        _now_full = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _now_shrt = datetime.now().strftime("%m-%d %H:%M")
+        _now_full = kst_now_str("%Y-%m-%d %H:%M:%S")
+        _now_shrt = kst_now_str("%m-%d %H:%M")
         _prev_e   = scores.get(str(idx), {}) or {}
         _from     = (f'{_prev_e.get("score1")}:{_prev_e.get("score2")}'
                      if "score1" in _prev_e else "—")
