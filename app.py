@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.4.0
+TELA CLUB Random Match Generator v6.4.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4022,7 +4022,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.4.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.4.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4048,7 +4048,7 @@ RS_COLUMNS = [
     "grade",        # 회원 등급 1~5 (1=최상위, 5=입문)
     "rejoin_date",  # 재입회일 (탈퇴 후 재가입; 비어있으면 일반 회원·탈퇴일/휴면 이력은 그대로 보존)
 ]
-AUDIT_COLUMNS = ["timestamp", "action", "member_id", "member_name", "detail"]
+AUDIT_COLUMNS = ["timestamp", "action", "member_id", "member_name", "detail", "editor"]  # [v6.4.1] editor(수정자) 맨 끝 추가
 TRASH_DAYS    = 90   # 휴지통 보관 기간 (일)
 CATEGORIES   = ["마스터","고문","회장","총무","경기이사","홍보이사","정회원","휴면","탈퇴"]
 CAT_ORDER    = {c: i for i, c in enumerate(CATEGORIES)}
@@ -4238,12 +4238,14 @@ def get_audit_sheet():
 def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except.
     [v6.3.3] 최신 로그가 상단에 오도록 2행에 삽입(헤더 아래), 시각은 텍스트(RAW),
-             1개월 지난 행은 자동 정리."""
+             1개월 지난 행은 자동 정리.
+    [v6.4.1] 수정자(editor) = 현재 로그인 사용자 이름(없으면 ID)을 맨 끝 컬럼에 자동 기록."""
     try:
         ts = kst_now_str("%Y-%m-%d %H:%M:%S")
+        _editor = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
         ws = get_audit_sheet()
         ws.insert_row(
-            [ts, action, str(member_id), member_name, detail],
+            [ts, action, str(member_id), member_name, detail, _editor],
             index=2, value_input_option="RAW"
         )
         _prune_log_sheet(ws, "audit_log", ts_col_idx=0, days=30)
@@ -4252,7 +4254,10 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
 
 def _audit_log_load(limit: int = 100):
     """[v6.4.0] audit_log 탭에서 최근 limit건을 최신순으로 반환.
-    log_audit가 새 행을 2행(헤더 바로 아래)에 삽입하므로 시트 순서가 이미 최신순이다."""
+    log_audit가 새 행을 2행(헤더 바로 아래)에 삽입하므로 시트 순서가 이미 최신순이다.
+    [v6.4.1] 시트 첫 행(헤더) 대신 고정 컬럼(AUDIT_COLUMNS) 기준으로 위치 매핑.
+             → editor 컬럼이 없던 기존 5열 행은 editor가 빈 값으로 안전 처리되고,
+               신규 6열 행만 수정자가 채워진다(구글시트 헤더 수동 수정 불필요)."""
     try:
         ws = get_audit_sheet()
         if ws is None:
@@ -4260,8 +4265,7 @@ def _audit_log_load(limit: int = 100):
         rows = ws.get_all_values()
         if not rows or len(rows) < 2:
             return []
-        hdr = rows[0]
-        data = [dict(zip(hdr, r)) for r in rows[1:]]
+        data = [dict(zip(AUDIT_COLUMNS, r)) for r in rows[1:]]
         return data[:limit]
     except Exception:
         return []
@@ -6529,7 +6533,8 @@ if page == "🧾 로그":
                     f"<div style='font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9'>"
                     f"<b>[{_r.get('timestamp','')}]</b> "
                     f"<span style='color:#2563eb;font-weight:700'>{_r.get('action','')}</span> · "
-                    f"{_r.get('member_name','')} (ID:{_r.get('member_id','')})<br>"
+                    f"{_r.get('member_name','')} (ID:{_r.get('member_id','')}) · "
+                    f"<span style='color:#7c3aed'>수정자: {_r.get('editor','') or '—'}</span><br>"
                     f"<span style='color:#475569'>{_r.get('detail','')}</span></div>",
                     unsafe_allow_html=True)
 
