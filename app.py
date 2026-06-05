@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.4.2
+TELA CLUB Random Match Generator v6.4.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4022,7 +4022,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.4.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.4.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -5320,25 +5320,6 @@ def dialog_form(df, existing=None):
 
             # [v6.3.2] 상세 변경 로그 — 수정 시 항목별 diff, 신규 시 주요 항목
             _grade_disp = "미지정" if grade_sel == "—" else f"{grade_sel}등급"
-            if existing:
-                _chgs = []
-                def _diff(lbl, old, new):
-                    o = str(old or "").strip(); n = str(new or "").strip()
-                    if o != n:
-                        _chgs.append(f"{lbl}:{o or '∅'}→{n or '∅'}")
-                _diff("카테고리", existing.get("category"), final_cat)
-                _diff("등급", existing.get("grade"), "" if grade_sel == "—" else grade_sel)
-                _diff("연락처", existing.get("phone"), phone_normalized)
-                _diff("탈퇴일", existing.get("leave_date"), ld_str)
-                _diff("재입회일", existing.get("rejoin_date"), rj_str)
-                _diff("이름", existing.get("name"), name.strip())
-                # [v6.4.2] 실제 변경이 없으면(_chgs 비어있음) 감사 로그를 남기지 않는다.
-                _has_changes = bool(_chgs)
-                action_detail = "수정 → " + (", ".join(_chgs) if _chgs else "변경 없음")
-            else:
-                _has_changes = True   # 신규 등록은 항상 기록
-                action_detail = (f"신규등록 → 카테고리:{final_cat}, 등급:{_grade_disp}, "
-                                 f"연락처:{phone_normalized}")
             row_data = {
                 "id":             existing["id"] if existing else next_id(df),
                 "category":       final_cat,
@@ -5360,6 +5341,38 @@ def dialog_form(df, existing=None):
                 "grade":          "" if grade_sel == "—" else grade_sel,
                 "rejoin_date":    rj_str,
             }
+            if existing:
+                # [v6.4.3] 저장될 값(row_data) ↔ 기존 값(existing)을 '편집 가능한 모든 항목'에
+                #          대해 비교한다. 기존엔 6개 항목만 비교해 이메일·지역·메모·출생년도·
+                #          성별·입회일·신청서·휴면기간 변경이 로그에 안 남던 문제 해결.
+                _chgs = []
+                def _norm(v):
+                    s = str(v if v is not None else "").strip()
+                    if s.lower() in ("nan", "none", "nat"):
+                        return ""
+                    if s.endswith(".0") and s[:-2].lstrip("-").isdigit():
+                        s = s[:-2]   # 1990.0 → 1990 (정수형 실수 표기 정리)
+                    return s
+                def _diff(lbl, fld):
+                    o = _norm(existing.get(fld)); n = _norm(row_data.get(fld))
+                    if o != n:
+                        _chgs.append(f"{lbl}:{o or '∅'}→{n or '∅'}")
+                for _lbl, _fld in [
+                    ("카테고리", "category"), ("이름", "name"), ("카페ID", "cafe_id"),
+                    ("출생년도", "birth_year"), ("성별", "gender"), ("연락처", "phone"),
+                    ("입회일", "join_date"), ("휴면기간", "dormant_period"),
+                    ("탈퇴일", "leave_date"), ("재입회일", "rejoin_date"),
+                    ("이메일", "email"), ("신청서", "application"),
+                    ("지역", "region"), ("메모", "memo"), ("등급", "grade"),
+                ]:
+                    _diff(_lbl, _fld)
+                # [v6.4.2] 실제 변경이 없으면(_chgs 비어있음) 감사 로그를 남기지 않는다.
+                _has_changes = bool(_chgs)
+                action_detail = "수정 → " + (", ".join(_chgs) if _chgs else "변경 없음")
+            else:
+                _has_changes = True   # 신규 등록은 항상 기록
+                action_detail = (f"신규등록 → 카테고리:{final_cat}, 등급:{_grade_disp}, "
+                                 f"연락처:{phone_normalized}")
             with st.spinner("구글 시트에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None),
                          action_detail=action_detail, do_log=_has_changes)
