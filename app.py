@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.2.1
+TELA CLUB Random Match Generator v6.2.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3845,7 +3845,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.2.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.2.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -5805,6 +5805,29 @@ def render_roster_page():
 
     CW  = [0.22, 0.28, 0.55, 0.65, 0.55, 0.82, 0.85, 0.46, 0.38, 0.95, 0.72, 0.75, 1.0, 0.72, 0.68, 1.1, 0.85]
     HDR = ["☑","No.","구분","리그","등급","성명","카페ID","생년","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
+
+    # ── [v6.2.1] 운영진(부관리자/관리자) 계정 매핑 — 리스트·카드 표시용 ──
+    try:
+        _role_by_cid = {
+            str(_uid).lower(): _uinfo.get("role")
+            for _uid, _uinfo in user_load_all().items()
+            if _uinfo.get("role") in ("sub_admin", "admin")
+        }
+    except Exception:
+        _role_by_cid = {}
+
+    def _staff_badge_for(cafe_id_val):
+        """회원 cafe_id가 운영진 계정이면 작은 배지 HTML, 아니면 ''."""
+        _r = _role_by_cid.get(str(cafe_id_val or "").strip().lower())
+        if _r == "sub_admin":
+            return ("<span style='font-size:10px;color:#0f766e;background:#ccfbf1;"
+                    "border:1px solid #5eead4;border-radius:6px;padding:1px 6px;"
+                    "font-weight:700;margin-left:4px'>🗝️ 부관리자</span>")
+        if _r == "admin":
+            return ("<span style='font-size:10px;color:#7c2d12;background:#ffedd5;"
+                    "border:1px solid #fdba74;border-radius:6px;padding:1px 6px;"
+                    "font-weight:700;margin-left:4px'>🔑 관리자</span>")
+        return ""
     
     if view_df.empty:
         st.info("🎾 해당 조건의 회원이 없습니다.")
@@ -5896,7 +5919,8 @@ def render_roster_page():
                     f"{_grade_html}"
                     + (f"<span style='font-size:10px;color:#0f766e;background:#ccfbf1;"
                        f"border:1px solid #5eead4;border-radius:6px;padding:1px 6px;font-weight:700'>"
-                       f"♻️ 재입회</span>" if _rejoin else "") +
+                       f"♻️ 재입회</span>" if _rejoin else "")
+                    + _staff_badge_for(row.get("cafe_id", "")) +
                     f"</div>"
                     # 본문: 2열 그리드
                     f"<div style='display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;"
@@ -5996,7 +6020,7 @@ def render_roster_page():
                 f"<div style='padding:5px 0'>{grade_badge(gd_val)}</div>",
                 unsafe_allow_html=True
             )
-            rc[col_offset+4].markdown(cell(row.get('name',''),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
+            rc[col_offset+4].markdown(cell(str(row.get('name','')) + _staff_badge_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
             rc[col_offset+5].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
             rc[col_offset+6].markdown(cell(by_val), unsafe_allow_html=True)
             rc[col_offset+7].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True)
