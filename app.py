@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.3.3
+TELA CLUB Random Match Generator v6.4.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -16,6 +16,7 @@ TELA CLUB Random Match Generator v6.3.3
 09. 회원명부: 설정·CSS·Google Sheets·검증 함수
 10. 회원명부: 다이얼로그·렌더링
 11. 사이드바 로그인·메뉴 라우팅
+11-B. 페이지: 로그 (관리자 전용) [v6.4.0] audit_log·score_audit·error_logs 통합 조회
 12. 페이지: 스코어보드
 13. 페이지: 대진표 생성
     └─ [v6.0.0] F1 대진표 공유 이미지 카드 · F3 결원 부분 재배정(노쇼/취소)
@@ -229,6 +230,24 @@ def _score_audit_load(date_key: str):
                 out.append({k: (r[ci[k]] if 0 <= ci[k] < len(r) else "") for k in SCORE_AUDIT_COLS})
         out.sort(key=lambda x: x.get("timestamp", ""))
         return out
+    except Exception:
+        return []
+
+
+def _score_audit_load_all(limit: int = 200):
+    """[v6.4.0] score_audit 탭 전체에서 최근 limit건을 최신순으로 반환(날짜 무관).
+    로그 탭에서 모든 날짜의 점수 수정 이력을 한 번에 보기 위한 헬퍼.
+    append_row(오래된 것이 위)로 쌓이므로 reversed로 최신순 정렬."""
+    try:
+        ws = _get_tab(SCORE_AUDIT_SHEET, SCORE_AUDIT_COLS)
+        if ws is None:
+            return []
+        rows = ws.get_all_values()
+        if not rows or len(rows) < 2:
+            return []
+        hdr = rows[0]
+        data = [dict(zip(hdr, r)) for r in rows[1:]]
+        return list(reversed(data))[:limit]
     except Exception:
         return []
 
@@ -4003,7 +4022,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.3.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.4.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4230,6 +4249,22 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
         _prune_log_sheet(ws, "audit_log", ts_col_idx=0, days=30)
     except Exception:
         pass
+
+def _audit_log_load(limit: int = 100):
+    """[v6.4.0] audit_log 탭에서 최근 limit건을 최신순으로 반환.
+    log_audit가 새 행을 2행(헤더 바로 아래)에 삽입하므로 시트 순서가 이미 최신순이다."""
+    try:
+        ws = get_audit_sheet()
+        if ws is None:
+            return []
+        rows = ws.get_all_values()
+        if not rows or len(rows) < 2:
+            return []
+        hdr = rows[0]
+        data = [dict(zip(hdr, r)) for r in rows[1:]]
+        return data[:limit]
+    except Exception:
+        return []
 
 @st.cache_data(ttl=120, show_spinner=False)
 def _load_records_cached() -> list:
@@ -5466,39 +5501,9 @@ def render_roster_page():
     # ── 계정 관리 탭 (관리자 전용) ──────────────────────────
     if _is_admin:
         with st.expander("🔑 계정 관리 (관리자 전용)", expanded=False):
-            # [v6.3] 시스템 오류 로그 (조용히 삼키던 저장 실패 등)
-            while _BG_ERRORS:
-                _app_log_error(_BG_ERRORS.pop(0))   # 세션+시트 영구 기록
-            _sys_errs = st.session_state.get("_gsheet_errors", [])
-            if _sys_errs:
-                st.error(f"⚠️ 이번 세션 오류 {len(_sys_errs)}건")
-                with st.expander(f"이번 세션 오류 보기 ({len(_sys_errs)}건)", expanded=False):
-                    for _e in _sys_errs[-30:]:
-                        st.caption(_e)
-                    if st.button("세션 로그 비우기", key="acct_clear_errlog"):
-                        st.session_state["_gsheet_errors"] = []
-                        st.rerun()
-            # [v6.3.1] 구글시트 영구 오류 로그 (재시작 후에도 유지)
-            with st.expander("🗂️ 영구 오류 로그 (구글시트 error_logs)", expanded=False):
-                st.caption("발생시각·페이지·작업·사용자·오류메시지·traceback이 시트에 저장됩니다.")
-                if st.button("최근 50건 불러오기", key="load_err_sheet"):
-                    st.session_state["_err_sheet_view"] = _error_log_load(50)
-                _ev = st.session_state.get("_err_sheet_view")
-                if _ev is not None:
-                    if not _ev:
-                        st.info("기록된 오류가 없습니다.")
-                    for _r in _ev:
-                        _tb = (_r.get("traceback","") or "").strip()
-                        st.markdown(
-                            f"<div style='font-size:0.8rem;padding:3px 0;border-bottom:1px solid #f1f5f9'>"
-                            f"<b>[{_r.get('timestamp','')}]</b><br>"
-                            f"작업: {_r.get('operation','')} · 페이지: {_r.get('page','')} · "
-                            f"사용자: {_r.get('user','')}<br>"
-                            f"<span style='color:#dc2626'>오류: {_r.get('message','')}</span></div>",
-                            unsafe_allow_html=True)
-                        if _tb:
-                            with st.expander("traceback", expanded=False):
-                                st.code(_tb[:1500])
+            # [v6.4.0] 오류 로그·점수 수정 이력·변경 이력 조회는 사이드바 '🧾 로그' 탭으로 이동.
+            #   기존엔 영구 오류 로그가 이 계정 관리 안에 묻혀 있어 접근이 번거로웠음.
+            st.caption("ℹ️ 오류 로그·변경 이력·점수 수정 이력은 사이드바 **🧾 로그** 탭에서 확인할 수 있습니다.")
             st.markdown("---")
             all_users = user_load_all()
             st.markdown(f"**등록 계정 ({len(all_users)}개)**")
@@ -6429,6 +6434,9 @@ if _is_staff:
     _nav_groups.append(["📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성"])
 # 회원명부: 일반 회원은 제한 열람, 운영진은 전체 관리 — 모두에게 노출
 _nav_groups.append(["👥 회원명부"])
+# [v6.4.0] 로그 탭 — 관리자(admin) 전용. audit_log·score_audit·error_logs 통합 조회.
+if is_admin():
+    _nav_groups.append(["🧾 로그"])
 
 _visible_pages = [p for _g in _nav_groups for p in _g]
 # [v6.1.2 치명버그 수정] current_page 유효성은 '역할 기반 목록'이 아니라
@@ -6437,7 +6445,8 @@ _visible_pages = [p for _g in _nav_groups for p in _g]
 #   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
 #   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
 _ALL_KNOWN_PAGES = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드",
-                    "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부"]
+                    "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부",
+                    "🧾 로그"]
 if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
     st.session_state["current_page"] = "🏆 통합기록실"
 # [F-6] 개인기록실 등에서의 페이지 이동 트리거
@@ -6459,6 +6468,127 @@ for _gi, _grp in enumerate(_nav_groups):
 page = st.session_state["current_page"]
 st.sidebar.markdown("---")
 
+
+
+# ========================================================================
+# 11-B. 페이지: 로그 (관리자 전용) [v6.4.0]
+#   audit_log(변경 이력) · score_audit(점수 수정 이력) · error_logs(오류 로그)를
+#   사이드바 단일 탭에서 버튼으로 전환하며 조회. 관리자(admin)만 접근 가능.
+# ========================================================================
+
+if page == "🧾 로그":
+
+    st.markdown("## 🧾 시스템 로그")
+
+    # ── 접근 권한: 관리자(admin)만 ───────────────────────────
+    if not is_admin():
+        st.error("이 페이지는 **관리자만** 열람할 수 있습니다.")
+        st.stop()
+
+    # 백그라운드 스레드 오류를 세션+시트로 흡수(최신 오류 반영)
+    while _BG_ERRORS:
+        _app_log_error(_BG_ERRORS.pop(0))
+
+    st.caption("회원 변경 이력 · 점수 수정 이력 · 시스템 오류 로그를 한 곳에서 확인합니다. "
+               "각 로그는 구글시트의 audit_log / score_audit / error_logs 탭에 저장됩니다.")
+
+    # ── 로그 종류 선택 버튼 ──────────────────────────────────
+    _LOG_TABS = [
+        ("audit", "📋 변경 이력"),
+        ("score", "📜 점수 수정 이력"),
+        ("error", "🗂️ 오류 로그"),
+    ]
+    if "_log_view" not in st.session_state:
+        st.session_state["_log_view"] = "audit"
+
+    _lc = st.columns(len(_LOG_TABS))
+    for _i, (_lkey, _llabel) in enumerate(_LOG_TABS):
+        _active = (st.session_state["_log_view"] == _lkey)
+        if _lc[_i].button(_llabel, key=f"logtab_{_lkey}", use_container_width=True,
+                          type=("primary" if _active else "secondary")):
+            st.session_state["_log_view"] = _lkey
+            st.rerun()
+
+    st.markdown("---")
+    _view = st.session_state["_log_view"]
+
+    # ── 1) 변경 이력 (audit_log) ─────────────────────────────
+    if _view == "audit":
+        st.markdown("### 📋 변경 이력 (audit_log)")
+        st.caption("회원 추가·수정·삭제·복구·권한변경 등 회원명부 변경 기록입니다. (최근 100건, 최신순)")
+        if st.button("🔄 새로고침", key="reload_audit_log"):
+            st.session_state["_audit_log_view"] = _audit_log_load(100)
+        if "_audit_log_view" not in st.session_state:
+            st.session_state["_audit_log_view"] = _audit_log_load(100)
+        _al = st.session_state.get("_audit_log_view") or []
+        if not _al:
+            st.info("기록된 변경 이력이 없습니다.")
+        else:
+            for _r in _al:
+                st.markdown(
+                    f"<div style='font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9'>"
+                    f"<b>[{_r.get('timestamp','')}]</b> "
+                    f"<span style='color:#2563eb;font-weight:700'>{_r.get('action','')}</span> · "
+                    f"{_r.get('member_name','')} (ID:{_r.get('member_id','')})<br>"
+                    f"<span style='color:#475569'>{_r.get('detail','')}</span></div>",
+                    unsafe_allow_html=True)
+
+    # ── 2) 점수 수정 이력 (score_audit) ──────────────────────
+    elif _view == "score":
+        st.markdown("### 📜 점수 수정 이력 (score_audit)")
+        st.caption("전체 날짜의 점수 입력·수정 기록입니다. (최근 200건, 최신순)")
+        if st.button("🔄 새로고침", key="reload_score_audit_all"):
+            st.session_state["_score_audit_all_view"] = _score_audit_load_all(200)
+        if "_score_audit_all_view" not in st.session_state:
+            st.session_state["_score_audit_all_view"] = _score_audit_load_all(200)
+        _sa = st.session_state.get("_score_audit_all_view") or []
+        if not _sa:
+            st.info("기록된 점수 수정 이력이 없습니다.")
+        else:
+            for _r in _sa:
+                st.markdown(
+                    f"<div style='font-size:0.8rem;font-family:monospace;"
+                    f"padding:3px 0;border-bottom:1px solid #f1f5f9'>"
+                    f"{_r.get('timestamp','')} · <b>{_r.get('date_key','')}</b> · "
+                    f"{_r.get('editor','')}<br>{_r.get('matchup','')} "
+                    f"<span style='color:#64748b'>{_r.get('from','')} → {_r.get('to','')}</span></div>",
+                    unsafe_allow_html=True)
+
+    # ── 3) 오류 로그 (error_logs) ────────────────────────────
+    else:
+        st.markdown("### 🗂️ 오류 로그 (error_logs)")
+        # 이번 세션 오류 (_gsheet_errors) — 아직 시트에 영구 기록되기 전 임시 항목 포함
+        _sys_errs = st.session_state.get("_gsheet_errors", [])
+        if _sys_errs:
+            st.error(f"⚠️ 이번 세션 오류 {len(_sys_errs)}건")
+            with st.expander(f"이번 세션 오류 보기 ({len(_sys_errs)}건)", expanded=False):
+                for _e in _sys_errs[-30:]:
+                    st.caption(_e)
+                if st.button("세션 로그 비우기", key="log_clear_session_err"):
+                    st.session_state["_gsheet_errors"] = []
+                    st.rerun()
+        st.caption("발생시각·페이지·작업·사용자·오류메시지·traceback이 구글시트 error_logs 탭에 "
+                   "영구 저장됩니다. (최근 50건, 최신순)")
+        if st.button("🔄 새로고침", key="reload_error_logs"):
+            st.session_state["_err_sheet_view"] = _error_log_load(50)
+        if "_err_sheet_view" not in st.session_state:
+            st.session_state["_err_sheet_view"] = _error_log_load(50)
+        _ev = st.session_state.get("_err_sheet_view")
+        if not _ev:
+            st.info("기록된 오류가 없습니다.")
+        else:
+            for _r in _ev:
+                _tb = (_r.get("traceback", "") or "").strip()
+                st.markdown(
+                    f"<div style='font-size:0.8rem;padding:3px 0;border-bottom:1px solid #f1f5f9'>"
+                    f"<b>[{_r.get('timestamp','')}]</b><br>"
+                    f"작업: {_r.get('operation','')} · 페이지: {_r.get('page','')} · "
+                    f"사용자: {_r.get('user','')}<br>"
+                    f"<span style='color:#dc2626'>오류: {_r.get('message','')}</span></div>",
+                    unsafe_allow_html=True)
+                if _tb:
+                    with st.expander("traceback", expanded=False):
+                        st.code(_tb[:1500])
 
 
 # ========================================================================
