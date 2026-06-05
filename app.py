@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.4.1
+TELA CLUB Random Match Generator v6.4.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4022,7 +4022,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.4.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.4.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4235,14 +4235,33 @@ def get_audit_sheet():
         asheet.insert_row(AUDIT_COLUMNS, 1)
         return asheet
 
+def _editor_display_name() -> str:
+    """[v6.4.2] 로그의 '수정자' 표시용 실제 이름.
+    1) 로그인 ID(cafe_id)를 회원명부에서 조회해 실제 이름 우선 사용
+    2) 없으면 계정 표시 이름(단, 일반 라벨 '관리자'/'부관리자'/'회원' 제외)
+    3) 그래도 없으면 로그인 ID."""
+    u = get_app_user() or {}
+    _id = str(u.get("id", "") or "").strip()
+    try:
+        _m = _roster_cafe_map().get(_id.lower())
+        if _m and _m[1]:
+            return _m[1]
+    except Exception:
+        pass
+    _nm = str(u.get("name", "") or "").strip()
+    if _nm and _nm not in ("관리자", "부관리자", "회원"):
+        return _nm
+    return _id or _nm or "?"
+
 def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     """변경 이력을 audit_log 시트에 기록. 실패해도 메인 기능에 영향 없도록 try/except.
     [v6.3.3] 최신 로그가 상단에 오도록 2행에 삽입(헤더 아래), 시각은 텍스트(RAW),
              1개월 지난 행은 자동 정리.
-    [v6.4.1] 수정자(editor) = 현재 로그인 사용자 이름(없으면 ID)을 맨 끝 컬럼에 자동 기록."""
+    [v6.4.1] 수정자(editor)를 맨 끝 컬럼에 자동 기록.
+    [v6.4.2] 수정자는 회원명부 cafe_id 조회로 얻은 실제 이름(_editor_display_name)."""
     try:
         ts = kst_now_str("%Y-%m-%d %H:%M:%S")
-        _editor = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
+        _editor = _editor_display_name()
         ws = get_audit_sheet()
         ws.insert_row(
             [ts, action, str(member_id), member_name, detail, _editor],
@@ -4409,7 +4428,7 @@ def _ensure_member_header():
         st.session_state.setdefault("_gsheet_errors", []).append(
             f"회원 헤더 마이그레이션 실패: {_e}")
 
-def save_row(df, row, is_new, action_detail=""):
+def save_row(df, row, is_new, action_detail="", do_log=True):
     _ensure_member_header()
     sheet = _get_gsheet_connection().sheet1
     # 실제 시트 헤더 순서대로 저장 (컬럼 밀림 방지)
@@ -4438,7 +4457,9 @@ def save_row(df, row, is_new, action_detail=""):
             _gsheet_with_retry(
                 lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
                 label=f"회원 수정→등록 (id={row.get('id','')})")
-    log_audit(action, row.get("id",""), row.get("name",""), action_detail or f"카테고리:{row.get('category','')}")
+    # [v6.4.2] do_log=False면 감사 로그 생략 (수정했으나 실제 변경이 없는 경우 등)
+    if do_log:
+        log_audit(action, row.get("id",""), row.get("name",""), action_detail or f"카테고리:{row.get('category','')}")
 
 def soft_delete_row(mid, member_name):
     sheet   = _get_gsheet_connection().sheet1
@@ -5311,8 +5332,11 @@ def dialog_form(df, existing=None):
                 _diff("탈퇴일", existing.get("leave_date"), ld_str)
                 _diff("재입회일", existing.get("rejoin_date"), rj_str)
                 _diff("이름", existing.get("name"), name.strip())
+                # [v6.4.2] 실제 변경이 없으면(_chgs 비어있음) 감사 로그를 남기지 않는다.
+                _has_changes = bool(_chgs)
                 action_detail = "수정 → " + (", ".join(_chgs) if _chgs else "변경 없음")
             else:
+                _has_changes = True   # 신규 등록은 항상 기록
                 action_detail = (f"신규등록 → 카테고리:{final_cat}, 등급:{_grade_disp}, "
                                  f"연락처:{phone_normalized}")
             row_data = {
@@ -5337,7 +5361,8 @@ def dialog_form(df, existing=None):
                 "rejoin_date":    rj_str,
             }
             with st.spinner("구글 시트에 저장 중…"):
-                save_row(df, row_data, is_new=(existing is None), action_detail=action_detail)
+                save_row(df, row_data, is_new=(existing is None),
+                         action_detail=action_detail, do_log=_has_changes)
 
             # ── 부관리자 권한 반영 (v6.2.1) + 권한변경 감사 로그 (v6.3.2) ──
             if is_admin() and existing:
@@ -5534,6 +5559,9 @@ def render_roster_page():
                 # 삭제 (관리자 본인 제외)
                 if uid != _admin_id:
                     if ucols[4].button("🗑", key=f"delusr_{uid}"):
+                        # [v6.4.2] 계정 삭제도 감사 로그에 기록 (수정자=삭제 실행자)
+                        log_audit("계정삭제", uid, uinfo.get("name", ""),
+                                  f"권한:{_ROLE_KO.get(uinfo.get('role',''), uinfo.get('role',''))} 계정 삭제")
                         user_delete(uid)
                         st.rerun()
                 else:
@@ -6430,19 +6458,24 @@ st.sidebar.markdown("---")
 # 일반 회원: 통합기록실 / 개인기록실 / 스코어보드만.
 # 운영진(관리자·부관리자): 대진표생성·보관함·이벤트·회원명부 추가 노출.
 _is_staff = is_sub_admin()
-_nav_groups = [
-    ["🏆 통합기록실", "👤 개인기록실"],
-    ["📊 스코어보드"],
+# [v6.4.2] (섹션제목, [(라우팅키, 표시이름), ...]) — 라우팅키는 불변, 표시이름만 개편.
+#   내부 page 키를 그대로 유지해 모든 `if page == ...` 분기를 건드리지 않는다.
+_nav_sections = [
+    ("기록", [("🏆 통합기록실", "🏆 클럽 기록"),
+              ("👤 개인기록실", "🧍 개인 기록")]),
+    ("경기", [("📊 스코어보드", "📊 경기 결과")]),
 ]
 if _is_staff:
-    _nav_groups.append(["📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성"])
+    _nav_sections.append(("운영", [("📋 대진표생성", "🎾 대진 생성"),
+                                    ("🗂️ 대진표보관함", "📦 대진 보관함"),
+                                    ("🎯 이벤트 팀편성", "🎯 이벤트 편성")]))
 # 회원명부: 일반 회원은 제한 열람, 운영진은 전체 관리 — 모두에게 노출
-_nav_groups.append(["👥 회원명부"])
-# [v6.4.0] 로그 탭 — 관리자(admin) 전용. audit_log·score_audit·error_logs 통합 조회.
+_nav_sections.append(("회원", [("👥 회원명부", "👥 회원 관리")]))
+# [v6.4.0] 로그 탭 — 관리자(admin) 전용. [v6.4.2] 표시명 '시스템 로그'.
 if is_admin():
-    _nav_groups.append(["🧾 로그"])
+    _nav_sections.append(("관리", [("🧾 로그", "🛠️ 시스템 로그")]))
 
-_visible_pages = [p for _g in _nav_groups for p in _g]
+_visible_pages = [k for _sec, _items in _nav_sections for k, _l in _items]
 # [v6.1.2 치명버그 수정] current_page 유효성은 '역할 기반 목록'이 아니라
 # '고정 전체 페이지 목록'으로만 판단한다.
 #   기존엔 _all_pages(역할 의존)로 검사 → 권한 판정이 rerun 중 한 번이라도
@@ -6459,15 +6492,16 @@ if "pr_pending_page" in st.session_state:
     if _pp in _ALL_KNOWN_PAGES:
         st.session_state["current_page"] = _pp
 
-st.sidebar.caption("메뉴")
-for _gi, _grp in enumerate(_nav_groups):
-    if _gi > 0:
+# [v6.4.2] 그룹 제목(캡션) + 표시이름 버튼. 라우팅은 내부 키로 수행.
+for _si, (_sec, _items) in enumerate(_nav_sections):
+    if _si > 0:
         st.sidebar.markdown("---")   # 그룹 구분 가로줄
-    for _opt in _grp:
-        _cur = (st.session_state["current_page"] == _opt)
-        if st.sidebar.button(_opt, key=f"nav_{_opt}", use_container_width=True,
+    st.sidebar.caption(_sec)
+    for _key, _label in _items:
+        _cur = (st.session_state["current_page"] == _key)
+        if st.sidebar.button(_label, key=f"nav_{_key}", use_container_width=True,
                              type=("primary" if _cur else "secondary")):
-            st.session_state["current_page"] = _opt
+            st.session_state["current_page"] = _key
             st.rerun()
 page = st.session_state["current_page"]
 st.sidebar.markdown("---")
@@ -6766,7 +6800,8 @@ if page == "📊 스코어보드":
     def _save_score(idx, s1, s2):
         """점수 저장: shelf 즉시 저장 → 구글시트(records·audit)는 백그라운드 처리"""
         # [v6.3] 수정자·시각, [v6.3.1] 전체 수정 이력(history) 기록
-        _editor   = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
+        # [v6.4.2] 수정자는 회원명부 cafe_id 조회로 얻은 실제 이름
+        _editor   = _editor_display_name()
         _now_full = kst_now_str("%Y-%m-%d %H:%M:%S")
         _now_shrt = kst_now_str("%m-%d %H:%M")
         _prev_e   = scores.get(str(idx), {}) or {}
