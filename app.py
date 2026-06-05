@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.3.0
+TELA CLUB Random Match Generator v6.3.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -107,6 +107,12 @@ GUESTS_COLS  = ["name", "gender", "league", "code"]
 EXCLUDE_COLS = ["player_name"]
 USERS_COLS   = ["user_id", "pw_hash", "role", "name"]
 
+# [v6.3.1] 영구 로그 탭
+ERR_LOG_SHEET    = "error_logs"
+ERR_LOG_COLS     = ["timestamp", "page", "operation", "user", "message", "traceback"]
+SCORE_AUDIT_SHEET = "score_audit"
+SCORE_AUDIT_COLS  = ["timestamp", "date_key", "match_idx", "matchup", "editor", "from", "to"]
+
 
 # ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
 
@@ -130,6 +136,74 @@ def _get_tab(sheet_name: str, headers: list):
         st.session_state.setdefault("_gsheet_errors", []).append(
             f"{sheet_name} 탭 생성 실패 → {_e}")
         return None
+
+
+def _error_log_to_sheet(timestamp, page, operation, user, message, tb=""):
+    """[v6.3.1] error_logs 탭에 1행 추가 (best-effort, 비재귀).
+    실패해도 절대 _app_log_error를 다시 부르지 않는다(무한루프 방지)."""
+    try:
+        ws = _get_tab(ERR_LOG_SHEET, ERR_LOG_COLS)
+        if ws is None:
+            return
+        ws.append_row(
+            [str(timestamp), str(page or ""), str(operation or ""),
+             str(user or ""), str(message or "")[:500], str(tb or "")[:800]],
+            value_input_option="USER_ENTERED")
+    except Exception:
+        pass   # 시트 기록 실패는 조용히 무시 (세션 로그에는 이미 남아 있음)
+
+
+def _score_audit_to_sheet(timestamp, date_key, match_idx, matchup, editor, frm, to):
+    """[v6.3.1] score_audit 탭에 점수 수정 1건 추가 (append-only, 영구 보존)."""
+    try:
+        ws = _get_tab(SCORE_AUDIT_SHEET, SCORE_AUDIT_COLS)
+        if ws is None:
+            return
+        ws.append_row(
+            [str(timestamp), str(date_key), str(match_idx),
+             str(matchup or "")[:120], str(editor or ""), str(frm or ""), str(to or "")],
+            value_input_option="USER_ENTERED")
+    except Exception:
+        pass
+
+
+def _score_audit_load(date_key: str):
+    """[v6.3.1] score_audit 탭에서 특정 date_key의 수정 이력을 시간순으로 반환."""
+    try:
+        ws = _get_tab(SCORE_AUDIT_SHEET, SCORE_AUDIT_COLS)
+        if ws is None:
+            return []
+        rows = ws.get_all_values()
+        if not rows:
+            return []
+        hdr = rows[0]
+        def _c(name):
+            return hdr.index(name) if name in hdr else -1
+        ci = {k: _c(k) for k in SCORE_AUDIT_COLS}
+        out = []
+        for r in rows[1:]:
+            if ci["date_key"] >= 0 and ci["date_key"] < len(r) and r[ci["date_key"]] == date_key:
+                out.append({k: (r[ci[k]] if 0 <= ci[k] < len(r) else "") for k in SCORE_AUDIT_COLS})
+        out.sort(key=lambda x: x.get("timestamp", ""))
+        return out
+    except Exception:
+        return []
+
+
+def _error_log_load(limit: int = 50):
+    """[v6.3.1] error_logs 탭에서 최근 limit건을 최신순으로 반환."""
+    try:
+        ws = _get_tab(ERR_LOG_SHEET, ERR_LOG_COLS)
+        if ws is None:
+            return []
+        rows = ws.get_all_values()
+        if not rows or len(rows) < 2:
+            return []
+        hdr = rows[0]
+        data = [dict(zip(hdr, r)) for r in rows[1:]]
+        return list(reversed(data))[:limit]
+    except Exception:
+        return []
 
 
 # ── guests 탭 ─────────────────────────────────────────────────
@@ -388,17 +462,37 @@ def user_save_all(data: dict):
 _BG_ERRORS = []   # [v6.3] 백그라운드 스레드 오류 큐 (세션 접근 불가 → 메인 스레드가 비움)
 
 
-def _app_log_error(context: str, exc=None) -> None:
-    """[v6.3] 조용히 삼키던 예외를 세션 오류 로그(_gsheet_errors)에 기록.
-    앱은 중단하지 않고, 관리자 화면의 '시스템 오류 로그'에서 확인할 수 있다."""
+def _app_log_error(context: str, exc=None, page=None) -> None:
+    """[v6.3] 예외를 세션 로그(_gsheet_errors)에 기록 + [v6.3.1] error_logs 시트에 영구 저장.
+    ⚠️ st.session_state·구글시트에 접근하므로 '메인 스레드'에서만 호출할 것.
+    (백그라운드 스레드 오류는 _BG_ERRORS에 넣고, 메인 스레드가 비우며 이 함수로 기록한다.)"""
     try:
-        _ts = datetime.now().strftime("%m-%d %H:%M:%S")
+        _ts_full = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
-        _ts = "?"
-    _msg = f"[{_ts}] {context}" + (f": {type(exc).__name__}: {exc}" if exc is not None else "")
+        _ts_full = "?"
+    _msg = f"[{_ts_full}] {context}" + (f": {type(exc).__name__}: {exc}" if exc is not None else "")
     _log = st.session_state.setdefault("_gsheet_errors", [])
     _log.append(_msg)
-    del _log[:-100]   # 최근 100건만 유지
+    del _log[:-100]
+    # 상세 필드 (best-effort)
+    try:
+        _page = page or st.session_state.get("current_page", "")
+    except Exception:
+        _page = page or ""
+    try:
+        _u = get_app_user() or {}
+        _user = _u.get("name") or _u.get("id") or "?"
+    except Exception:
+        _user = "?"
+    _err_msg = (f"{type(exc).__name__}: {exc}" if exc is not None else context)
+    _tb = ""
+    if exc is not None:
+        try:
+            import traceback as _tbmod
+            _tb = "".join(_tbmod.format_exception(type(exc), exc, exc.__traceback__))
+        except Exception:
+            _tb = ""
+    _error_log_to_sheet(_ts_full, _page, context, _user, _err_msg, _tb)   # 최근 100건만 유지
 
 
 def user_ensure_admin():
@@ -2356,8 +2450,9 @@ def records_commit(date_key: str, schedule: list, scores: dict):
         if new_rows:
             ws.append_rows(new_rows, value_input_option="USER_ENTERED")
     except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"records_commit 예외 (key={date_key}): {_e}")
+        # 동기·백그라운드 양쪽에서 호출되므로 스레드 안전 큐에 기록
+        # (메인 스레드가 _app_log_error로 옮겨 세션·시트에 영구 기록)
+        _BG_ERRORS.append(f"records 커밋 실패 (key={date_key}): {_e}")
 
 
 def records_delete_by_date(date_key: str):
@@ -3865,7 +3960,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.3.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.3.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -5300,16 +5395,37 @@ def render_roster_page():
         with st.expander("🔑 계정 관리 (관리자 전용)", expanded=False):
             # [v6.3] 시스템 오류 로그 (조용히 삼키던 저장 실패 등)
             while _BG_ERRORS:
-                st.session_state.setdefault("_gsheet_errors", []).append(_BG_ERRORS.pop(0))
+                _app_log_error(_BG_ERRORS.pop(0))   # 세션+시트 영구 기록
             _sys_errs = st.session_state.get("_gsheet_errors", [])
             if _sys_errs:
-                st.error(f"⚠️ 시스템 오류 로그 {len(_sys_errs)}건 — 최근 항목 확인")
-                with st.expander(f"오류 로그 보기 ({len(_sys_errs)}건)", expanded=False):
+                st.error(f"⚠️ 이번 세션 오류 {len(_sys_errs)}건")
+                with st.expander(f"이번 세션 오류 보기 ({len(_sys_errs)}건)", expanded=False):
                     for _e in _sys_errs[-30:]:
                         st.caption(_e)
-                    if st.button("로그 비우기", key="acct_clear_errlog"):
+                    if st.button("세션 로그 비우기", key="acct_clear_errlog"):
                         st.session_state["_gsheet_errors"] = []
                         st.rerun()
+            # [v6.3.1] 구글시트 영구 오류 로그 (재시작 후에도 유지)
+            with st.expander("🗂️ 영구 오류 로그 (구글시트 error_logs)", expanded=False):
+                st.caption("발생시각·페이지·작업·사용자·오류메시지·traceback이 시트에 저장됩니다.")
+                if st.button("최근 50건 불러오기", key="load_err_sheet"):
+                    st.session_state["_err_sheet_view"] = _error_log_load(50)
+                _ev = st.session_state.get("_err_sheet_view")
+                if _ev is not None:
+                    if not _ev:
+                        st.info("기록된 오류가 없습니다.")
+                    for _r in _ev:
+                        _tb = (_r.get("traceback","") or "").strip()
+                        st.markdown(
+                            f"<div style='font-size:0.8rem;padding:3px 0;border-bottom:1px solid #f1f5f9'>"
+                            f"<b>[{_r.get('timestamp','')}]</b><br>"
+                            f"작업: {_r.get('operation','')} · 페이지: {_r.get('page','')} · "
+                            f"사용자: {_r.get('user','')}<br>"
+                            f"<span style='color:#dc2626'>오류: {_r.get('message','')}</span></div>",
+                            unsafe_allow_html=True)
+                        if _tb:
+                            with st.expander("traceback", expanded=False):
+                                st.code(_tb[:1500])
             st.markdown("---")
             all_users = user_load_all()
             st.markdown(f"**등록 계정 ({len(all_users)}개)**")
@@ -6283,7 +6399,7 @@ if page == "📊 스코어보드":
     # 스코어보드 열람은 누구나 가능, 점수 입력은 부관리자 이상 (_can_edit로 제어)
     # [v6.3] 백그라운드 스레드 오류를 세션 로그로 흡수
     while _BG_ERRORS:
-        st.session_state.setdefault("_gsheet_errors", []).append(_BG_ERRORS.pop(0))
+        _app_log_error(_BG_ERRORS.pop(0))   # 세션+시트 영구 기록
     # 구글시트 동기화 오류 표시 (관리자만, 비우지 않고 '계정 관리'에서도 조회 가능)
     if is_admin():
         _errs = st.session_state.get("_gsheet_errors", [])
@@ -6440,11 +6556,21 @@ if page == "📊 스코어보드":
         st.caption(f"🖊️ 최근 점수 입력: {_latest[1]} · {_latest[0]}")
 
     def _save_score(idx, s1, s2):
-        """점수 저장: shelf 즉시 저장 → 구글시트 기록은 백그라운드 처리"""
-        # [v6.3] 수정자·시각 기록 (audit)
-        _editor = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
-        scores[str(idx)] = {"score1": int(s1), "score2": int(s2),
-                            "by": _editor, "at": datetime.now().strftime("%m-%d %H:%M")}
+        """점수 저장: shelf 즉시 저장 → 구글시트(records·audit)는 백그라운드 처리"""
+        # [v6.3] 수정자·시각, [v6.3.1] 전체 수정 이력(history) 기록
+        _editor   = (get_app_user() or {}).get("name") or (get_app_user() or {}).get("id") or "?"
+        _now_full = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _now_shrt = datetime.now().strftime("%m-%d %H:%M")
+        _prev_e   = scores.get(str(idx), {}) or {}
+        _from     = (f'{_prev_e.get("score1")}:{_prev_e.get("score2")}'
+                     if "score1" in _prev_e else "—")
+        _to       = f"{int(s1)}:{int(s2)}"
+        _hist     = list(_prev_e.get("history", []))
+        _hist.append({"at": _now_full, "by": _editor, "from": _from, "to": _to})
+        _entry = dict(_prev_e)   # is_dup 등 기존 키 보존
+        _entry.update({"score1": int(s1), "score2": int(s2),
+                       "by": _editor, "at": _now_shrt, "history": _hist[-20:]})
+        scores[str(idx)] = _entry
         st.session_state["sb_scores"] = scores
         st.session_state[f"locked_{idx}"] = True
         st.session_state.pop(f"editing_{idx}", None)
@@ -6458,16 +6584,28 @@ if page == "📊 스코어보드":
                 st.cache_data.clear()
             except Exception:
                 pass
+            # audit용 대진 표기
+            try:
+                _m = _cur_schedule[idx]
+                _matchup = (f'{display_name(_m["team1"][0])}·{display_name(_m["team1"][1])} vs '
+                            f'{display_name(_m["team2"][0])}·{display_name(_m["team2"][1])}')
+            except Exception:
+                _matchup = ""
             import threading as _threading
-            def _bg_commit(_dk, _sched, _sc):
+            def _bg_commit(_dk, _sched, _sc, _midx, _mu, _ed, _fr, _to2, _ts):
                 try:
                     records_commit(_dk, _sched, dict(_sc))
                 except Exception as _e:
                     # 스레드에서는 st.session_state 접근 불가 → 모듈 큐에 기록
-                    _BG_ERRORS.append(f"records_commit 백그라운드 실패 (key={_dk}): {_e}")
+                    _BG_ERRORS.append(f"records 커밋 백그라운드 실패 (key={_dk}): {_e}")
+                try:
+                    _score_audit_to_sheet(_ts, _dk, _midx, _mu, _ed, _fr, _to2)
+                except Exception as _e:
+                    _BG_ERRORS.append(f"score_audit 기록 실패 (key={_dk}): {_e}")
             _threading.Thread(
                 target=_bg_commit,
-                args=(selected_key, list(_cur_schedule), dict(scores)),
+                args=(selected_key, list(_cur_schedule), dict(scores),
+                      str(idx), _matchup, _editor, _from, _to, _now_full),
                 daemon=True
             ).start()
 
@@ -6591,6 +6729,10 @@ if page == "📊 스코어보드":
                 dup_badge    = ' <span style="font-size:0.65rem;color:#e65100;background:#fff3e0;padding:1px 5px;border-radius:8px;">중복</span>' if is_dup_saved else ""
                 draw_badge   = ' <span style="font-size:0.65rem;color:#7c3aed;background:#ede9fe;padding:1px 6px;border-radius:8px;font-weight:700;">무승부</span>' if is_draw else ""
                 star_badge   = ' <span style="font-size:0.65rem;color:#b45309;background:#fef3c7;padding:1px 6px;border-radius:8px;font-weight:700;">⭐중복·6:6무</span>' if _has_dup_player else ""
+                # [v6.3.1] 경기별 마지막 수정자 (운영진만 표시)
+                _audit_badge = ""
+                if is_locked and sc.get("by") and is_sub_admin():
+                    _audit_badge = f' · 🖊️{sc.get("by")} {sc.get("at","")}'
 
                 _p1 = win_style if t1_win else (draw_style if is_draw else nrm_style)
                 _p2 = win_style if t2_win else (draw_style if is_draw else nrm_style)
@@ -6611,7 +6753,7 @@ if page == "📊 스코어보드":
                     f'</div>'
                     f'</div>'
                     f'<div style="font-size:0.58rem;color:#aaa;text-align:right;margin-top:1px;">'
-                    f'{match_type}{dup_badge}{star_badge}{draw_badge}{" ✅저장완료" if is_locked else ""}'
+                    f'{match_type}{dup_badge}{star_badge}{draw_badge}{" ✅저장완료" if is_locked else ""}{_audit_badge}'
                     f'</div>'
                     f'</div>', unsafe_allow_html=True)
 
@@ -6661,6 +6803,26 @@ if page == "📊 스코어보드":
                             st.rerun()
 
     st.markdown("---")
+    # ── [v6.3.1] 점수 수정 이력 (운영진 전용, score_audit 시트 조회) ──
+    if is_sub_admin():
+        with st.expander("📜 점수 수정 이력 (운영진 전용)", expanded=False):
+            st.caption("이 날짜의 점수 입력·수정 기록입니다. (구글시트 score_audit 탭에 영구 저장)")
+            if st.button("이력 불러오기", key="load_score_audit"):
+                st.session_state["_score_audit_view"] = _score_audit_load(selected_key)
+            _av = st.session_state.get("_score_audit_view")
+            if _av is not None:
+                if not _av:
+                    st.info("해당 날짜의 수정 이력이 없습니다.")
+                else:
+                    for _r in _av:
+                        st.markdown(
+                            f"<div style='font-size:0.8rem;font-family:monospace;"
+                            f"padding:2px 0;border-bottom:1px solid #f1f5f9'>"
+                            f"{_r.get('timestamp','')} · <b>{_r.get('editor','')}</b> · "
+                            f"{_r.get('matchup','')} &nbsp;<span style='color:#64748b'>"
+                            f"{_r.get('from','')} → {_r.get('to','')}</span></div>",
+                            unsafe_allow_html=True)
+
     # 점수 전체 초기화: 관리자만
     # [v5.9.8] 모바일에서 버튼 텍스트가 박스를 넘던 문제 → 세로 배치로 변경
     if is_admin():
