@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.9.0
+TELA CLUB Random Match Generator v6.9.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4090,7 +4090,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.9.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.9.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -4360,14 +4360,41 @@ def log_login(user: dict):
     except Exception:
         pass
 
+def _resolve_login_identity(login_id: str):
+    """[v6.9.1] 시도한 로그인 ID로 이름·권한을 추정. (로그인 실패 로그에도 이름 표기용)
+    1) 저장 계정(users: 관리자·부관리자·비번변경 회원) → 이름·권한
+    2) 회원명부 cafe_id → 이름, 권한='회원'
+    못 찾으면 ('', '')."""
+    cid = (login_id or "").strip()
+    if not cid:
+        return "", ""
+    try:
+        _all = user_load_all()
+        _u = _all.get(cid) or _all.get(cid.lower())
+        if _u:
+            _role = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}.get(
+                _u.get("role", ""), "회원")
+            return (_u.get("name", "") or ""), _role
+    except Exception:
+        pass
+    try:
+        _m = _roster_cafe_map().get(cid.lower())
+        if _m and _m[1]:
+            return _m[1], "회원"
+    except Exception:
+        pass
+    return "", ""
+
 def log_login_fail(login_id: str, locked: bool = False):
-    """[v6.9.0] 로그인 실패/차단 기록을 login_log에 남긴다. result='실패' 또는 '차단'."""
+    """[v6.9.0] 로그인 실패/차단 기록을 login_log에 남긴다. result='실패' 또는 '차단'.
+    [v6.9.1] 시도한 ID로 이름·권한을 조회해 함께 기록(실패 행에도 이름·ID 표기)."""
     try:
         ws = _get_tab(LOGIN_LOG_SHEET, LOGIN_LOG_COLS)
         if ws is None:
             return
         ts = kst_now_str("%Y-%m-%d %H:%M:%S")
-        ws.insert_row([ts, (login_id or "").strip(), "", "", "차단" if locked else "실패"],
+        _nm, _role = _resolve_login_identity(login_id)
+        ws.insert_row([ts, (login_id or "").strip(), _nm, _role, "차단" if locked else "실패"],
                       index=2, value_input_option="RAW")
         _prune_log_sheet(ws, LOGIN_LOG_SHEET, ts_col_idx=0, days=30)
     except Exception:
