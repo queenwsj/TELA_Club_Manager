@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.6.1
+TELA CLUB Random Match Generator v6.6.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3798,6 +3798,10 @@ def _render_player_substitution(schedule, date_key, is_fully_random, key_prefix=
 
     if _st.button("✅ 교체 적용", key=f"{key_prefix}_apply_{date_key}",
                   type="primary", use_container_width=True):
+        # [v6.6.3] 잠긴 대진표는 교체(수정) 불가
+        if _bracket_is_locked(date_key):
+            _st.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 회원 교체 등 수정을 할 수 있습니다.")
+            return
         if _mode == "다른 회원으로 교체":
             nn = _new_name.strip()
             if not nn:
@@ -4072,7 +4076,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.6.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.6.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -7798,6 +7802,18 @@ elif page == "📋 대진표생성":
 
     if (generate_btn and pw_ok) or (do_regen and has_saved_params):
 
+        # [v6.6.2] 잠긴 대진표 키로는 생성·재생성(덮어쓰기) 금지.
+        #   같은 일련번호로 새로 생성하면 잠긴 대진표를 덮어쓰던 치명적 버그 차단.
+        if _bracket_is_locked(rp_key):
+            st.session_state["do_regen"] = False
+            st.error(
+                f"🔒 '{rp_key}' 대진표는 잠금 상태입니다. 같은 번호로 새로 생성하면 잠긴 대진표를 "
+                "덮어쓰게 되므로 생성을 막았습니다.\n\n"
+                "덮어쓰려면 먼저 잠금을 해제하거나, 사이드바에서 **일련번호(예: 002)** 를 바꿔 "
+                "생성하세요. (잠금 해제: 대진 보관함 또는 경기 결과)"
+            )
+            st.stop()
+
         # ── 재생성: 파라미터는 저장된 것 재사용, 키는 사이드바 현재 값 ─
         if do_regen and has_saved_params:
             st.session_state["do_regen"] = False   # 소비 처리
@@ -8070,6 +8086,10 @@ elif page == "📋 대진표생성":
                     _btn_col, _msg_col = st.columns([2, 6])
                     if _btn_col.button("✅ 페어 적용", type="primary", key=f"adj_apply_btn_{_sel_mi}",
                                        disabled=_dup_warn):
+                        # [v6.6.3] 잠긴 대진표는 페어 교체(수정) 불가
+                        if _bracket_is_locked(rp_key_run):
+                            st.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 수정할 수 있습니다.")
+                            st.stop()
                         _code_map = {base_name(p): p for p in _lg_players_all}
 
                         # 제외 선수에는 (중복) 태그 추가, 정상은 태그 제거
@@ -8473,6 +8493,10 @@ function showMsg() {{
                         _btn2_col, _msg2_col = st.columns([2, 6])
                         if _btn2_col.button("✅ 페어 적용", type="primary",
                                             key=f"adj2_apply_{_sel_mi2}", disabled=_d2):
+                            # [v6.6.3] 잠긴 대진표는 페어 교체(수정) 불가
+                            if _bracket_is_locked(rp_key_run):
+                                st.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 수정할 수 있습니다.")
+                                st.stop()
                             _cm2 = {base_name(p): p for p in _lp2_all}
 
                             def _apply_dup2(code):
@@ -10658,6 +10682,12 @@ elif page == "🎯 이벤트 팀편성":
                 else:
                     # 키에 [이벤트] 마커 → 기록실 집계에서 자동 제외
                     _ev_key = f"{_date_with_weekday(_ev_rp_date.strip())}_{_ev_rp_num.strip()}[이벤트]"
+                    # [v6.6.2] 잠긴 대진표 키 덮어쓰기 금지
+                    if _bracket_is_locked(_ev_key):
+                        st.error(
+                            f"🔒 '{_ev_key}' 대진표는 잠금 상태입니다. 같은 번호로 생성하면 덮어쓰게 되므로 "
+                            "막았습니다. 먼저 잠금을 해제하거나 일련번호를 바꿔 생성하세요.")
+                        st.stop()
                     _ev_labels = st.session_state.get("_team_labels")  # OB/YB 등
                     with st.spinner("팀 대결 대진표 생성 중…"):
                         _ev_sched, _ev_stats = generate_event_team_vs_team(
