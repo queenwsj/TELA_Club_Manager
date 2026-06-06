@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.7.1
+TELA CLUB Random Match Generator v6.8.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -2933,12 +2933,16 @@ def _stat_card_row(cards_html: str, margin: str = "10px 0 16px") -> str:
     )
 
 
-def _scrollable_table(table_html: str, min_width: int = 360) -> str:
+def _scrollable_table(table_html: str, min_width: int = 360, hint: bool = True) -> str:
     """
     [F-10] HTML 테이블을 모바일에서 가로 스크롤 가능하게 감싸는 래퍼.
     좁은 화면에서 글자가 찌그러지지 않도록 최소 너비를 보장하고 넘치면 스크롤.
+    [v6.8] hint=True면 '좌우로 넘겨보세요' 안내를 표 위에 표시.
     """
+    _hint = ('<div style="font-size:0.7rem;color:#9ca3af;text-align:right;'
+             'margin:0 2px 3px 0;">↔ 좌우로 넘겨보세요</div>') if hint else ""
     return (
+        _hint +
         f'<div style="width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;">'
         f'<div style="min-width:{min_width}px;">{table_html}</div>'
         f'</div>'
@@ -4076,7 +4080,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.7.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.8.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -4220,9 +4224,9 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 
 /* ── 회원 목록 행: 열람/수정 버튼 (와일드카드로 전역 1회 선언) ── */
 /* 행마다 .st-key-detail_{id} / .st-key-edit_{id} 형태로 키가 부여되므로 attr selector 사용 */
-[class*="st-key-detail_"] button { background:#f0f9ff !important; color:#0369a1 !important; border:1px solid #bae6fd !important; font-size:11px !important; font-weight:700 !important; padding:2px 4px !important; height:28px !important; }
+[class*="st-key-detail_"] button { background:#f0f9ff !important; color:#0369a1 !important; border:1px solid #bae6fd !important; font-size:13px !important; font-weight:700 !important; padding:4px 8px !important; height:38px !important; }
 [class*="st-key-detail_"] button:hover { background:#dbeafe !important; }
-[class*="st-key-edit_"] button { background:#f0fdf4 !important; color:#15803d !important; border:1px solid #bbf7d0 !important; font-size:11px !important; font-weight:700 !important; padding:2px 4px !important; height:28px !important; }
+[class*="st-key-edit_"] button { background:#f0fdf4 !important; color:#15803d !important; border:1px solid #bbf7d0 !important; font-size:13px !important; font-weight:700 !important; padding:4px 8px !important; height:38px !important; }
 [class*="st-key-edit_"] button:hover { background:#dcfce7 !important; }
 
 /* ── 사이드바 컴팩트 + 매치카드 ── */
@@ -9241,6 +9245,15 @@ elif page == "🏆 통합기록실":
             _cc_cfg = {c: _st_cc.column_config.NumberColumn(c, format="%d")
                        for c in ["출전경기","승","무","패","득점","실점","득실차"]
                        if c in _df_lg_disp.columns}
+            # [v6.8] 순위·이름 열고정: 좌우로 스크롤해도 항상 보이게.
+            #   (Streamlit 기본 pinned 기능. 구버전이라 미지원이면 자동 무시)
+            try:
+                for _pc in ["순위", "이름"]:
+                    if _pc in _df_lg_disp.columns:
+                        _cc_cfg[_pc] = _st_cc.column_config.Column(_pc, pinned=True)
+            except TypeError:
+                pass
+            st.caption("↔ 표를 좌우로 넘겨보세요 · 순위·이름은 고정됩니다")
             st.dataframe(_df_lg_disp, use_container_width=True, hide_index=True,
                          column_config=_cc_cfg)
 
@@ -9500,6 +9513,19 @@ elif page == "👤 개인기록실":
     _now_pr = date.today()
 
     # ── 회원명 입력 ──────────────────────────────────────────
+    # [v6.8] 일반회원이 개인기록실에 처음 진입하면 본인 이름을 자동 입력해 바로 본인 기록을 보여준다.
+    #   (회원 로그인 ID=cafe_id → 회원명부에서 실제 이름 조회. 운영진/이미 입력한 경우는 제외)
+    if not st.session_state.get("_pr_self_prefilled"):
+        st.session_state["_pr_self_prefilled"] = True
+        _pu = get_app_user() or {}
+        if _pu.get("role") == "member" and "pr_name_input" not in st.session_state:
+            try:
+                _m = _roster_cafe_map().get(str(_pu.get("id", "")).lower())
+                if _m and _m[1]:
+                    st.session_state["pr_pending_name"] = _m[1]
+            except Exception:
+                pass
+
     # [F-4 버그수정 v5.9.3] 버튼으로 선택한 이름은 위젯 생성 '이전'에 주입해야 함
     # (위젯 인스턴스화 후 session_state[위젯key] 직접 수정 시 StreamlitAPIException 발생)
     if "pr_pending_name" in st.session_state:
