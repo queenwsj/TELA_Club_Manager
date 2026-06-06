@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.8.2
+TELA CLUB Random Match Generator v6.9.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -118,9 +118,16 @@ ERR_LOG_SHEET    = "error_logs"
 ERR_LOG_COLS     = ["timestamp", "page", "operation", "user", "message", "traceback"]
 SCORE_AUDIT_SHEET = "score_audit"
 SCORE_AUDIT_COLS  = ["timestamp", "date_key", "match_idx", "matchup", "editor", "from", "to"]
-# [v6.8.2] 로그인 이력 별도 탭
+# [v6.8.2] 로그인 이력 별도 탭  /  [v6.9.0] result(성공·실패·차단) 컬럼 추가
 LOGIN_LOG_SHEET   = "login_log"
-LOGIN_LOG_COLS    = ["timestamp", "login_id", "name", "role"]
+LOGIN_LOG_COLS    = ["timestamp", "login_id", "name", "role", "result"]
+# [v6.9.0] 로그인 실패 횟수·잠금 상태 (계정 차단용)
+LOGIN_LOCK_SHEET  = "login_lock"
+LOGIN_LOCK_COLS   = ["login_id", "fail_count", "locked", "updated"]
+MAX_LOGIN_FAILS   = 5   # 연속 실패 N회 시 계정 잠금
+# [v6.9.0] 메뉴 열람 이력
+VIEW_LOG_SHEET    = "view_log"
+VIEW_LOG_COLS     = ["timestamp", "login_id", "name", "role", "page"]
 
 
 # ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
@@ -4083,7 +4090,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.8.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.9.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -4347,11 +4354,138 @@ def log_login(user: dict):
         _role_ko = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}.get(
             user.get("role", ""), user.get("role", "") or "회원")
         _nm = _editor_display_name() or user.get("name", "")
-        ws.insert_row([ts, user.get("id", ""), _nm, _role_ko],
+        ws.insert_row([ts, user.get("id", ""), _nm, _role_ko, "성공"],
                       index=2, value_input_option="RAW")
         _prune_log_sheet(ws, LOGIN_LOG_SHEET, ts_col_idx=0, days=30)
     except Exception:
         pass
+
+def log_login_fail(login_id: str, locked: bool = False):
+    """[v6.9.0] 로그인 실패/차단 기록을 login_log에 남긴다. result='실패' 또는 '차단'."""
+    try:
+        ws = _get_tab(LOGIN_LOG_SHEET, LOGIN_LOG_COLS)
+        if ws is None:
+            return
+        ts = kst_now_str("%Y-%m-%d %H:%M:%S")
+        ws.insert_row([ts, (login_id or "").strip(), "", "", "차단" if locked else "실패"],
+                      index=2, value_input_option="RAW")
+        _prune_log_sheet(ws, LOGIN_LOG_SHEET, ts_col_idx=0, days=30)
+    except Exception:
+        pass
+
+# ── [v6.9.0] 로그인 실패 횟수·계정 잠금 ───────────────────────────
+def _login_lock_row(ws, login_id):
+    """login_lock 탭에서 login_id의 (fail_count, locked, row_index|None) 반환."""
+    cid = (login_id or "").strip().lower()
+    if not cid:
+        return 0, False, None
+    try:
+        rows = ws.get_all_values()
+    except Exception:
+        return 0, False, None
+    for _i, _r in enumerate(rows[1:], start=2):   # 헤더=1행
+        if _r and str(_r[0]).strip().lower() == cid:
+            _fc = int(_r[1]) if len(_r) > 1 and str(_r[1]).strip().lstrip("-").isdigit() else 0
+            _lk = len(_r) > 2 and str(_r[2]).strip() in ("1", "TRUE", "True", "true", "Y", "y")
+            return _fc, _lk, _i
+    return 0, False, None
+
+def _login_is_locked(login_id: str) -> bool:
+    ws = _get_tab(LOGIN_LOCK_SHEET, LOGIN_LOCK_COLS)
+    if ws is None:
+        return False
+    _, _lk, _ = _login_lock_row(ws, login_id)
+    return _lk
+
+def _login_register_fail(login_id: str):
+    """실패 1회 누적. MAX_LOGIN_FAILS 도달 시 locked=1. (fail_count, locked) 반환."""
+    ws = _get_tab(LOGIN_LOCK_SHEET, LOGIN_LOCK_COLS)
+    if ws is None:
+        return 0, False
+    cid = (login_id or "").strip()
+    _fc, _lk, _idx = _login_lock_row(ws, cid)
+    _fc += 1
+    _lk = _lk or (_fc >= MAX_LOGIN_FAILS)
+    _ts = kst_now_str("%Y-%m-%d %H:%M:%S")
+    try:
+        if _idx:
+            ws.update_cell(_idx, 2, _fc)
+            ws.update_cell(_idx, 3, 1 if _lk else 0)
+            ws.update_cell(_idx, 4, _ts)
+        else:
+            ws.append_row([cid, _fc, 1 if _lk else 0, _ts], value_input_option="RAW")
+    except Exception:
+        pass
+    return _fc, _lk
+
+def _login_reset(login_id: str):
+    """로그인 성공 시 실패 카운트·잠금 해제(0으로)."""
+    ws = _get_tab(LOGIN_LOCK_SHEET, LOGIN_LOCK_COLS)
+    if ws is None:
+        return
+    cid = (login_id or "").strip()
+    _fc, _lk, _idx = _login_lock_row(ws, cid)
+    if _idx and (_fc != 0 or _lk):
+        _ts = kst_now_str("%Y-%m-%d %H:%M:%S")
+        try:
+            ws.update_cell(_idx, 2, 0)
+            ws.update_cell(_idx, 3, 0)
+            ws.update_cell(_idx, 4, _ts)
+        except Exception:
+            pass
+
+def _login_locked_list():
+    """현재 잠긴 login_id 목록 [(login_id, fail_count, updated), ...] (운영진 해제용)."""
+    ws = _get_tab(LOGIN_LOCK_SHEET, LOGIN_LOCK_COLS)
+    if ws is None:
+        return []
+    try:
+        rows = ws.get_all_values()
+    except Exception:
+        return []
+    out = []
+    for _r in rows[1:]:
+        if len(_r) > 2 and str(_r[2]).strip() in ("1", "TRUE", "True", "true", "Y", "y"):
+            out.append((_r[0], _r[1] if len(_r) > 1 else "",
+                        _r[3] if len(_r) > 3 else ""))
+    return out
+
+# ── [v6.9.0] 메뉴 열람 이력 ───────────────────────────────────────
+def log_page_view(user: dict, page: str):
+    """[v6.9.0] 로그인 사용자의 메뉴 열람을 view_log에 기록.
+    페이지가 실제로 바뀐 경우에만 기록(매 rerun 폭주 방지). 30일 경과 자동 정리."""
+    try:
+        if not user or not page:
+            return
+        if st.session_state.get("_last_logged_page") == page:
+            return
+        st.session_state["_last_logged_page"] = page
+        ws = _get_tab(VIEW_LOG_SHEET, VIEW_LOG_COLS)
+        if ws is None:
+            return
+        ts = kst_now_str("%Y-%m-%d %H:%M:%S")
+        _role_ko = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}.get(
+            user.get("role", ""), user.get("role", "") or "회원")
+        _nm = _editor_display_name() or user.get("name", "")
+        _pg = page.split(" ", 1)[-1] if " " in page else page   # 이모지 제거
+        ws.insert_row([ts, user.get("id", ""), _nm, _role_ko, _pg],
+                      index=2, value_input_option="RAW")
+        _prune_log_sheet(ws, VIEW_LOG_SHEET, ts_col_idx=0, days=30)
+    except Exception:
+        pass
+
+def _view_log_load(limit: int = 200):
+    """[v6.9.0] view_log 탭에서 최근 limit건 최신순 반환."""
+    try:
+        ws = _get_tab(VIEW_LOG_SHEET, VIEW_LOG_COLS)
+        if ws is None:
+            return []
+        rows = ws.get_all_values()
+        if not rows or len(rows) < 2:
+            return []
+        return [dict(zip(VIEW_LOG_COLS, r)) for r in rows[1:]][:limit]
+    except Exception:
+        return []
 
 def _login_log_load(limit: int = 100):
     """[v6.8.2] login_log 탭에서 최근 limit건을 최신순으로 반환.
@@ -5707,6 +5841,26 @@ def render_roster_page():
             # [v6.4.0] 오류 로그·점수 수정 이력·변경 이력 조회는 사이드바 '🧾 로그' 탭으로 이동.
             #   기존엔 영구 오류 로그가 이 계정 관리 안에 묻혀 있어 접근이 번거로웠음.
             st.caption("ℹ️ 오류 로그·변경 이력·점수 수정 이력은 사이드바 **🧾 로그** 탭에서 확인할 수 있습니다.")
+
+            # [v6.9.0] 로그인 잠금 해제 (비밀번호 5회 오류로 잠긴 계정)
+            _locked_accts = _login_locked_list()
+            if _locked_accts:
+                st.markdown(f"**🔒 로그인 잠긴 계정 ({len(_locked_accts)}개)**")
+                for _la_id, _la_fc, _la_when in _locked_accts:
+                    _lu1, _lu2 = st.columns([3, 1])
+                    _lu1.markdown(
+                        f"<div style='font-size:0.85rem;padding-top:6px'>"
+                        f"<b>{_la_id}</b> · 실패 {_la_fc}회 "
+                        f"<span style='color:#94a3b8'>({_la_when})</span></div>",
+                        unsafe_allow_html=True)
+                    if _lu2.button("🔓 해제", key=f"unlock_{_la_id}", use_container_width=True):
+                        _login_reset(_la_id)
+                        log_audit("로그인잠금해제", _la_id, "", f"로그인 잠금 해제 (계정:{_la_id})")
+                        st.success(f"🔓 '{_la_id}' 잠금 해제됨")
+                        st.rerun()
+            else:
+                st.caption("🔓 현재 로그인 잠긴 계정 없음")
+
             st.markdown("---")
             all_users = user_load_all()
             st.markdown(f"**등록 계정 ({len(all_users)}개)**")
@@ -6585,8 +6739,13 @@ else:
             _id = st.session_state.get("login_id", "")
             _pw = st.session_state.get("login_pw", "")
             if _id and _pw:
+                # [v6.9.0] 잠긴 계정은 인증 시도 자체를 막음
+                if _login_is_locked(_id):
+                    st.session_state["_login_locked"] = True
+                    return
                 _r = app_authenticate(_id, _pw)
                 if _r:
+                    _login_reset(_id)   # [v6.9.0] 성공 → 실패 카운트 초기화
                     st.session_state["app_user"] = _r
                     log_login(_r)   # [v6.8.1] 로그인 기록
                     _cookie_save_user(_r)
@@ -6596,7 +6755,12 @@ else:
                     except Exception:
                         pass
                 else:
-                    st.session_state["_login_fail"] = True
+                    _fc, _lk = _login_register_fail(_id)   # [v6.9.0]
+                    log_login_fail(_id, locked=_lk)
+                    if _lk:
+                        st.session_state["_login_locked"] = True
+                    else:
+                        st.session_state["_login_fail_left"] = MAX_LOGIN_FAILS - _fc
 
         _lid = st.text_input("아이디", key="login_id", placeholder="카페ID (회원) 또는 운영진 ID")
         _lpw = st.text_input("비밀번호", type="password", key="login_pw",
@@ -6607,22 +6771,39 @@ else:
             st.rerun()
 
         if st.button("로그인", key="login_btn", type="primary", use_container_width=True):
-            _result = app_authenticate(_lid, _lpw)
-            if _result:
-                st.session_state["app_user"] = _result
-                log_login(_result)   # [v6.8.1] 로그인 기록
-                _cookie_save_user(_result)
-                _tok = _session_save(_result)
-                try:
-                    st.query_params["t"] = _tok
-                except Exception:
-                    pass
-                st.rerun()
+            if _lid and _lpw and _login_is_locked(_lid):
+                st.session_state["_login_locked"] = True
             else:
-                st.session_state["_login_fail"] = True
+                _result = app_authenticate(_lid, _lpw)
+                if _result:
+                    _login_reset(_lid)   # [v6.9.0]
+                    st.session_state["app_user"] = _result
+                    log_login(_result)   # [v6.8.1] 로그인 기록
+                    _cookie_save_user(_result)
+                    _tok = _session_save(_result)
+                    try:
+                        st.query_params["t"] = _tok
+                    except Exception:
+                        pass
+                    st.rerun()
+                elif _lid and _lpw:
+                    _fc, _lk = _login_register_fail(_lid)   # [v6.9.0]
+                    log_login_fail(_lid, locked=_lk)
+                    if _lk:
+                        st.session_state["_login_locked"] = True
+                    else:
+                        st.session_state["_login_fail_left"] = MAX_LOGIN_FAILS - _fc
 
-        if st.session_state.pop("_login_fail", False):
-            st.error("아이디 또는 비밀번호가 틀렸습니다.")
+        # [v6.9.0] 잠금/실패 안내
+        if st.session_state.pop("_login_locked", False):
+            st.error(f"🔒 비밀번호를 {MAX_LOGIN_FAILS}회 잘못 입력해 계정이 잠겼습니다. "
+                     "운영진에게 문의해 잠금을 해제하세요.")
+        elif "_login_fail_left" in st.session_state:
+            _left = st.session_state.pop("_login_fail_left")
+            if _left and _left > 0:
+                st.error(f"아이디 또는 비밀번호가 틀렸습니다. (잠금까지 {_left}회 남음)")
+            else:
+                st.error("아이디 또는 비밀번호가 틀렸습니다.")
         st.caption(f"회원은 **카페ID**로 로그인합니다. 최초 비밀번호는 `{DEFAULT_MEMBER_PW}` 이며, "
                    "로그인 후 비밀번호를 변경해야 합니다.")
 
@@ -6735,6 +6916,9 @@ if st.session_state.pop("_collapse_sidebar_mobile", False):
         height=0,
     )
 
+# [v6.9.0] 메뉴 열람 이력 기록 (페이지가 실제로 바뀐 경우에만)
+log_page_view(_u, page)
+
 # [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·경기결과·회원관리)는 보이되 콘텐츠 열람은 차단.
 #   온라인(네이버카페·카카오톡 오픈채팅) 공지 열람만 가능하도록 안내한다.
 # [v6.5.1] 경기 결과(스코어보드)도 제한 대상에 포함.
@@ -6777,6 +6961,7 @@ if page == "🧾 로그":
         ("audit", "📋 변경 이력"),
         ("score", "📜 점수 수정 이력"),
         ("login", "🔑 로그인 이력"),
+        ("view", "👀 열람 이력"),
         ("error", "🗂️ 오류 로그"),
     ]
     if "_log_view" not in st.session_state:
@@ -6839,7 +7024,7 @@ if page == "🧾 로그":
     # ── 3) 로그인 이력 (login_log) ───────────────────────────
     elif _view == "login":
         st.markdown("### 🔑 로그인 이력 (login_log)")
-        st.caption("로그인 성공 기록입니다. (최근 200건, 최신순 · 30일 경과 자동 정리)")
+        st.caption("로그인 성공·실패·차단 기록입니다. (최근 200건, 최신순 · 30일 경과 자동 정리)")
         if st.button("🔄 새로고침", key="reload_login_log"):
             st.session_state["_login_log_view"] = _login_log_load(200)
         if "_login_log_view" not in st.session_state:
@@ -6849,17 +7034,50 @@ if page == "🧾 로그":
             st.info("기록된 로그인 이력이 없습니다.")
         else:
             _ROLE_COLOR = {"관리자": "#dc2626", "부관리자": "#7c3aed", "회원": "#2563eb"}
+            _RESULT_BADGE = {
+                "성공": ("#dcfce7", "#15803d", "성공"),
+                "실패": ("#fef3c7", "#b45309", "실패"),
+                "차단": ("#fee2e2", "#b91c1c", "🔒 차단"),
+            }
             for _r in _ll:
+                _res = _r.get("result", "") or "성공"
                 _rc = _ROLE_COLOR.get(_r.get("role", ""), "#64748b")
+                _bg, _fg, _txt = _RESULT_BADGE.get(_res, ("#e5e7eb", "#374151", _res))
+                _role_part = (f"<span style='color:{_rc};font-weight:700'>{_r.get('role','')}</span> · "
+                              f"{_r.get('name','')} " if _r.get("role") or _r.get("name") else "")
+                st.markdown(
+                    f"<div style='font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9'>"
+                    f"<b>[{_r.get('timestamp','')}]</b> "
+                    f"<span style='background:{_bg};color:{_fg};font-weight:700;"
+                    f"padding:1px 7px;border-radius:10px;font-size:0.72rem'>{_txt}</span> "
+                    f"{_role_part}"
+                    f"<span style='color:#94a3b8'>(ID:{_r.get('login_id','')})</span></div>",
+                    unsafe_allow_html=True)
+
+    # ── 5) 메뉴 열람 이력 (view_log) ─────────────────────────
+    elif _view == "view":
+        st.markdown("### 👀 메뉴 열람 이력 (view_log)")
+        st.caption("누가 어떤 메뉴를 열람했는지 기록입니다. (최근 200건, 최신순 · 30일 경과 자동 정리)")
+        if st.button("🔄 새로고침", key="reload_view_log"):
+            st.session_state["_view_log_view"] = _view_log_load(200)
+        if "_view_log_view" not in st.session_state:
+            st.session_state["_view_log_view"] = _view_log_load(200)
+        _vl = st.session_state.get("_view_log_view") or []
+        if not _vl:
+            st.info("기록된 열람 이력이 없습니다.")
+        else:
+            _ROLE_COLOR2 = {"관리자": "#dc2626", "부관리자": "#7c3aed", "회원": "#2563eb"}
+            for _r in _vl:
+                _rc = _ROLE_COLOR2.get(_r.get("role", ""), "#64748b")
                 st.markdown(
                     f"<div style='font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9'>"
                     f"<b>[{_r.get('timestamp','')}]</b> "
                     f"<span style='color:{_rc};font-weight:700'>{_r.get('role','')}</span> · "
-                    f"{_r.get('name','')} "
+                    f"{_r.get('name','')} → <b>{_r.get('page','')}</b> "
                     f"<span style='color:#94a3b8'>(ID:{_r.get('login_id','')})</span></div>",
                     unsafe_allow_html=True)
 
-    # ── 4) 오류 로그 (error_logs) ────────────────────────────
+    # ── 6) 오류 로그 (error_logs) ────────────────────────────
     else:
         st.markdown("### 🗂️ 오류 로그 (error_logs)")
         # 이번 세션 오류 (_gsheet_errors) — 아직 시트에 영구 기록되기 전 임시 항목 포함
