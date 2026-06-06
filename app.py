@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.5.1
+TELA CLUB Random Match Generator v6.5.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4072,7 +4072,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.5.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.5.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -10581,6 +10581,9 @@ elif page == "🎯 이벤트 팀편성":
                         st.error("대진표를 생성할 수 없습니다. 팀 인원을 확인해주세요.")
                     else:
                         # 이벤트 대진표는 완전랜덤 플래그로 저장 (집계 호환)
+                        # [v6.5.2] 이벤트 대진표 생성도 감사 로그 기록 (shelf_save 이전)
+                        log_audit("대진표생성", "", _ev_key,
+                                  f"이벤트 팀대결 · {len(_ev_sched)}경기 생성 (키:{_ev_key})")
                         shelf_save(_ev_key, serialize_schedule(_ev_sched), {}, True)
                         st.session_state.update({
                             "rp_schedule": _ev_sched, "rp_key": _ev_key,
