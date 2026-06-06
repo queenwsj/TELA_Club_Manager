@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.6.3
+TELA CLUB Random Match Generator v6.7.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4076,8 +4076,9 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.6.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
-st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
+APP_VERSION = "6.7.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
+                   initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
 
 
@@ -6647,9 +6648,39 @@ for _si, (_sec, _items) in enumerate(_nav_sections):
         if st.sidebar.button(_label, key=f"nav_{_key}", use_container_width=True,
                              type=("primary" if _cur else "secondary")):
             st.session_state["current_page"] = _key
+            st.session_state["_collapse_sidebar_mobile"] = True   # [v6.7] 모바일 자동 접기 신호
             st.rerun()
 page = st.session_state["current_page"]
 st.sidebar.markdown("---")
+
+# [v6.7] 모바일(좁은 화면)에서 메뉴 버튼을 누르면 사이드바를 자동으로 접는다.
+#   PC(넓은 화면)는 접지 않음. Streamlit 사이드바 접기 컨트롤을 JS로 눌러 처리.
+if st.session_state.pop("_collapse_sidebar_mobile", False):
+    import streamlit.components.v1 as _components
+    _components.html(
+        """
+        <script>
+        (function(){
+          try {
+            var doc = window.parent.document;
+            var w = window.parent.innerWidth || doc.documentElement.clientWidth;
+            if (w >= 768) return;  // 모바일만 (PC는 그대로 펼침)
+            function collapse(){
+              var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                     || doc.querySelector('[data-testid="stSidebarCollapseButton"]')
+                     || doc.querySelector('button[kind="headerNoPadding"]')
+                     || doc.querySelector('[aria-label="Close sidebar"]')
+                     || doc.querySelector('[aria-label="Collapse sidebar"]');
+              if (btn) { btn.click(); return true; }
+              return false;
+            }
+            if (!collapse()) { setTimeout(collapse, 150); setTimeout(collapse, 400); }
+          } catch(e) {}
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 # [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·경기결과·회원관리)는 보이되 콘텐츠 열람은 차단.
 #   온라인(네이버카페·카카오톡 오픈채팅) 공지 열람만 가능하도록 안내한다.
