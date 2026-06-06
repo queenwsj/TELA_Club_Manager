@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.5.2
+TELA CLUB Random Match Generator v6.6.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4072,7 +4072,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.5.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.6.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4338,6 +4338,70 @@ def _audit_log_load(limit: int = 100):
         return data[:limit]
     except Exception:
         return []
+
+
+# ── [v6.6] 대진표 잠금(lock) 공통 헬퍼 ─────────────────────────────
+def _bracket_is_locked(date_key: str) -> bool:
+    """해당 대진표(date_key)가 잠금 상태인지 여부."""
+    try:
+        return bool((shelf_load(date_key) or {}).get("is_locked", False))
+    except Exception:
+        return False
+
+
+def _set_bracket_lock(date_key: str, locked: bool):
+    """대진표의 잠금 상태만 변경(스케줄·점수·랜덤플래그는 그대로 보존)."""
+    _ld = shelf_load(date_key) or {}
+    shelf_save(
+        date_key,
+        _ld.get("schedule", []),              # 저장소엔 직렬화된 형태로 보관됨
+        _ld.get("scores", {}) or {},
+        _ld.get("is_fully_random", False),
+        is_locked=locked,
+    )
+
+
+def _render_lock_manager(date_key: str, key_prefix: str, in_sidebar: bool = False):
+    """[v6.6] 대진표 잠금 상태 배너 + 관리자 잠금/해제 컨트롤(공통).
+    경기결과·대진보관함·대진생성에서 함께 사용한다.
+    잠금/해제 시 감사 로그(대진표잠금/대진표잠금해제)를 남긴다."""
+    if not date_key:
+        return
+    _c = st.sidebar if in_sidebar else st
+    locked = _bracket_is_locked(date_key)
+    if locked:
+        _c.markdown(
+            '<div style="background:#b71c1c;color:#fff;font-weight:700;'
+            'text-align:center;padding:7px;border-radius:8px;margin:6px 0;'
+            'font-size:0.85rem;">🔒 잠금된 대진표 — 해제해야 수정·삭제 가능</div>',
+            unsafe_allow_html=True)
+    if not is_admin():
+        return
+    with _c.expander("🔒 대진표 잠금 관리 (관리자)", expanded=False):
+        if not locked:
+            if st.button("🔒 잠금", type="primary", key=f"{key_prefix}_lock_btn",
+                         help="잠금하면 대진표·점수 수정과 삭제가 불가합니다."):
+                log_audit("대진표잠금", "", date_key, f"대진표 잠금 (키:{date_key})")
+                _set_bracket_lock(date_key, True)
+                st.success("🔒 잠금 완료.")
+                st.rerun()
+        else:
+            st.caption("잠금 해제 시 관리자 비밀번호를 입력해야 합니다.")
+            _pw = st.text_input("비밀번호", type="password", key=f"{key_prefix}_unlock_pw",
+                                label_visibility="collapsed",
+                                placeholder="관리자 비밀번호 입력")
+            if st.button("🔓 잠금 해제", type="secondary", key=f"{key_prefix}_unlock_btn"):
+                _u = get_app_user(); _uid = _u.get("id", "") if _u else ""
+                _ph = user_load_all().get(_uid, {}).get("pw_hash", "")
+                if _ph and _ph == _hash_pw(_pw):
+                    log_audit("대진표잠금해제", "", date_key,
+                              f"대진표 잠금 해제 (키:{date_key})")
+                    _set_bracket_lock(date_key, False)
+                    st.session_state.pop(f"{key_prefix}_unlock_pw", None)
+                    st.success("🔓 잠금 해제되었습니다.")
+                    st.rerun()
+                else:
+                    st.error("❌ 비밀번호가 틀렸습니다.")
 
 @st.cache_data(ttl=120, show_spinner=False)
 def _load_records_cached() -> list:
@@ -6833,6 +6897,8 @@ if page == "📊 스코어보드":
                     _cur_scores = st.session_state.get("sb_scores", {})
                     _cur_sched  = st.session_state.get("sb_schedule", [])
                     _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                    log_audit("대진표잠금", "", selected_key,
+                              f"경기결과에서 잠금 (키:{selected_key})")
                     shelf_save(selected_key, serialize_schedule(_cur_sched),
                                _cur_scores, _ifr, is_locked=True)
                     st.session_state["sb_is_locked"] = True
@@ -6853,6 +6919,8 @@ if page == "📊 스코어보드":
                         _cur_scores = st.session_state.get("sb_scores", {})
                         _cur_sched  = st.session_state.get("sb_schedule", [])
                         _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                        log_audit("대진표잠금해제", "", selected_key,
+                                  f"경기결과에서 잠금 해제 (키:{selected_key})")
                         shelf_save(selected_key, serialize_schedule(_cur_sched),
                                    _cur_scores, _ifr, is_locked=False)
                         st.session_state["sb_is_locked"] = False
@@ -7632,28 +7700,36 @@ elif page == "📋 대진표생성":
                 st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
                 _dc1, _dc2 = st.sidebar.columns([1, 1])
                 if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
-                    shelf_delete(_sel_key)
-                    # [v6.5] 대진표 삭제 감사 로그
-                    log_audit("대진표삭제", "", _sel_key,
-                              f"대진표 삭제 (키:{_sel_key}, 기록실 포함)")
-                    # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
-                    try:
-                        records_delete_by_date(_sel_key)
-                        st.cache_data.clear()
-                    except Exception:
-                        pass
-                    st.session_state.pop("_sb_confirm_del", None)
-                    if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
-                        st.session_state.pop("rp_schedule", None)
-                        st.session_state.pop("stats", None)
-                        st.session_state.pop("last_gen_params", None)
-                    st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
-                    st.rerun()
+                    if _bracket_is_locked(_sel_key):
+                        st.sidebar.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 삭제할 수 있습니다.")
+                        st.session_state.pop("_sb_confirm_del", None)
+                    else:
+                        shelf_delete(_sel_key)
+                        # [v6.5] 대진표 삭제 감사 로그
+                        log_audit("대진표삭제", "", _sel_key,
+                                  f"대진표 삭제 (키:{_sel_key}, 기록실 포함)")
+                        # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
+                        try:
+                            records_delete_by_date(_sel_key)
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
+                        st.session_state.pop("_sb_confirm_del", None)
+                        if st.session_state.get("last_gen_params", {}).get("rp_key") == _sel_key:
+                            st.session_state.pop("rp_schedule", None)
+                            st.session_state.pop("stats", None)
+                            st.session_state.pop("last_gen_params", None)
+                        st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
+                        st.rerun()
                 if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
                     st.session_state.pop("_sb_confirm_del", None)
                     st.rerun()
         else:
             _lb2.caption("🔒 삭제 불가")
+
+    # [v6.6] 선택한 저장 대진표의 잠금 상태 표시 + 잠금/해제 (대진 생성에도 잠금 기능 노출)
+    if _saved_keys:
+        _render_lock_manager(_sel_key, key_prefix="gen", in_sidebar=True)
 
     # ── [5] 대진표 생성 ────────────────────────────────────────
     st.sidebar.markdown("---")
@@ -10013,6 +10089,10 @@ elif page == "🗂️ 대진표보관함":
                     _render_bracket_share_card(_a_sched, _a_mode, _sel_key,
                                                key_prefix="bcA")
 
+                    # [v6.6] 잠금 상태 표시 + 관리자 잠금/해제 (보관함에도 잠금 기능 노출)
+                    st.markdown("---")
+                    _render_lock_manager(_sel_key, key_prefix="arch")
+
                     # 관리자 삭제
                     if is_admin():
                         st.markdown("---")
@@ -10024,13 +10104,17 @@ elif page == "🗂️ 대진표보관함":
                                 key="arch_del_confirm")
                             if st.button("영구 삭제", key="arch_del_btn",
                                          disabled=not _del_ok, type="primary"):
-                                shelf_delete(_sel_key)
-                                # [v6.5] 대진표 삭제 감사 로그
-                                log_audit("대진표삭제", "", _sel_key,
-                                          f"보관함에서 대진표 삭제 (키:{_sel_key})")
-                                st.cache_data.clear()
-                                st.success(f"✅ '{_arch_label(_sel_key)}' 삭제 완료.")
-                                st.rerun()
+                                if _bracket_is_locked(_sel_key):
+                                    st.error("🔒 잠금된 대진표입니다. 위의 '대진표 잠금 관리'에서 "
+                                             "먼저 잠금을 해제해야 삭제할 수 있습니다.")
+                                else:
+                                    shelf_delete(_sel_key)
+                                    # [v6.5] 대진표 삭제 감사 로그
+                                    log_audit("대진표삭제", "", _sel_key,
+                                              f"보관함에서 대진표 삭제 (키:{_sel_key})")
+                                    st.cache_data.clear()
+                                    st.success(f"✅ '{_arch_label(_sel_key)}' 삭제 완료.")
+                                    st.rerun()
 
         # ── 회원 이름 검색 ───────────────────────────────────
         with _arch_tab2:
