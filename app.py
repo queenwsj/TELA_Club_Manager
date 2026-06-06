@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.7.0
+TELA CLUB Random Match Generator v6.7.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4076,7 +4076,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.7.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.7.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -6657,8 +6657,12 @@ st.sidebar.markdown("---")
 #   PC(넓은 화면)는 접지 않음. Streamlit 사이드바 접기 컨트롤을 JS로 눌러 처리.
 if st.session_state.pop("_collapse_sidebar_mobile", False):
     import streamlit.components.v1 as _components
-    _components.html(
-        """
+    # [v6.7.1] 매 호출 고유 nonce → iframe 재생성 강제 → 스크립트 재실행 보장.
+    #   (동일 HTML이면 Streamlit이 같은 컴포넌트로 보고 다시 실행하지 않아,
+    #    두 번째 메뉴 클릭부터 사이드바가 안 접히던 문제 수정.)
+    _collapse_nonce = st.session_state.get("_collapse_nonce", 0) + 1
+    st.session_state["_collapse_nonce"] = _collapse_nonce
+    _collapse_js = """
         <script>
         (function(){
           try {
@@ -6674,11 +6678,17 @@ if st.session_state.pop("_collapse_sidebar_mobile", False):
               if (btn) { btn.click(); return true; }
               return false;
             }
-            if (!collapse()) { setTimeout(collapse, 150); setTimeout(collapse, 400); }
+            if (!collapse()) {
+              setTimeout(collapse, 120);
+              setTimeout(collapse, 300);
+              setTimeout(collapse, 600);
+            }
           } catch(e) {}
         })();
         </script>
-        """,
+    """
+    _components.html(
+        "<!-- collapse-nonce:" + str(_collapse_nonce) + " -->" + _collapse_js,
         height=0,
     )
 
