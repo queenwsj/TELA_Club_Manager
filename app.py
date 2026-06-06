@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.8.0
+TELA CLUB Random Match Generator v6.8.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -118,6 +118,9 @@ ERR_LOG_SHEET    = "error_logs"
 ERR_LOG_COLS     = ["timestamp", "page", "operation", "user", "message", "traceback"]
 SCORE_AUDIT_SHEET = "score_audit"
 SCORE_AUDIT_COLS  = ["timestamp", "date_key", "match_idx", "matchup", "editor", "from", "to"]
+# [v6.8.2] 로그인 이력 별도 탭
+LOGIN_LOG_SHEET   = "login_log"
+LOGIN_LOG_COLS    = ["timestamp", "login_id", "name", "role"]
 
 
 # ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
@@ -4080,7 +4083,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.8.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.8.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -4329,6 +4332,40 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
         _prune_log_sheet(ws, "audit_log", ts_col_idx=0, days=30)
     except Exception:
         pass
+
+def log_login(user: dict):
+    """[v6.8.1] 로그인 성공 기록.
+    [v6.8.2] audit_log가 아니라 별도 탭(login_log)에 기록한다. 30일 경과 행 자동 정리.
+    호출 전 st.session_state['app_user']가 설정돼 있어야 실제 이름이 캡처됨."""
+    try:
+        if not user:
+            return
+        ws = _get_tab(LOGIN_LOG_SHEET, LOGIN_LOG_COLS)
+        if ws is None:
+            return
+        ts = kst_now_str("%Y-%m-%d %H:%M:%S")
+        _role_ko = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}.get(
+            user.get("role", ""), user.get("role", "") or "회원")
+        _nm = _editor_display_name() or user.get("name", "")
+        ws.insert_row([ts, user.get("id", ""), _nm, _role_ko],
+                      index=2, value_input_option="RAW")
+        _prune_log_sheet(ws, LOGIN_LOG_SHEET, ts_col_idx=0, days=30)
+    except Exception:
+        pass
+
+def _login_log_load(limit: int = 100):
+    """[v6.8.2] login_log 탭에서 최근 limit건을 최신순으로 반환.
+    insert_row(index=2)로 쌓이므로 시트 순서가 이미 최신순."""
+    try:
+        ws = _get_tab(LOGIN_LOG_SHEET, LOGIN_LOG_COLS)
+        if ws is None:
+            return []
+        rows = ws.get_all_values()
+        if not rows or len(rows) < 2:
+            return []
+        return [dict(zip(LOGIN_LOG_COLS, r)) for r in rows[1:]][:limit]
+    except Exception:
+        return []
 
 def _audit_log_load(limit: int = 100):
     """[v6.4.0] audit_log 탭에서 최근 limit건을 최신순으로 반환.
@@ -6551,6 +6588,7 @@ else:
                 _r = app_authenticate(_id, _pw)
                 if _r:
                     st.session_state["app_user"] = _r
+                    log_login(_r)   # [v6.8.1] 로그인 기록
                     _cookie_save_user(_r)
                     _tok = _session_save(_r)
                     try:
@@ -6572,6 +6610,7 @@ else:
             _result = app_authenticate(_lid, _lpw)
             if _result:
                 st.session_state["app_user"] = _result
+                log_login(_result)   # [v6.8.1] 로그인 기록
                 _cookie_save_user(_result)
                 _tok = _session_save(_result)
                 try:
@@ -6730,13 +6769,14 @@ if page == "🧾 로그":
     while _BG_ERRORS:
         _app_log_error(_BG_ERRORS.pop(0))
 
-    st.caption("회원 변경 이력 · 점수 수정 이력 · 시스템 오류 로그를 한 곳에서 확인합니다. "
-               "각 로그는 구글시트의 audit_log / score_audit / error_logs 탭에 저장됩니다.")
+    st.caption("회원 변경 이력 · 점수 수정 이력 · 로그인 이력 · 시스템 오류 로그를 한 곳에서 확인합니다. "
+               "각 로그는 구글시트의 audit_log / score_audit / login_log / error_logs 탭에 저장됩니다.")
 
     # ── 로그 종류 선택 버튼 ──────────────────────────────────
     _LOG_TABS = [
         ("audit", "📋 변경 이력"),
         ("score", "📜 점수 수정 이력"),
+        ("login", "🔑 로그인 이력"),
         ("error", "🗂️ 오류 로그"),
     ]
     if "_log_view" not in st.session_state:
@@ -6796,7 +6836,30 @@ if page == "🧾 로그":
                     f"<span style='color:#64748b'>{_r.get('from','')} → {_r.get('to','')}</span></div>",
                     unsafe_allow_html=True)
 
-    # ── 3) 오류 로그 (error_logs) ────────────────────────────
+    # ── 3) 로그인 이력 (login_log) ───────────────────────────
+    elif _view == "login":
+        st.markdown("### 🔑 로그인 이력 (login_log)")
+        st.caption("로그인 성공 기록입니다. (최근 200건, 최신순 · 30일 경과 자동 정리)")
+        if st.button("🔄 새로고침", key="reload_login_log"):
+            st.session_state["_login_log_view"] = _login_log_load(200)
+        if "_login_log_view" not in st.session_state:
+            st.session_state["_login_log_view"] = _login_log_load(200)
+        _ll = st.session_state.get("_login_log_view") or []
+        if not _ll:
+            st.info("기록된 로그인 이력이 없습니다.")
+        else:
+            _ROLE_COLOR = {"관리자": "#dc2626", "부관리자": "#7c3aed", "회원": "#2563eb"}
+            for _r in _ll:
+                _rc = _ROLE_COLOR.get(_r.get("role", ""), "#64748b")
+                st.markdown(
+                    f"<div style='font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9'>"
+                    f"<b>[{_r.get('timestamp','')}]</b> "
+                    f"<span style='color:{_rc};font-weight:700'>{_r.get('role','')}</span> · "
+                    f"{_r.get('name','')} "
+                    f"<span style='color:#94a3b8'>(ID:{_r.get('login_id','')})</span></div>",
+                    unsafe_allow_html=True)
+
+    # ── 4) 오류 로그 (error_logs) ────────────────────────────
     else:
         st.markdown("### 🗂️ 오류 로그 (error_logs)")
         # 이번 세션 오류 (_gsheet_errors) — 아직 시트에 영구 기록되기 전 임시 항목 포함
