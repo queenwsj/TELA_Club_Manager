@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.5.0
+TELA CLUB Random Match Generator v6.5.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4072,7 +4072,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.5.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.5.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -6583,14 +6583,15 @@ for _si, (_sec, _items) in enumerate(_nav_sections):
 page = st.session_state["current_page"]
 st.sidebar.markdown("---")
 
-# [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·회원관리)는 보이되 콘텐츠 열람은 차단.
+# [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·경기결과·회원관리)는 보이되 콘텐츠 열람은 차단.
 #   온라인(네이버카페·카카오톡 오픈채팅) 공지 열람만 가능하도록 안내한다.
-_DORMANT_BLOCKED_PAGES = {"🏆 통합기록실", "👤 개인기록실", "👥 회원명부"}
+# [v6.5.1] 경기 결과(스코어보드)도 제한 대상에 포함.
+_DORMANT_BLOCKED_PAGES = {"🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "👥 회원명부"}
 if page in _DORMANT_BLOCKED_PAGES and _current_member_is_dormant():
     st.info(
         "💤 **휴면회원 열람 제한**\n\n"
         "휴면회원은 온라인(네이버카페, 카카오톡 오픈채팅) 공지 열람만 가능하며, "
-        "클럽기록·개인기록·회원명부 열람은 제한됩니다.\n\n"
+        "클럽기록·개인기록·경기 결과·회원명부 열람은 제한됩니다.\n\n"
         "복귀 후 정회원으로 전환되면 이용 가능합니다."
     )
     st.stop()
@@ -7836,13 +7837,14 @@ elif page == "📋 대진표생성":
             "rp_schedule": schedule, "rp_key": rp_key_run,
             "sb_schedule": schedule, "sb_scores": {}, "sb_key": "",
         })
-        shelf_save(rp_key_run, serialize_schedule(schedule), {}, IS_FULLY_RANDOM_run)
         mode_label   = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
         active_lgs   = list(league_players.keys())
         league_badge_run = " · ".join(active_lgs)
-        # [v6.5] 대진표 생성 감사 로그
+        # [v6.5.1] 대진표 생성 감사 로그 — 무거운 shelf_save 이전에 먼저 기록해
+        #          시트 쓰기 경합/한도로 로그가 누락되던 문제 방지.
         log_audit("대진표생성", "", rp_key_run,
                   f"{mode_label} / {league_badge_run} · {len(schedule)}경기 생성 (키:{rp_key_run})")
+        shelf_save(rp_key_run, serialize_schedule(schedule), {}, IS_FULLY_RANDOM_run)
         st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
         # ── 다시 생성 / 되돌리기 버튼 ────────────────────────
