@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.4.3
+TELA CLUB Random Match Generator v6.5.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -633,6 +633,48 @@ def _roster_cafe_map() -> dict:
     return out
 
 
+def _roster_status(cafe_id: str) -> Optional[dict]:
+    """[v6.5] cafe_id로 회원명부(삭제 포함)를 조회해 상태를 반환.
+    반환: {category, deleted(bool), leave(bool), rejoin(bool)} 또는 None(미발견)."""
+    cid = (cafe_id or "").strip().lower()
+    if not cid:
+        return None
+    try:
+        df = load_df(include_deleted=True)   # 정의는 하단 섹션 (런타임 호출)
+    except Exception:
+        return None
+    try:
+        for _, r in df.iterrows():
+            if str(r.get("cafe_id", "") or "").strip().lower() == cid:
+                return {
+                    "category": str(r.get("category", "") or "").strip(),
+                    "deleted":  str(r.get("deleted_at", "") or "").strip() != "",
+                    "leave":    str(r.get("leave_date", "") or "").strip() != "",
+                    "rejoin":   str(r.get("rejoin_date", "") or "").strip() != "",
+                }
+    except Exception:
+        return None
+    return None
+
+
+def _is_withdrawn_member(cafe_id: str) -> bool:
+    """[v6.5] 해당 cafe_id가 탈퇴(또는 삭제)된 회원인지 여부. 로그인 차단용."""
+    s = _roster_status(cafe_id)
+    if not s:
+        return False
+    return s["category"] == "탈퇴" or s["deleted"]
+
+
+def _current_member_is_dormant() -> bool:
+    """[v6.5] 현재 로그인 사용자가 '휴면' 상태의 일반회원인지 여부. 열람 제한용.
+    운영진(admin/sub_admin)은 제한 대상이 아니다."""
+    u = get_app_user() or {}
+    if u.get("role") != "member":
+        return False
+    s = _roster_status(u.get("id", ""))
+    return bool(s and s["category"] == "휴면")
+
+
 def app_authenticate(user_id: str, password: str) -> Optional[dict]:
     """[v6.1] 통합 로그인.
     ① users 저장소(관리자/부관리자/비번 변경한 회원) 우선 검증.
@@ -644,17 +686,25 @@ def app_authenticate(user_id: str, password: str) -> Optional[dict]:
     # ① 저장소 (원본 id: 관리자/부관리자 등)
     r = user_authenticate(uid, password)
     if r:
+        # [v6.5] 탈퇴(또는 삭제)된 일반회원은 비밀번호를 바꿔 계정이 있어도 로그인 차단
+        if r.get("role") == "member" and _is_withdrawn_member(uid):
+            return None
         return r
     # ② 저장소 (소문자 id: 비밀번호를 이미 변경한 회원)
     if uid.lower() != uid:
         r = user_authenticate(uid.lower(), password)
         if r:
+            if r.get("role") == "member" and _is_withdrawn_member(uid):
+                return None
             return r
     # ③ 명부 회원 + 기본 비밀번호 (최초 로그인)
     hit = _roster_cafe_map().get(uid.lower())
     if hit and (password or "").strip() == DEFAULT_MEMBER_PW:
         # 이미 저장소에 계정(=비번 변경 완료)이 있으면 기본 비번 로그인 차단
         if uid.lower() in user_load_all():
+            return None
+        # [v6.5] 탈퇴(또는 삭제)된 회원은 기본 비번 최초 로그인도 차단
+        if _is_withdrawn_member(uid):
             return None
         return {"id": uid.lower(), "role": "member", "name": hit[1] or hit[0]}
     return None
@@ -4022,7 +4072,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.4.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.5.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -4841,6 +4891,7 @@ def dialog_detail(row):
          if str(row.get("leave_date","") or "").strip() else "") +
         (info_row("♻️ 재입회", row.get("rejoin_date",""), "#0d9488")
          if str(row.get("rejoin_date","") or "").strip() else "") +
+        info_row("리그",      row.get("league",""),   "#7c3aed") +
         info_row("입회신청서", row.get("application","")),
         unsafe_allow_html=True)
 
@@ -6386,6 +6437,19 @@ if "app_user" not in st.session_state:
 
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
 _u = get_app_user()
+# [v6.5] 탈퇴(또는 삭제)된 회원이 기존 세션/쿠키/토큰으로 남아 있으면 강제 로그아웃
+if _u and _u.get("role") == "member" and _is_withdrawn_member(_u.get("id", "")):
+    try:
+        _old_tok = st.query_params.get("t", "")
+        if _old_tok:
+            _session_delete(_old_tok)
+        st.query_params.clear()
+    except Exception:
+        pass
+    st.session_state["app_user"] = None
+    _cookie_clear_user()
+    _u = None
+    st.warning("탈퇴 처리된 계정입니다. 더 이상 로그인할 수 없습니다. (문의: 운영진)")
 if _u:
     role_label = {"admin": "🔑 관리자", "sub_admin": "🗝️ 부관리자"}.get(_u["role"], "👤 회원")
     st.sidebar.markdown(
@@ -6518,6 +6582,18 @@ for _si, (_sec, _items) in enumerate(_nav_sections):
             st.rerun()
 page = st.session_state["current_page"]
 st.sidebar.markdown("---")
+
+# [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·회원관리)는 보이되 콘텐츠 열람은 차단.
+#   온라인(네이버카페·카카오톡 오픈채팅) 공지 열람만 가능하도록 안내한다.
+_DORMANT_BLOCKED_PAGES = {"🏆 통합기록실", "👤 개인기록실", "👥 회원명부"}
+if page in _DORMANT_BLOCKED_PAGES and _current_member_is_dormant():
+    st.info(
+        "💤 **휴면회원 열람 제한**\n\n"
+        "휴면회원은 온라인(네이버카페, 카카오톡 오픈채팅) 공지 열람만 가능하며, "
+        "클럽기록·개인기록·회원명부 열람은 제한됩니다.\n\n"
+        "복귀 후 정회원으로 전환되면 이용 가능합니다."
+    )
+    st.stop()
 
 
 
@@ -7556,6 +7632,9 @@ elif page == "📋 대진표생성":
                 _dc1, _dc2 = st.sidebar.columns([1, 1])
                 if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
                     shelf_delete(_sel_key)
+                    # [v6.5] 대진표 삭제 감사 로그
+                    log_audit("대진표삭제", "", _sel_key,
+                              f"대진표 삭제 (키:{_sel_key}, 기록실 포함)")
                     # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
                     try:
                         records_delete_by_date(_sel_key)
@@ -7761,6 +7840,9 @@ elif page == "📋 대진표생성":
         mode_label   = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
         active_lgs   = list(league_players.keys())
         league_badge_run = " · ".join(active_lgs)
+        # [v6.5] 대진표 생성 감사 로그
+        log_audit("대진표생성", "", rp_key_run,
+                  f"{mode_label} / {league_badge_run} · {len(schedule)}경기 생성 (키:{rp_key_run})")
         st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
         # ── 다시 생성 / 되돌리기 버튼 ────────────────────────
@@ -9941,6 +10023,9 @@ elif page == "🗂️ 대진표보관함":
                             if st.button("영구 삭제", key="arch_del_btn",
                                          disabled=not _del_ok, type="primary"):
                                 shelf_delete(_sel_key)
+                                # [v6.5] 대진표 삭제 감사 로그
+                                log_audit("대진표삭제", "", _sel_key,
+                                          f"보관함에서 대진표 삭제 (키:{_sel_key})")
                                 st.cache_data.clear()
                                 st.success(f"✅ '{_arch_label(_sel_key)}' 삭제 완료.")
                                 st.rerun()
