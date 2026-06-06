@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.6.0
+TELA CLUB Random Match Generator v6.6.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4072,7 +4072,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.6.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.6.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide")
 
 
@@ -6878,7 +6878,11 @@ if page == "📊 스코어보드":
             '</div>', unsafe_allow_html=True)
 
     # ── 잠금 상태 ─────────────────────────────────────────────
-    _sb_locked = st.session_state.get("sb_is_locked", False)
+    # [v6.6.1] 잠금은 세션 캐시(sb_is_locked) 대신 저장소에서 직접 읽어 항상 최신 반영.
+    #   기존엔 대진표를 새로 로드할 때만 세션값이 갱신돼, 보관함·대진생성에서 잠가도
+    #   이미 열려 있던 경기결과에서는 점수 입력이 되던 동기화 버그가 있었음.
+    _sb_locked = _bracket_is_locked(selected_key)
+    st.session_state["sb_is_locked"] = _sb_locked
 
     # 잠금 배너
     if _sb_locked:
