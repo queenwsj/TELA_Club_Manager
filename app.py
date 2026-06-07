@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.9.1
+TELA CLUB Random Match Generator v6.9.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4090,7 +4090,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.9.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.9.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -4631,7 +4631,8 @@ def load_df(include_deleted=False):
                 df[col] = ""
         df = df[RS_COLUMNS]
     df["id"]         = pd.to_numeric(df["id"],         errors="coerce").fillna(0).astype(int)
-    df["birth_year"] = pd.to_numeric(df["birth_year"], errors="coerce")
+    # [v6.9.2] 생년월일(YYYY-MM-DD) 또는 생년(YYYY) 문자열로 보관. (구버전 연도값도 호환)
+    df["birth_year"] = df["birth_year"].apply(_birth_disp)
     df["deleted_at"] = df["deleted_at"].astype(str).str.strip()
     if not include_deleted:
         df = df[df["deleted_at"] == ""]
@@ -4919,6 +4920,21 @@ def normalize_date(s):
         except ValueError: return s
     return s
 
+def _birth_disp(v):
+    """[v6.9.2] 생년월일/생년 표시용 문자열. 1990.0 → 1990 정리, nan류는 빈 값."""
+    s = str(v if v is not None else "").strip()
+    if not s or s.lower() in ("nan", "none", "nat"):
+        return ""
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    return s
+
+def _birth_year_int(v):
+    """[v6.9.2] 생년월일/생년 값에서 연도(int)만 추출. 없으면 None."""
+    s = _birth_disp(v)
+    m = re.match(r"(\d{4})", s)
+    return int(m.group(1)) if m else None
+
 def normalize_phone(s):
     """연락처 자동 포맷팅: 01012345678 → 010-1234-5678"""
     if not s: return ""
@@ -5116,8 +5132,9 @@ def dialog_detail(row):
     cat   = str(row.get("category",""))
     name  = str(row.get("name",""))
     gender = str(row.get("gender",""))
-    by    = row.get("birth_year","")
-    age   = (date.today().year - int(by)) if by and str(by).isdigit() else None
+    by    = _birth_disp(row.get("birth_year",""))
+    _by_yr = _birth_year_int(by)
+    age   = (date.today().year - _by_yr) if _by_yr else None
 
     # ── 상단 카드 ──
     gender_color = {"남":"#2563eb","여":"#db2777"}.get(gender,"#374151")
@@ -5131,7 +5148,7 @@ def dialog_detail(row):
         <div style='font-size:13px;opacity:.85;display:flex;gap:12px;flex-wrap:wrap'>
           <span>{badge(cat)}</span>
           <span style='color:{gender_color};font-weight:700'>{gender}</span>
-          {"<span>생년 " + str(int(by)) + "년" + (f" ({age}세)" if age else "") + "</span>" if by else ""}
+          {"<span>생년월일 " + by + (f" ({age}세)" if age else "") + "</span>" if by else ""}
         </div>
       </div>
     </div>
@@ -5306,17 +5323,15 @@ def dialog_form(df, existing=None):
             help="1~5등급: 1이 가장 높음. 이벤트 팀편성에 활용됩니다."
         )
 
-    # 행2: 카페ID / 생년 / 연락처 / 거주지
+    # 행2: 카페ID / 생년월일 / 연락처 / 거주지
     c4,c5,c6,c6b = st.columns([1,1,1,1])
     with c4:
         cafe_id = st.text_input("카페ID",
             value=existing["cafe_id"] if existing else "", placeholder="cafe_id")
     with c5:
-        by_v = ""
-        if existing and existing.get("birth_year"):
-            try: by_v = str(int(existing["birth_year"]))
-            except (ValueError, TypeError): pass
-        birth_year = st.text_input("생년 (YYYY)", value=by_v, placeholder="1990", max_chars=4)
+        by_v = _birth_disp(existing.get("birth_year","")) if existing else ""
+        birth_year = st.text_input("생년월일", value=by_v,
+            placeholder="1990-05-03 또는 19900503 (비우면 생략)")
     with c6:
         phone = st.text_input("연락처",
             value=existing["phone"] if existing else "", placeholder="010-0000-0000")
@@ -5543,15 +5558,26 @@ def dialog_form(df, existing=None):
         if not name.strip():
             errors.append("성명은 필수입니다.")
 
-        # 2. 생년 범위
-        by = None
-        if birth_year.strip():
-            try:
-                by = int(birth_year.strip())
-                if not (1900 <= by <= date.today().year):
-                    errors.append(f"생년은 1900~{date.today().year} 사이여야 합니다.")
-            except ValueError:
-                errors.append("생년은 4자리 숫자여야 합니다.")
+        # 2. 생년월일 (YYYY-MM-DD 또는 연도 4자리 허용 — 구버전 데이터 호환)
+        by = ""
+        _bin = birth_year.strip()
+        if _bin:
+            if re.fullmatch(r"\d{4}", _bin):
+                _yr = int(_bin)
+                if 1900 <= _yr <= date.today().year:
+                    by = _bin
+                else:
+                    errors.append(f"생년월일의 연도는 1900~{date.today().year} 사이여야 합니다.")
+            else:
+                _nd = normalize_date(_bin)
+                if DATE_RE.match(_nd):
+                    _yr = int(_nd[:4])
+                    if 1900 <= _yr <= date.today().year:
+                        by = _nd
+                    else:
+                        errors.append(f"생년월일의 연도는 1900~{date.today().year} 사이여야 합니다.")
+                else:
+                    errors.append("생년월일은 YYYY-MM-DD 또는 8자리(예: 19900503) 형식이어야 합니다.")
 
         # 3. 연락처 — 자동 포맷팅 후 형식 검증
         phone_normalized = normalize_phone(phone.strip())
@@ -5681,7 +5707,7 @@ def dialog_form(df, existing=None):
                         _chgs.append(f"{lbl}:{o or '∅'}→{n or '∅'}")
                 for _lbl, _fld in [
                     ("카테고리", "category"), ("이름", "name"), ("카페ID", "cafe_id"),
-                    ("출생년도", "birth_year"), ("성별", "gender"), ("연락처", "phone"),
+                    ("생년월일", "birth_year"), ("성별", "gender"), ("연락처", "phone"),
                     ("입회일", "join_date"), ("휴면기간", "dormant_period"),
                     ("탈퇴일", "leave_date"), ("재입회일", "rejoin_date"),
                     ("이메일", "email"), ("신청서", "application"),
@@ -6167,7 +6193,7 @@ def render_roster_page():
         "입회일순(빠른)", "입회일순(최근)",
         "휴면 시작일순(최근)",
         "탈퇴일순(최근)",
-        "생년순", "성별순"
+        "생년월일순", "성별순"
     ]
     # 세션에 sort_select가 없거나 옵션에 없으면 현재 필터의 기본값으로
     if "sort_select" not in st.session_state or st.session_state.get("sort_select") not in SORT_OPTIONS:
@@ -6295,7 +6321,7 @@ def render_roster_page():
             data = data.sort_values("_dorm_latest", ascending=False, na_position="last").drop(columns="_dorm_latest")
         elif sort_by == "탈퇴일순(최근)":
             data = data.sort_values("leave_date", ascending=False, na_position="last")
-        elif sort_by == "생년순":
+        elif sort_by == "생년월일순":
             data = data.sort_values("birth_year")
         elif sort_by == "성별순":
             data = data.sort_values("gender")
@@ -6421,7 +6447,7 @@ def render_roster_page():
     )
 
     CW  = [0.22, 0.28, 0.55, 0.65, 0.55, 0.82, 0.85, 0.46, 0.38, 0.95, 0.72, 0.75, 1.0, 0.72, 0.68, 1.1, 0.85]
-    HDR = ["☑","No.","구분","리그","등급","성명","카페ID","생년","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
+    HDR = ["☑","No.","구분","리그","등급","성명","카페ID","생년월일","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
 
     # ── [v6.2.1] 운영진(부관리자/관리자) 계정 매핑 — 리스트·카드 표시용 ──
     try:
@@ -6479,7 +6505,7 @@ def render_roster_page():
             _lg_val    = str(row.get("league", "") or "").strip()
             _lg_color  = LEAGUE_COLORS[LEAGUE_NAMES.index(_lg_val)] if _lg_val in LEAGUE_NAMES else "#9ca3af"
             _cafe      = str(row.get("cafe_id", "") or "—")
-            _by        = int(row["birth_year"]) if pd.notna(row.get("birth_year")) and row.get("birth_year") else "—"
+            _by        = _birth_disp(row.get("birth_year")) or "—"
             _region    = str(row.get("region", "") or "—")
             _join      = str(row.get("join_date", "") or "—")
             _leave     = str(row.get("leave_date", "") or "—")
@@ -6627,7 +6653,7 @@ def render_roster_page():
     
             memo_txt  = str(row.get("memo","") or "").strip()
             memo_disp = (memo_txt[:20]+"…") if len(memo_txt)>20 else (memo_txt or "—")
-            by_val    = int(row["birth_year"]) if pd.notna(row.get("birth_year")) and row.get("birth_year") else "—"
+            by_val    = _birth_disp(row.get("birth_year")) or "—"
             app_val   = str(row.get("application","") or "—")
             app_color = {"Yes":"#16a34a","No":"#dc2626"}.get(app_val,"#9ca3af")
     
@@ -10847,8 +10873,8 @@ elif page == "🎯 이벤트 팀편성":
         _by_vals = []
         for _p in _parts:
             try:
-                _byv = int(float(_p.get("birth_year")))
-                if 1900 <= _byv <= _cur_year:
+                _byv = _birth_year_int(_p.get("birth_year"))   # [v6.9.2] 생년월일/연도 모두 지원
+                if _byv and 1900 <= _byv <= _cur_year:
                     _p["_birth"] = _byv
                     _by_vals.append(_byv)
                 else:
