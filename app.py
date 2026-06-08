@@ -31,6 +31,35 @@ TELA CLUB Random Match Generator v7.0.3
 15. 페이지: 회원명부
 """
 
+
+# Supabase 연결 테스트 — 임시
+if st.session_state.get("role") == "admin":
+    with st.expander("🧪 Supabase 연결 테스트", expanded=False):
+        if st.button("Supabase schedules 조회 테스트"):
+            try:
+                sb = _get_supabase()
+                res = sb.table("schedules").select("id,date_key").limit(5).execute()
+                st.success(f"Supabase 연결 성공: {len(res.data)}건 조회")
+                st.write(res.data)
+            except Exception as e:
+                st.error(f"Supabase 연결 실패: {e}")
+                
+# ========================================================================
+# 00-S. Supabase 연결
+# ========================================================================
+
+from supabase import create_client
+
+@st.cache_resource(ttl=3600)
+def _get_supabase():
+    """Supabase 클라이언트 생성"""
+    return create_client(
+        st.secrets["supabase"]["https://doukuhwdrojyrbfhcblg.supabase.co"],
+        st.secrets["supabase"]["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvdWt1aHdkcm9qeXJiZmhjYmxnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MDg5ODYxMSwiZXhwIjoyMDk2NDc0NjExfQ.vkyjC6V1WrLHHFU3ZPe390XkNTfgwuU_EynC14QnHLU"],
+    )
+
+
+
 # ========================================================================
 # 00. IMPORT / 기본 설정
 # ========================================================================
@@ -51,6 +80,7 @@ from dataclasses import dataclass, field
 from itertools import zip_longest
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 from datetime import date
+from supabase import create_client
 
 # ── 날짜 → 요일 포함 문자열 헬퍼 ────────────────────────────
 _WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
