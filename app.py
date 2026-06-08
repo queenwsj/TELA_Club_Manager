@@ -421,44 +421,6 @@ def _supabase_exclude_save(names: list):
     return delete_res
 
 
-def exclude_list_save(names: list):
-    """기록 제외 선수 목록 저장. Supabase + 구글시트 백업."""
-    clean = sorted(set([str(n).strip() for n in names if str(n).strip()]))
-
-    with shelve.open(EXCLUDE_PATH) as db:
-        db["excluded"] = clean
-
-    try:
-        res = _supabase_exclude_save(clean)
-        st.toast("Supabase 제외선수 저장 완료", icon="✅")
-    except Exception as e:
-        st.error(f"Supabase exclude 저장 실패: {e}")
-        try:
-            _app_log_error("Supabase exclude 저장 실패", e)
-        except Exception:
-            pass
-
-    # Phase 3 안정화 전까지 구글시트 백업 유지
-    try:
-        _gsheet_exclude_save(clean)
-    except Exception as e:
-        st.warning(f"구글시트 exclude 백업 실패: {e}")
-
-
-def exclude_list_load() -> list:
-    """기록 제외 선수 목록 로드. Supabase 우선."""
-    try:
-        val = _supabase_exclude_load()
-        if val is not None:
-            with shelve.open(EXCLUDE_PATH) as db:
-                db["excluded"] = val
-            return list(val)
-    except Exception:
-        pass
-
-    with shelve.open(EXCLUDE_PATH) as db:
-        return list(db.get("excluded", []))
-
 # ── users 탭 ──────────────────────────────────────────────────
 
 def _gsheet_users_save(users: dict):
@@ -2899,20 +2861,90 @@ def records_full_rebuild():
         return 0, 0, str(_e)
 
 
-# ── 기록실 제외 선수 관리 (shelve 저장) ──────────────────────
+# ── 기록실 제외 선수 관리 (Supabase 우선 + shelve 캐시 + 구글시트 백업) ──────────────────────
+
+def _supabase_exclude_load() -> list:
+    """Supabase excluded_players 테이블에서 제외 선수 목록 로드."""
+    try:
+        sb = _get_supabase()
+        res = sb.table("excluded_players").select("name").order("name").execute()
+        return [
+            str(r.get("name", "")).strip()
+            for r in (res.data or [])
+            if r.get("name")
+        ]
+    except Exception as e:
+        try:
+            _app_log_error("Supabase exclude 로드 실패", e)
+        except Exception:
+            pass
+        return []
+
+
+def _supabase_exclude_save(names: list):
+    """Supabase excluded_players 전체 덮어쓰기."""
+    sb = _get_supabase()
+
+    clean = sorted(set([str(n).strip() for n in names if str(n).strip()]))
+
+    # 기존 데이터 전체 삭제
+    sb.table("excluded_players").delete().neq("name", "").execute()
+
+    # 새 데이터 삽입
+    if clean:
+        rows = [{"name": n} for n in clean]
+        sb.table("excluded_players").upsert(rows).execute()
+
+
 def exclude_list_load() -> list:
-    """제외 선수 이름 목록 로드. ['윤지수', '홍길동', ...]"""
+    """제외 선수 이름 목록 로드. Supabase 우선, 실패 시 shelve 폴백."""
+    try:
+        val = _supabase_exclude_load()
+        if val is not None:
+            with shelve.open(EXCLUDE_PATH) as db:
+                db["excluded"] = val
+            return list(val)
+    except Exception:
+        pass
+
     with shelve.open(EXCLUDE_PATH) as db:
         return list(db.get("excluded", []))
 
+
 def exclude_list_save(names: list):
+    """제외 선수 이름 목록 저장. Supabase + shelve + 구글시트 백업."""
+    clean = sorted(set([str(n).strip() for n in names if str(n).strip()]))
+
+    # 로컬 캐시 저장
     with shelve.open(EXCLUDE_PATH) as db:
-        db["excluded"] = sorted(list(set(names)))
-    # 구글시트 동기화
+        db["excluded"] = clean
+
+    # Supabase 저장
     try:
-        _gsheet_exclude_save(sorted(list(set(names))))
-    except Exception:
-        pass
+        _supabase_exclude_save(clean)
+        try:
+            st.toast("Supabase 제외선수 저장 완료", icon="✅")
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            st.error(f"Supabase exclude 저장 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase exclude 저장 실패", e)
+        except Exception:
+            pass
+
+    # Phase 3 안정화 전까지 구글시트 백업 유지
+    try:
+        _gsheet_exclude_save(clean)
+    except Exception as e:
+        try:
+            _app_log_error("구글시트 exclude 백업 실패", e)
+        except Exception:
+            pass
+
 
 def exclude_list_add(name: str):
     names = exclude_list_load()
@@ -2920,6 +2952,7 @@ def exclude_list_add(name: str):
     if name and name not in names:
         names.append(name)
         exclude_list_save(names)
+
 
 def exclude_list_remove(name: str):
     names = exclude_list_load()
