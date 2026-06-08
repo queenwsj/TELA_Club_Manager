@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.9.3
+TELA CLUB Random Match Generator v7.0.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4090,7 +4090,12 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.9.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.0.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+
+# [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
+#   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
+NAVER_CAFE_URL     = ""   # 예: "https://cafe.naver.com/your-club"
+KAKAO_OPENCHAT_URL = ""   # 예: "https://open.kakao.com/o/your-room"
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -4483,6 +4488,8 @@ def log_page_view(user: dict, page: str):
     페이지가 실제로 바뀐 경우에만 기록(매 rerun 폭주 방지). 30일 경과 자동 정리."""
     try:
         if not user or not page:
+            return
+        if page == "🏠 메인":   # [v7.0.0] 홈(메인) 화면은 메뉴 열람 이력에 남기지 않음
             return
         if st.session_state.get("_last_logged_page") == page:
             return
@@ -6781,7 +6788,26 @@ def render_roster_page():
 # [다이어트] 사이드바 + 매치카드 CSS는 전역 CSS 블록에 통합됨
 
 # ── 네비게이션 ───────────────────────────────────────────────
-st.sidebar.markdown("## 🎾 TELA TENNIS CLUB")
+# [v7.0.0] 사이드바 상단 클럽명 = 홈(메인) 이동 버튼. 타이틀처럼 보이도록 CSS 적용.
+st.sidebar.markdown(
+    """<style>
+    section[data-testid="stSidebar"] div.st-key-home_nav_title button{
+        background:transparent !important;border:none !important;
+        padding:2px 0 0 !important;margin:0 !important;box-shadow:none !important;
+        justify-content:flex-start !important;text-align:left !important;}
+    section[data-testid="stSidebar"] div.st-key-home_nav_title button p{
+        font-size:1.35rem !important;font-weight:800 !important;color:#0f172a !important;
+        letter-spacing:-0.5px !important;margin:0 !important;}
+    section[data-testid="stSidebar"] div.st-key-home_nav_title button:hover p{
+        color:#0d9488 !important;}
+    </style>""",
+    unsafe_allow_html=True,
+)
+if st.sidebar.button("🎾 TELA TENNIS CLUB", key="home_nav_title",
+                     use_container_width=True, help="홈(메인) 화면으로 이동"):
+    st.session_state["current_page"] = "🏠 메인"
+    st.session_state["_collapse_sidebar_mobile"] = True
+    st.rerun()
 st.sidebar.caption(f"v{APP_VERSION}")
 st.sidebar.markdown("---")
 
@@ -6825,6 +6851,8 @@ if _u:
             pass
         st.session_state["app_user"] = None
         _cookie_clear_user()
+        st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그아웃 후 메인 착지
+        st.session_state.pop("_last_logged_page", None)
         st.rerun()
 else:
     with st.sidebar.expander("🔐 로그인", expanded=True):
@@ -6840,6 +6868,7 @@ else:
                 if _r:
                     _login_reset(_id)   # [v6.9.0] 성공 → 실패 카운트 초기화
                     st.session_state["app_user"] = _r
+                    st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 메인 착지
                     log_login(_r)   # [v6.8.1] 로그인 기록
                     _cookie_save_user(_r)
                     _tok = _session_save(_r)
@@ -6871,6 +6900,7 @@ else:
                 if _result:
                     _login_reset(_lid)   # [v6.9.0]
                     st.session_state["app_user"] = _result
+                    st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 메인 착지
                     log_login(_result)   # [v6.8.1] 로그인 기록
                     _cookie_save_user(_result)
                     _tok = _session_save(_result)
@@ -6944,11 +6974,11 @@ _visible_pages = [k for _sec, _items in _nav_sections for k, _l in _items]
 #   기존엔 _all_pages(역할 의존)로 검사 → 권한 판정이 rerun 중 한 번이라도
 #   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
 #   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
-_ALL_KNOWN_PAGES = ["🏆 통합기록실", "👤 개인기록실", "📊 스코어보드",
+_ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "📊 스코어보드",
                     "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부",
                     "🧾 로그"]
 if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
-    st.session_state["current_page"] = "🏆 통합기록실"
+    st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 기본 착지 = 메인
 # [F-6] 개인기록실 등에서의 페이지 이동 트리거
 if "pr_pending_page" in st.session_state:
     _pp = st.session_state.pop("pr_pending_page")
@@ -7011,6 +7041,109 @@ if st.session_state.pop("_collapse_sidebar_mobile", False):
 
 # [v6.9.0] 메뉴 열람 이력 기록 (페이지가 실제로 바뀐 경우에만)
 log_page_view(_u, page)
+
+# ========================================================================
+# [v7.0.0] 메인(홈) 화면 + 공통 홈 버튼
+#   · 로그인 직후 기본 착지 화면(메뉴 이력 미기록).
+#   · 사이드바 메뉴를 카드로 노출해 한눈에 진입할 수 있게 한다.
+#   · 콘텐츠 페이지에서는 상단에 '🏠 홈' 버튼을 항상 표시한다.
+# ========================================================================
+# ── 콘텐츠 페이지 공통 상단 홈 버튼 (메인 화면 자신은 제외) ──
+if page != "🏠 메인":
+    _hb_col, _ = st.columns([1, 7])
+    with _hb_col:
+        if st.button("🏠 홈", key="home_btn_top", use_container_width=True,
+                     help="메인(홈) 화면으로 이동"):
+            st.session_state["current_page"] = "🏠 메인"
+            st.session_state["_collapse_sidebar_mobile"] = True
+            st.rerun()
+
+# ── 메인(홈) 화면 렌더링 ──
+if page == "🏠 메인":
+    _hello_name = (_u or {}).get("name", "회원")
+    _role_label = {"admin": "🔑 관리자", "sub_admin": "🗝️ 부관리자"}.get(
+        (_u or {}).get("role", ""), "👤 회원")
+    _today_disp = _date_with_weekday(kst_now_str("%Y-%m-%d"))
+
+    # 헤더 배너
+    st.markdown(
+        f"<div style='padding:20px 24px;border-radius:18px;"
+        f"background:linear-gradient(135deg,#0d9488 0%,#0f766e 100%);color:#fff;"
+        f"margin-bottom:18px;box-shadow:0 4px 16px rgba(15,118,110,.25)'>"
+        f"<div style='font-size:0.85rem;opacity:.92'>{_role_label} · {_hello_name}님 환영합니다 👋</div>"
+        f"<div style='font-size:1.8rem;font-weight:800;letter-spacing:-0.6px;margin-top:3px'>"
+        f"🎾 테라 테니스클럽</div>"
+        f"<div style='font-size:0.9rem;opacity:.92;margin-top:5px'>오늘은 {_today_disp} 입니다.</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # 빠른 통계 (가벼운 집계 — 실패해도 무시)
+    try:
+        _hdf = load_df()
+        if "category" in _hdf.columns:
+            _total   = int((_hdf["category"] != "탈퇴").sum())
+            _active  = int((_hdf["category"] == "정회원").sum())
+            _officer = int(_hdf["category"].isin(OFFICER_CATS).sum())
+            _dormant = int((_hdf["category"] == "휴면").sum())
+            _stats = [("전체 회원", _total, "#0f172a"),
+                      ("정회원",   _active, "#0d9488"),
+                      ("운영진",   _officer, "#7c3aed"),
+                      ("휴면",     _dormant, "#ca8a04")]
+            _mc = st.columns(4)
+            for _col, (_lbl, _val, _clr) in zip(_mc, _stats):
+                _col.markdown(
+                    f"<div style='border:1px solid #e2e8f0;border-radius:14px;"
+                    f"padding:14px 10px;text-align:center;background:#fff'>"
+                    f"<div style='font-size:1.7rem;font-weight:800;color:{_clr};"
+                    f"line-height:1.1'>{_val}</div>"
+                    f"<div style='font-size:0.78rem;color:#64748b;margin-top:2px'>{_lbl}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True)
+    except Exception:
+        pass
+
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    st.markdown("#### 🚀 바로가기")
+
+    # 메뉴 카드 (사이드바 메뉴를 홈에 그대로 노출)
+    _card_desc = {
+        "🏆 통합기록실":   "클럽 전체 통계·랭킹·참여 추이",
+        "👤 개인기록실":   "내 전적·페어·라이벌 분석",
+        "📊 스코어보드":   "경기 결과 입력·확인",
+        "📋 대진표생성":   "랜덤 대진표 생성",
+        "🗂️ 대진표보관함": "지난 대진표 날짜별 조회",
+        "🎯 이벤트 팀편성": "이벤트용 팀 편성",
+        "👥 회원명부":     "회원 조회·관리",
+        "🧾 로그":         "시스템·열람 로그 (관리자)",
+    }
+    for _sec, _items in _nav_sections:
+        st.caption(_sec)
+        _ncol = min(len(_items), 3) or 1
+        _cols = st.columns(_ncol)
+        for _i, (_key, _label) in enumerate(_items):
+            with _cols[_i % _ncol]:
+                if st.button(_label, key=f"home_card_{_key}",
+                             use_container_width=True):
+                    st.session_state["current_page"] = _key
+                    st.session_state["_collapse_sidebar_mobile"] = True
+                    st.rerun()
+                st.markdown(
+                    f"<div style='font-size:0.74rem;color:#94a3b8;"
+                    f"margin:-6px 0 10px;padding-left:2px'>{_card_desc.get(_key,'')}</div>",
+                    unsafe_allow_html=True)
+
+    # 온라인 공지 바로가기 (URL이 설정된 경우만)
+    if NAVER_CAFE_URL or KAKAO_OPENCHAT_URL:
+        st.markdown("---")
+        st.caption("온라인 공지")
+        _lc = st.columns(2)
+        if NAVER_CAFE_URL:
+            _lc[0].link_button("📋 네이버 카페", NAVER_CAFE_URL, use_container_width=True)
+        if KAKAO_OPENCHAT_URL:
+            _lc[1].link_button("💬 카카오톡 오픈채팅", KAKAO_OPENCHAT_URL, use_container_width=True)
+
+    st.stop()
 
 # [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·경기결과·회원관리)는 보이되 콘텐츠 열람은 차단.
 #   온라인(네이버카페·카카오톡 오픈채팅) 공지 열람만 가능하도록 안내한다.
