@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.0.2
+TELA CLUB Random Match Generator v7.0.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -2722,9 +2722,9 @@ def exclude_list_remove(name: str):
     exclude_list_save(names)
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=300, show_spinner="🎾 기록 데이터를 불러오는 중…")
 def records_load_cached() -> list:
-    """records 시트 캐시 로드 (120초 TTL)."""
+    """records 시트 캐시 로드 (TTL 300초). [v7.0.3] 120→300초로 상향."""
     return _records_sheet_load_all()
 
 
@@ -2771,12 +2771,12 @@ def _records_rows_from_shelf() -> list:
     return rows
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def records_rows_from_shelf_cached() -> list:
     return _records_rows_from_shelf()
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def records_available_periods() -> dict:
     """
     [v5.9.9] 실제로 기록이 존재하는 월/연도 목록을 반환.
@@ -3003,7 +3003,7 @@ _WLD_PALETTE = {
 }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def _personal_raw_matches_cached() -> list:
     """
     개인기록실 전용 raw 경기 데이터 캐시.
@@ -3100,7 +3100,7 @@ def _personal_get_all_rows() -> list:
     return rows
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_available_periods(player_name: str) -> dict:
     """[v5.9.10] 특정 선수가 실제 출전한 월/연도 목록.
     개인기록 파트너 궁합·라이벌 전적 탭의 드롭다운을 데이터 있는 기간으로 구성."""
@@ -3118,7 +3118,7 @@ def personal_available_periods(player_name: str) -> dict:
     return {"months": sorted(months, reverse=True), "years": sorted(years, reverse=True)}
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_monthly_leagues(player_name: str, year: str) -> list:
     """
     특정 회원의 연도별 월별 소속 리그 목록 반환.
@@ -3153,7 +3153,7 @@ def personal_monthly_leagues(player_name: str, year: str) -> list:
     return result
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_pair_stats(player_name: str, filter_value: str) -> dict:
     """
     특정 회원의 파트너별 승무패 통계 계산.
@@ -3229,7 +3229,7 @@ def personal_pair_stats(player_name: str, filter_value: str) -> dict:
     }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_pair_stats_all(player_name: str, filter_value: str) -> list:
     """
     [F-7] 파트너 궁합 CSV용 — 전체 파트너 목록 (최소 경기수 필터 없음, 1경기도 포함).
@@ -3272,7 +3272,7 @@ def personal_pair_stats_all(player_name: str, filter_value: str) -> list:
     return sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_rival_stats(player_name: str, filter_value: str) -> tuple:
     """
     특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
@@ -3343,7 +3343,7 @@ def personal_rival_stats(player_name: str, filter_value: str) -> tuple:
     return rows, match_totals
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_get_all_players() -> list:
     """기록에 존재하는 모든 player_key 목록 반환 (제외 선수 제외, 중복 제거, 정렬)."""
     rows = _personal_get_all_rows()
@@ -3359,7 +3359,7 @@ def personal_get_all_players() -> list:
 
 # ── [기능2] 참여 트렌드 대시보드 헬퍼 ────────────────────────
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def participation_monthly_trend(year: str) -> list:
     """
     [기능2] 월별 참여 추이. 선택 연도의 각 월별 고유 참여 인원·경기 수 집계.
@@ -3388,7 +3388,7 @@ def participation_monthly_trend(year: str) -> list:
     ]
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def participation_league_activity(filter_value: str) -> list:
     """
     [기능2] 리그별 활성도. 기간 내 리그별 경기 수·고유 참여 인원.
@@ -3411,7 +3411,7 @@ def participation_league_activity(filter_value: str) -> list:
     return sorted(rows, key=lambda x: -x["matches"])
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def participation_inactive_members(months: int = 3) -> list:
     """
     [기능2] 최근 N개월간 미참여 회원 목록 (휴면 후보 관리용).
@@ -3450,7 +3450,7 @@ def participation_inactive_members(months: int = 3) -> list:
 
 # ── [기능4] 라이벌 매치업 예상 헬퍼 ──────────────────────────
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def player_career_winrate(player_name: str) -> dict:
     """선수 통산 승무패·승률 (전체 기간). 반환: {games, wins, draws, losses, rate}."""
     matches = _personal_raw_matches_cached()
@@ -3527,7 +3527,7 @@ def predict_matchup(team_a: list, team_b: list) -> dict:
     }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_summary(player_name: str, year: str) -> dict:
     """
     [F-2] 선수의 연간 종합 요약.
@@ -3556,7 +3556,7 @@ def personal_summary(player_name: str, year: str) -> dict:
     }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_monthly_trend(player_name: str, year: str) -> list:
     """
     [F-1] 선수의 월별 성적 추이.
@@ -3920,7 +3920,7 @@ def season_compare_summary(period_type: str, val_a: str, val_b: str) -> dict:
     return {"a": _agg(df_a), "b": _agg(df_b), "df_a": df_a, "df_b": df_b}
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_partner_vs_rival(player_name: str, rival_name: str,
                               filter_value: str) -> list:
     """
@@ -3991,7 +3991,7 @@ def personal_partner_vs_rival(player_name: str, rival_name: str,
     return rows
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def personal_rival_recent(player_name: str, rival_name: str,
                           filter_value: str, limit: int = 10) -> list:
     """
@@ -4124,7 +4124,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.0.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.0.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4291,6 +4291,33 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stSidebar"] .stCheckbox { margin-bottom: 0px !important; }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div { gap: 4px !important; }
 .match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
+
+/* [v7.0.3] 로딩(실행) 인디케이터 — 메뉴 전환·데이터 로딩 중 '프리징처럼 보이는' 문제 개선.
+   Streamlit 실행 상태 위젯에 내용이 있을 때만(:has) 테니스공 펄럭임 + '불러오는 중' 표시. */
+[data-testid="stStatusWidget"]:has(*){
+    background:#0d9488 !important;
+    border-radius:9999px !important;
+    padding:6px 16px 6px 14px !important;
+    box-shadow:0 6px 20px rgba(13,148,136,.35) !important;
+    display:flex !important; align-items:center !important;
+}
+[data-testid="stStatusWidget"]:has(*) svg{ display:none !important; }
+[data-testid="stStatusWidget"]:has(*) > div,
+[data-testid="stStatusWidget"]:has(*) label,
+[data-testid="stStatusWidget"]:has(*) span{ font-size:0 !important; }
+[data-testid="stStatusWidget"]:has(*)::before{
+    content:"🎾"; font-size:16px; line-height:1;
+    display:inline-block; margin-right:7px;
+    animation:tela-ball-bounce .6s infinite ease-in-out;
+}
+[data-testid="stStatusWidget"]:has(*)::after{
+    content:"불러오는 중…"; font-size:13px; font-weight:700; color:#fff;
+    white-space:nowrap;
+}
+@keyframes tela-ball-bounce{
+    0%,100%{ transform:translateY(0) rotate(0deg); }
+    50%{ transform:translateY(-5px) rotate(180deg); }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -4652,11 +4679,13 @@ def _render_lock_manager(date_key: str, key_prefix: str, in_sidebar: bool = Fals
                 else:
                     st.error("❌ 비밀번호가 틀렸습니다.")
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
 def _load_records_cached() -> list:
     """
-    구글 시트 전체 레코드를 120초 TTL로 캐싱.
-    API 429 방지용. 저장/수정 후 st.cache_data.clear()로 즉시 무효화.
+    구글 시트 전체 레코드를 캐싱(TTL 600초).
+    [v7.0.3] TTL을 120→600초로 상향 — 저장/수정 시 항상 st.cache_data.clear()로
+    즉시 무효화되므로, 네비게이션 중 불필요한 시트 재조회(5~7초 지연)를 크게 줄인다.
+    캐시 미스(실제 네트워크 조회)일 때만 테니스공 스피너가 표시된다.
     """
     wb    = _get_gsheet_connection()
     sheet = wb.sheet1
