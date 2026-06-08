@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.1.0
+TELA CLUB Random Match Generator v7.2.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -85,21 +85,7 @@ def _date_with_weekday(date_str: str) -> str:
 import secrets as _secrets
 
 
-def _keyed_container(key: str):
-    """[v5.9.9] st.container(key=...) 래퍼. 구버전 Streamlit이면 일반 컨테이너로 폴백.
-    key가 적용되면 DOM에 'st-key-{key}' 클래스가 생겨 모바일 1줄 CSS를 적용할 수 있다."""
-    try:
-        return st.container(key=key)
-    except TypeError:
-        return st.container()
 
-
-
-# ========================================================================
-# 00-S. Supabase 연결
-# ========================================================================
-
-@st.cache_resource(ttl=3600)
 def _get_supabase():
     """Supabase 클라이언트 생성"""
     return create_client(
@@ -178,64 +164,6 @@ VIEW_LOG_COLS     = ["timestamp", "login_id", "name", "role", "page"]
 
 # ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
 
-def _get_tab(sheet_name: str, headers: list):
-    """범용 탭 getter. 없으면 자동 생성."""
-    try:
-        wb = _get_gsheet_connection()
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"{sheet_name} 탭: 연결 실패 → {_e}")
-        return None
-    try:
-        return wb.worksheet(sheet_name)
-    except Exception:
-        pass
-    try:
-        ws = wb.add_worksheet(title=sheet_name, rows=500, cols=len(headers))
-        ws.append_row(headers)
-        return ws
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"{sheet_name} 탭 생성 실패 → {_e}")
-        return None
-
-
-_LAST_PRUNE = {}   # [v6.3.3] 시트별 마지막 정리 시각(epoch) — 과도한 API 호출 방지
-
-
-def _prune_log_sheet(ws, sheet_name, ts_col_idx=0, days=30, min_interval=1800):
-    """[v6.3.3] 로그 탭에서 'days'일 이전 행을 삭제(보관기간 제한).
-    - 타임스탬프 앞 10자(YYYY-MM-DD)만 비교 → 시·분 표기/로케일 영향 없음.
-    - YYYY-MM-DD 패턴이 아닌 행은 건드리지 않음(안전).
-    - min_interval초 이내 재호출은 건너뜀(스레드/메인 공용 모듈 throttle)."""
-    import time as _time
-    _now = _time.time()
-    if _now - _LAST_PRUNE.get(sheet_name, 0) < min_interval:
-        return
-    _LAST_PRUNE[sheet_name] = _now
-    try:
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-        import re as _re
-        cutoff = ((_dt.now(_tz.utc) + _td(hours=9)) - _td(days=days)).strftime("%Y-%m-%d")
-        rows = ws.get_all_values()
-        if len(rows) <= 1:
-            return
-        _pat = _re.compile(r"^\d{4}-\d{2}-\d{2}")
-        to_del = []
-        for i in range(1, len(rows)):
-            cell = rows[i][ts_col_idx] if ts_col_idx < len(rows[i]) else ""
-            d = str(cell)[:10]
-            if _pat.match(d) and d < cutoff:
-                to_del.append(i + 1)   # 1-based 시트 행번호
-        for ri in sorted(to_del, reverse=True):
-            try:
-                ws.delete_rows(ri)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
 def _error_log_to_sheet(timestamp, page, operation, user, message, tb=""):
     """[v7 Supabase] error_logs 테이블에 1행 삽입 (best-effort, 비재귀)."""
     try:
@@ -303,39 +231,6 @@ def _error_log_load(limit: int = 50):
 
 
 # ── guests 탭 ─────────────────────────────────────────────────
-
-def _gsheet_guests_save(guests: list):
-    """guests 탭 전체 덮어쓰기. 행 1개 = 게스트 1명."""
-    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
-    if ws is None:
-        return
-    try:
-        # 헤더 제외 기존 데이터 행 모두 삭제
-        existing = ws.get_all_values()
-        if len(existing) > 1:
-            ws.delete_rows(2, len(existing))
-        if guests:
-            rows = [[
-                str(g.get("name","")),
-                str(g.get("gender","")),
-                str(g.get("league","")),
-                str(g.get("code","")),
-            ] for g in guests]
-            ws.append_rows(rows, value_input_option="USER_ENTERED")
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"guests 저장 오류 → {_e}")
-
-
-def _gsheet_guests_load() -> list:
-    """guests 탭에서 게스트 목록 로드."""
-    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
-    if ws is None:
-        return []
-    try:
-        return ws.get_all_records()
-    except Exception:
-        return []
 
 def _supabase_guests_load() -> list:
     """Supabase guests 테이블에서 게스트 목록 로드."""
@@ -425,46 +320,6 @@ def _supabase_exclude_save(names: list):
 
 
 # ── users 탭 ──────────────────────────────────────────────────
-
-def _gsheet_users_save(users: dict):
-    """users 탭 전체 덮어쓰기. 행 1개 = 계정 1개."""
-    ws = _get_tab(USERS_SHEET_NAME, USERS_COLS)
-    if ws is None:
-        return
-    try:
-        existing = ws.get_all_values()
-        if len(existing) > 1:
-            ws.delete_rows(2, len(existing))
-        if users:
-            rows = [[
-                str(uid),
-                str(udata.get("pw_hash","")),
-                str(udata.get("role","")),
-                str(udata.get("name","")),
-            ] for uid, udata in users.items()]
-            ws.append_rows(rows, value_input_option="USER_ENTERED")
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"users 저장 오류 → {_e}")
-
-
-def _gsheet_users_load() -> dict:
-    """users 탭에서 계정 목록 로드. {user_id: {pw_hash, role, name}}"""
-    ws = _get_tab(USERS_SHEET_NAME, USERS_COLS)
-    if ws is None:
-        return {}
-    try:
-        rows = ws.get_all_records()
-        return {
-            str(r["user_id"]): {
-                "pw_hash": str(r.get("pw_hash","")),
-                "role":    str(r.get("role","sub_admin")),
-                "name":    str(r.get("name","")),
-            }
-            for r in rows if r.get("user_id","")
-        }
-    except Exception:
-        return {}
 
 def _supabase_users_load() -> dict:
     """Supabase users 테이블에서 계정 목록 로드."""
@@ -626,12 +481,6 @@ def guest_save(guests: list):
         except Exception:
             pass
 
-    # Phase 3 안정화 전까지 구글시트 백업 유지
-    try:
-        _gsheet_guests_save(guests)
-    except Exception:
-        pass
-
 def guest_add(name: str, gender: str, league: str, code: str):
     guests = guest_load()
     if not any(g["name"] == name and g["league"] == league for g in guests):
@@ -680,21 +529,11 @@ def user_save_all(data: dict):
         except Exception:
             pass
 
-    # Phase 3 안정화 전까지 구글시트 백업 유지
-    try:
-        _gsheet_users_save(data)
-    except Exception as e:
-        try:
-            _app_log_error("계정/권한 구글시트 저장 실패", e)
-        except Exception:
-            pass
-
-
 _BG_ERRORS = []   # [v6.3] 백그라운드 스레드 오류 큐 (세션 접근 불가 → 메인 스레드가 비움)
 
 
 def _app_log_error(context: str, exc=None, page=None) -> None:
-    """[v7] 예외를 세션 로그(_gsheet_errors)에 기록 + Supabase error_logs 테이블에 영구 저장.
+    """[v7] 예외를 세션 로그(_app_errors[하위호환 키명])에 기록 + Supabase error_logs 테이블에 영구 저장.
     ⚠️ st.session_state·Supabase에 접근하므로 '메인 스레드'에서만 호출할 것.
     (백그라운드 스레드 오류는 _BG_ERRORS에 넣고, 메인 스레드가 비우며 이 함수로 기록한다.)"""
     try:
@@ -702,7 +541,7 @@ def _app_log_error(context: str, exc=None, page=None) -> None:
     except Exception:
         _ts_full = "?"
     _msg = f"[{_ts_full}] {context}" + (f": {type(exc).__name__}: {exc}" if exc is not None else "")
-    _log = st.session_state.setdefault("_gsheet_errors", [])
+    _log = st.session_state.setdefault("_app_errors", [])
     _log.append(_msg)
     del _log[:-100]
     # 상세 필드 (best-effort)
@@ -1057,32 +896,6 @@ def is_sub_admin() -> bool:
     return bool(u and u.get("role") in ("admin", "sub_admin"))
 
 
-def _gsheet_with_retry(fn, label="", max_retries=5):
-    """
-    구글시트 write 작업을 최대 max_retries회 재시도.
-    429(Quota exceeded) / 503(일시 불가) 에러에 지수 백오프 적용.
-    최종 실패 시 st.session_state._gsheet_errors에 기록(앱 중단 없음).
-    """
-    import time as _time
-    delay = 2.0  # 초기 대기 시간(초)
-    for attempt in range(max_retries):
-        try:
-            fn()
-            return  # 성공
-        except Exception as _e:
-            err_str = str(_e)
-            is_quota = "429" in err_str or "Quota" in err_str or "quota" in err_str
-            is_retry = is_quota or "503" in err_str or "500" in err_str
-            if is_retry and attempt < max_retries - 1:
-                _time.sleep(delay)
-                delay = min(delay * 2, 60)  # 최대 60초
-                continue
-            # 재시도 불가 에러 or 최대 시도 초과 → 오류 기록만
-            st.session_state.setdefault("_gsheet_errors", []).append(
-                f"{label} 예외: {_e}")
-            return
-
-
 def shelf_save(date_key: str, schedule: list, scores: dict,
                is_fully_random: bool = False, is_locked: bool = False):
     """대진표 저장. 로컬 shelve 캐시 + Supabase 운영 저장 + 구글시트 백업."""
@@ -1119,11 +932,7 @@ def shelf_save(date_key: str, schedule: list, scores: dict,
         except Exception:
             pass
 
-    # ③ 구글시트 schedules 탭 — Phase 3 안정화 전까지 백업 유지
-    def _do_save():
-        _gsheet_sched_save(date_key, schedule, scores, is_fully_random, is_locked)
 
-    _gsheet_with_retry(_do_save, label=f"schedules 백업 저장 (key={date_key})")
 
 def _is_valid_loaded(val: dict) -> bool:
     """로드된 데이터가 정상인지 검증 (컬럼 밀림 손상 감지)."""
@@ -1145,7 +954,7 @@ def _is_valid_loaded(val: dict) -> bool:
     return True
 
 def shelf_load(date_key: str):
-    """대진표 로드. Supabase 우선, 실패 시 shelve/구글시트 폴백."""
+    """대진표 로드. Supabase 우선, 실패 시 shelve 폴백."""
 
     # ① Supabase 우선 로드
     try:
@@ -1166,16 +975,6 @@ def shelf_load(date_key: str):
             val = db.get(date_key)
 
         if _is_valid_loaded(val):
-            return val
-    except Exception:
-        pass
-
-    # ③ 구글시트 폴백
-    try:
-        val = _gsheet_sched_load(date_key)
-        if _is_valid_loaded(val):
-            with shelve.open(SHELF_PATH) as db:
-                db[date_key] = val
             return val
     except Exception:
         pass
@@ -1202,11 +1001,7 @@ def shelf_list_dates() -> List[str]:
     except Exception:
         pass
 
-    # ③ 구글시트 폴백
-    try:
-        return _gsheet_sched_list()
-    except Exception:
-        return []
+    return []
 
 def shelf_delete(date_key: str):
     """대진표 삭제. Supabase + 로컬 shelve + 구글시트 백업 삭제."""
@@ -1228,11 +1023,7 @@ def shelf_delete(date_key: str):
     except Exception:
         pass
 
-    # ③ 구글시트 삭제
-    try:
-        _gsheet_sched_delete(date_key)
-    except Exception:
-        pass
+
 
 def _supabase_sched_load(date_key: str):
     """Supabase schedules 테이블에서 특정 date_key 대진표 로드.
@@ -1414,89 +1205,6 @@ def _supabase_sched_delete(date_key: str):
 
 # ── 구글시트 schedules 탭 헬퍼 ────────────────────────────────
 
-def _get_schedules_sheet():
-    """schedules 워크시트. 매번 새 연결 (stale 방지). 없으면 자동 생성."""
-    try:
-        wb = _get_gsheet_connection()
-    except Exception:
-        return None
-    try:
-        ws = wb.worksheet(SCHEDULES_SHEET_NAME)
-    except Exception:
-        try:
-            ws = wb.add_worksheet(title=SCHEDULES_SHEET_NAME, rows=5000, cols=len(SCHED_COLS))
-            ws.append_row(SCHED_COLS)
-        except Exception:
-            return None
-        return ws
-    # 헤더 마이그레이션: 신규 컬럼(is_locked 등) 없으면 추가
-    try:
-        headers = ws.row_values(1)
-        for col in SCHED_COLS:
-            if col not in headers:
-                ws.update_cell(1, len(headers) + 1, col)
-                headers.append(col)
-    except Exception:
-        pass
-    return ws
-
-
-def _gsheet_sched_save(date_key: str, schedule: list, scores: dict,
-                       is_fully_random: bool, is_locked: bool = False):
-    """구글시트 schedules 탭에 저장. 기존 date_key 행 삭제 후 재삽입.
-    실제 시트 헤더 순서에 맞춰 저장 (헤더-데이터 컬럼 불일치 방지)."""
-    ws = _get_schedules_sheet()
-    if ws is None:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"schedules sheet 연결 실패 (key={date_key})")
-        return
-    all_rows = ws.get_all_values()
-    # 실제 헤더 순서 확인 (없으면 SCHED_COLS 기본)
-    headers = all_rows[0] if all_rows else SCHED_COLS
-    # 기존 date_key 행 삭제
-    del_rows = [i+1 for i, row in enumerate(all_rows)
-                if i > 0 and len(row) > 0 and row[0] == date_key]
-    for ri in sorted(del_rows, reverse=True):
-        ws.delete_rows(ri)
-    # 새 행 생성 — 각 경기를 dict로 만든 뒤 헤더 순서대로 정렬
-    new_rows = []
-    for idx, match in enumerate(schedule):
-        sc  = scores.get(str(idx), {})
-        rowmap = {
-            "date_key":        date_key,
-            "is_fully_random": "1" if is_fully_random else "0",
-            "is_locked":       "1" if is_locked else "0",
-            "match_idx":       str(idx),
-            "round":           str(match.get("round", "")),
-            "league":          str(match.get("league", "")),
-            "team1":           "|".join(str(p) for p in match.get("team1", [])),
-            "team2":           "|".join(str(p) for p in match.get("team2", [])),
-            "type":            str(match.get("type", "")),
-            "exclude_players": ",".join(str(p) for p in match.get("exclude_players", [])),
-            "score1":          str(sc.get("score1", "")) if sc else "",
-            "score2":          str(sc.get("score2", "")) if sc else "",
-            "is_dup":          "1" if sc.get("is_dup", False) else "0",
-        }
-        # 실제 헤더 순서대로 값 배열 구성
-        new_rows.append([rowmap.get(h, "") for h in headers])
-    if new_rows:
-        ws.append_rows(new_rows, value_input_option="USER_ENTERED")
-
-
-def _gsheet_sched_load(date_key: str) -> Optional[dict]:
-    """구글시트에서 특정 date_key 로드. 헤더 기반 파싱으로 컬럼 순서 변경에 강건."""
-    ws = _get_schedules_sheet()
-    if ws is None:
-        return None
-    try:
-        all_vals = ws.get_all_values()
-    except Exception:
-        return None
-    if not all_vals:
-        return None
-    headers = all_vals[0]
-
-    # 헤더 → 인덱스 매핑 헬퍼 (클로저 캡처 버그 방지: default 인자로 i 고정)
     def _get_col(name, default=""):
         try:
             idx = headers.index(name)
@@ -1578,38 +1286,8 @@ def _gsheet_sched_load(date_key: str) -> Optional[dict]:
             "is_fully_random": is_fully_random, "is_locked": is_locked}
 
 
-def _gsheet_sched_list() -> List[str]:
-    """구글시트에서 저장된 date_key 목록 조회."""
-    ws = _get_schedules_sheet()
-    if ws is None:
-        return []
-    try:
-        all_vals = ws.get_all_values()
-        keys = []
-        seen = set()
-        for row in all_vals[1:]:
-            if row and row[0] and row[0] not in seen:
-                keys.append(row[0])
-                seen.add(row[0])
-        return sorted(keys, reverse=True)
-    except Exception:
-        return []
-
-
-def _gsheet_sched_delete(date_key: str):
-    """구글시트에서 특정 date_key 행 모두 삭제."""
-    ws = _get_schedules_sheet()
-    if ws is None:
-        return
-    all_rows = ws.get_all_values()
-    del_rows = [i+1 for i, row in enumerate(all_rows)
-                if i > 0 and len(row) > 0 and row[0] == date_key]
-    for ri in sorted(del_rows, reverse=True):
-        ws.delete_rows(ri)
-
-
-def _restore_shelf_from_gsheet():
-    """[v7 Supabase] 앱 시작 시 Supabase → 로컬 shelve 복원. session당 1회만 실행."""
+def _restore_from_supabase():
+    """앱 시작 시 Supabase → 로컬 shelve 복원. session당 1회만 실행."""
     if st.session_state.get("_shelf_restored"):
         return
     st.session_state["_shelf_restored"] = True
@@ -2811,10 +2489,6 @@ RECORDS_SHEET_NAME = "records"
 RECORDS_COLUMNS = ["date_key","year_month","year","player_key","display_name","league",
                    "wins","losses","pf","pa","draws"]
 
-def _get_records_sheet():
-    """[v7 Supabase 전환 후 미사용 — 호환성 유지 stub]"""
-    return None
-
 
 def _records_sheet_load_all() -> list:
     """[v7 Supabase] records 테이블 전체 로드."""
@@ -3060,16 +2734,6 @@ def exclude_list_save(names: list):
             _app_log_error("Supabase exclude 저장 실패", e)
         except Exception:
             pass
-
-    # Phase 3 안정화 전까지 구글시트 백업 유지
-    try:
-        _gsheet_exclude_save(clean)
-    except Exception as e:
-        try:
-            _app_log_error("구글시트 exclude 백업 실패", e)
-        except Exception:
-            pass
-
 
 def exclude_list_add(name: str):
     names = exclude_list_load()
@@ -4250,13 +3914,6 @@ def _render_player_substitution(schedule, date_key, is_fully_random, key_prefix=
 # ========================================================================
 # [v6.0.0] F4 기간 비교 분석 헬퍼
 # ========================================================================
-def _winrate_to_float_v6(rate_str) -> float:
-    """'52.3%' → 52.3, '-' → 0.0"""
-    try:
-        return float(str(rate_str).replace("%", "").strip())
-    except Exception:
-        return 0.0
-
 
 def season_compare_summary(period_type: str, val_a: str, val_b: str) -> dict:
     """[v6.0.0 F4] 두 기간(val_a=기준, val_b=비교)의 집계 요약·증감 비교.
@@ -4482,12 +4139,9 @@ def _render_basic_validation(df_full):
 # ========================================================================
 
 import re
-import gspread
-from gspread.utils import rowcol_to_a1
-from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.1.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.2.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4507,10 +4161,6 @@ st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", lay
 # 운영 시 반드시 .streamlit/secrets.toml 또는 Streamlit Cloud Secrets에 등록:
 #   ADMIN_PASSWORD = "원하는비번"
 RS_ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
-RS_SCOPES = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
-]
 RS_COLUMNS = [
     "id", "category", "name", "cafe_id", "birth_year", "gender",
     "phone", "region", "join_date", "dormant_period", "leave_date",
@@ -4713,20 +4363,6 @@ if st.session_state.admin_authed and st.session_state.auth_time:
 # 09-C. 회원명부 Google Sheets 연결 · CRUD
 # ========================================================================
 @st.cache_resource(ttl=3600)
-def _get_gsheet_connection():
-    """구글 시트 연결 객체 캐싱 (1시간 TTL로 토큰 만료 방지)."""
-    creds  = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=RS_SCOPES)
-    client = gspread.authorize(creds)
-    wb     = client.open_by_key(st.secrets["SHEET_ID"])
-    return wb
-
-# 앱 시작 시 구글시트 → 로컬 shelve 복원 (_get_gsheet_connection 정의 직후 호출)
-_restore_shelf_from_gsheet()
-
-def get_audit_sheet():
-    """[v7 Supabase 전환 후 호환성 유지용 – 내부에서 직접 호출 안 함]"""
-    return None
-
 def _editor_display_name() -> str:
     """[v6.4.2] 로그의 '수정자' 표시용 실제 이름.
     1) 로그인 ID(cafe_id)를 회원명부에서 조회해 실제 이름 우선 사용
@@ -4824,9 +4460,6 @@ def log_login_fail(login_id: str, locked: bool = False):
         pass
 
 # ── [v6.9.0 → v7 Supabase] 로그인 실패 횟수·계정 잠금 ──────────────
-def _login_lock_row(ws, login_id):
-    """[호환성 유지 stub] Supabase 전환 후 ws 파라미터는 무시됨."""
-    return 0, False, None   # 실제 로직은 아래 Supabase 함수에서 처리
 
 def _login_is_locked(login_id: str) -> bool:
     """[v7 Supabase] login_lock 테이블에서 잠금 여부 조회."""
@@ -5074,29 +4707,13 @@ def _supabase_member_hard_delete(member_id: int):
 
 @st.cache_data(ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
 def _load_records_cached() -> list:
-    """
-    회원명부 전체 레코드 캐싱.
-    Phase 3-7: Supabase 우선 로드, 실패/빈 값이면 구글시트 폴백.
-    """
-    # ① Supabase 우선
+    """회원명부 전체 레코드 Supabase에서 로드 (TTL 600s)."""
     try:
         rows = _supabase_members_load_records()
-        if rows:
-            return rows
+        return rows if rows else []
     except Exception as e:
         try:
             _app_log_error("Supabase members 캐시 로드 실패", e)
-        except Exception:
-            pass
-
-    # ② 구글시트 폴백
-    try:
-        wb = _get_gsheet_connection()
-        sheet = wb.sheet1
-        return sheet.get_all_records()
-    except Exception as e:
-        try:
-            _app_log_error("Google Sheets members 폴백 로드 실패", e)
         except Exception:
             pass
         return []
@@ -5200,140 +4817,6 @@ def save_league_to_sheet(member_id: int, league_value: str):
             pass
         return False
 
-    # ② 구글시트 백업 업데이트
-    try:
-        sheet = _get_gsheet_connection().sheet1
-        all_ids = sheet.col_values(1)
-        headers = sheet.row_values(1)
-
-        if "league" not in headers:
-            st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
-            return False
-
-        league_col = headers.index("league") + 1
-
-        try:
-            idx = all_ids.index(str(member_id))
-        except ValueError:
-            st.warning(f"구글시트에서 id={member_id}를 찾지 못했습니다. Supabase에는 저장되었습니다.")
-            st.cache_data.clear()
-            return True
-
-        sheet.update_cell(idx + 1, league_col, league_value)
-
-    except Exception as e:
-        try:
-            _app_log_error("구글시트 league 백업 실패", e)
-        except Exception:
-            pass
-
-    st.cache_data.clear()
-    return True
-
-def _ensure_member_header():
-    """
-    회원 시트(sheet1) 헤더에 RS_COLUMNS의 모든 컬럼이 있는지 확인하고,
-    누락된 컬럼(grade 등)을 맨 끝에 자동 추가. (한 번 실행되면 캐시로 재실행 방지)
-    """
-    if st.session_state.get("_member_header_ok"):
-        return
-    try:
-        sheet   = _get_gsheet_connection().sheet1
-        headers = sheet.row_values(1)
-        if not headers:
-            # 헤더 자체가 없으면 전체 작성
-            sheet.update("A1", [RS_COLUMNS], value_input_option="USER_ENTERED")
-            st.session_state["_member_header_ok"] = True
-            return
-        import time as _t
-        changed = False
-        for col in RS_COLUMNS:
-            if col not in headers:
-                _t.sleep(1)
-                sheet.update_cell(1, len(headers) + 1, col)
-                headers.append(col)
-                changed = True
-        if changed:
-            st.cache_data.clear()
-        st.session_state["_member_header_ok"] = True
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"회원 헤더 마이그레이션 실패: {_e}")
-
-def save_row(df, row, is_new, action_detail="", do_log=True):
-    _ensure_member_header()
-
-    row["updated_at"] = datetime.today().strftime("%Y-%m-%d %H:%M")
-    if "deleted_at" not in row:
-        row["deleted_at"] = ""
-
-    action = "등록" if is_new else "수정"
-
-    # ① Supabase 저장
-    try:
-        _supabase_member_upsert(row)
-    except Exception as e:
-        try:
-            st.error(f"Supabase 회원명부 저장 실패: {e}")
-        except Exception:
-            pass
-        try:
-            _app_log_error("Supabase members 저장 실패", e)
-        except Exception:
-            pass
-        return
-
-    # ② 구글시트 백업 저장
-    try:
-        sheet = _get_gsheet_connection().sheet1
-
-        # 실제 시트 헤더 순서대로 저장
-        headers = sheet.row_values(1)
-        if not headers:
-            headers = RS_COLUMNS
-
-        values = [str(row.get(c, "") or "") for c in headers]
-
-        if is_new:
-            _gsheet_with_retry(
-                lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
-                label=f"회원 등록 백업 (id={row.get('id','')})"
-            )
-        else:
-            all_ids = sheet.col_values(1)
-            try:
-                ri = all_ids.index(str(row["id"])) + 1
-                start_cell = rowcol_to_a1(ri, 1)
-                end_cell = rowcol_to_a1(ri, len(headers))
-                _gsheet_with_retry(
-                    lambda: sheet.update(
-                        f"{start_cell}:{end_cell}",
-                        [values],
-                        value_input_option="USER_ENTERED"
-                    ),
-                    label=f"회원 수정 백업 (id={row.get('id','')})"
-                )
-            except ValueError:
-                _gsheet_with_retry(
-                    lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
-                    label=f"회원 수정→등록 백업 (id={row.get('id','')})"
-                )
-
-    except Exception as e:
-        try:
-            _app_log_error("구글시트 members 백업 실패", e)
-        except Exception:
-            pass
-
-    # ③ 감사 로그
-    if do_log:
-        log_audit(
-            action,
-            row.get("id", ""),
-            row.get("name", ""),
-            action_detail or f"카테고리:{row.get('category','')}"
-        )
-
     _clear_member_cache()   # [v7.1.0]
 
 def soft_delete_row(mid, member_name):
@@ -5353,34 +4836,6 @@ def soft_delete_row(mid, member_name):
             pass
         return
 
-    # ② 구글시트 백업
-    try:
-        sheet = _get_gsheet_connection().sheet1
-        all_ids = sheet.col_values(1)
-        if not all_ids or all_ids[0] != "id":
-            raise RuntimeError("시트 헤더가 손상되었습니다.")
-
-        idx = all_ids.index(str(mid))
-        if idx == 0:
-            raise RuntimeError("헤더 행은 삭제할 수 없습니다.")
-
-        ri = idx + 1
-        del_col = RS_COLUMNS.index("deleted_at") + 1
-        del_cell = rowcol_to_a1(ri, del_col)
-
-        _gsheet_with_retry(
-            lambda: sheet.update(del_cell, [[ts]], value_input_option="USER_ENTERED"),
-            label=f"소프트삭제 백업 (id={mid})"
-        )
-
-    except ValueError:
-        pass
-    except Exception as e:
-        try:
-            _app_log_error("구글시트 소프트삭제 백업 실패", e)
-        except Exception:
-            pass
-
     log_audit("삭제(소프트)", mid, member_name, f"휴지통 이동. {TRASH_DAYS}일 후 영구 삭제.")
     _clear_member_cache()   # [v7.1.0]
 
@@ -5399,32 +4854,6 @@ def hard_delete_row(mid, member_name):
             pass
         return
 
-    # ② 구글시트 백업 삭제
-    try:
-        sheet = _get_gsheet_connection().sheet1
-        all_ids = sheet.col_values(1)
-
-        if not all_ids or all_ids[0] != "id":
-            raise RuntimeError("시트 헤더가 손상되었습니다.")
-
-        idx = all_ids.index(str(mid))
-        if idx == 0:
-            raise RuntimeError("헤더 행은 삭제할 수 없습니다.")
-
-        _gsheet_with_retry(
-            lambda: sheet.delete_rows(idx + 1),
-            label=f"영구삭제 백업 (id={mid})"
-        )
-
-    except ValueError:
-        pass
-    except Exception as e:
-        try:
-            _app_log_error("구글시트 영구삭제 백업 실패", e)
-        except Exception:
-            pass
-
-    log_audit("삭제(영구)", mid, member_name, "영구 삭제 완료.")
     _clear_member_cache()   # [v7.1.0]
 
 def restore_row(mid, member_name):
@@ -5442,31 +4871,6 @@ def restore_row(mid, member_name):
             pass
         return
 
-    # ② 구글시트 백업 복구
-    try:
-        sheet = _get_gsheet_connection().sheet1
-        all_ids = sheet.col_values(1)
-
-        idx = all_ids.index(str(mid))
-        ri = idx + 1
-
-        del_col = RS_COLUMNS.index("deleted_at") + 1
-        del_cell = rowcol_to_a1(ri, del_col)
-
-        _gsheet_with_retry(
-            lambda: sheet.update(del_cell, [[""]], value_input_option="USER_ENTERED"),
-            label=f"복구 백업 (id={mid})"
-        )
-
-    except ValueError:
-        pass
-    except Exception as e:
-        try:
-            _app_log_error("구글시트 복구 백업 실패", e)
-        except Exception:
-            pass
-
-    log_audit("복구", mid, member_name, "휴지통에서 복구.")
     _clear_member_cache()   # [v7.1.0]
 
 def next_id(df):
@@ -8143,15 +7547,15 @@ if page == "🧾 로그":
     # ── 6) 오류 로그 (error_logs) ────────────────────────────
     else:
         st.markdown("### 🗂️ 오류 로그 (error_logs)")
-        # 이번 세션 오류 (_gsheet_errors) — 아직 시트에 영구 기록되기 전 임시 항목 포함
-        _sys_errs = st.session_state.get("_gsheet_errors", [])
+        # 이번 세션 오류 (_app_errors) — 아직 시트에 영구 기록되기 전 임시 항목 포함
+        _sys_errs = st.session_state.get("_app_errors", [])
         if _sys_errs:
             st.error(f"⚠️ 이번 세션 오류 {len(_sys_errs)}건")
             with st.expander(f"이번 세션 오류 보기 ({len(_sys_errs)}건)", expanded=False):
                 for _e in _sys_errs[-30:]:
                     st.caption(_e)
                 if st.button("세션 로그 비우기", key="log_clear_session_err"):
-                    st.session_state["_gsheet_errors"] = []
+                    st.session_state["_app_errors"] = []
                     st.rerun()
         st.caption("발생시각·페이지·작업·사용자·오류메시지·traceback이 Supabase error_logs 테이블에 "
                    "영구 저장됩니다. (최근 50건, 최신순)")
@@ -8191,13 +7595,13 @@ if page == "📊 스코어보드":
         _app_log_error(_BG_ERRORS.pop(0))   # 세션+시트 영구 기록
     # 구글시트 동기화 오류 표시 (관리자만, 비우지 않고 '계정 관리'에서도 조회 가능)
     if is_admin():
-        _errs = st.session_state.get("_gsheet_errors", [])
+        _errs = st.session_state.get("_app_errors", [])
         if _errs:
             with st.expander(f"⚠️ 시스템 오류 로그 {len(_errs)}건", expanded=False):
                 for _e in _errs[-30:]:
                     st.error(_e)
                 if st.button("로그 비우기", key="sb_clear_errlog"):
-                    st.session_state["_gsheet_errors"] = []
+                    st.session_state["_app_errors"] = []
                     st.rerun()
 
     today_str  = kst_today_str("%Y-%m-%d")
@@ -10328,13 +9732,13 @@ elif page == "🏆 통합기록실":
                     except Exception:
                         _local_n = 0
                     try:
-                        _gsheet_keys = _supabase_sched_list_dates(limit=500)
-                        _gsheet_n = len(_gsheet_keys)
+                        _supa_keys = _supabase_sched_list_dates(limit=500)
+                        _supa_n = len(_supa_keys)
                     except Exception:
-                        _gsheet_keys = []
-                        _gsheet_n = 0
+                        _supa_keys = []
+                        _supa_n = 0
                     st.session_state["_backup_status"] = {
-                        "local": _local_n, "supabase": _gsheet_n,
+                        "local": _local_n, "supabase": _supa_n,
                     }
             with _bk_c2:
                 if st.button("♻️ Supabase→로컬 강제 복원", key="backup_restore_btn",
@@ -10369,7 +9773,7 @@ elif page == "🏆 통합기록실":
                     _stat_card_row(
                         _stat_card("로컬 저장", _bk_stat["local"], value_color="#1d4ed8",
                                    bg="#eff6ff", border="#93c5fd", label_color="#3b82f6", min_width=90)
-                        + _stat_card("구글시트 백업", _bk_stat["gsheet"], value_color="#16a34a",
+                        + _stat_card("Supabase", _bk_stat["supabase"], value_color="#16a34a",
                                      bg="#f0fdf4", border="#86efac", label_color="#16a34a", min_width=90)
                         + _stat_card("상태", _sync_txt, value_color=_sync_color,
                                      bg="#fffbeb", border="#fcd34d", label_color="#d97706",

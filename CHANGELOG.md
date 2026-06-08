@@ -6,11 +6,38 @@
 > - 최신 버전이 파일 상단에 위치
 
 
+## v7.2.0 (2026-06-08) — 구글시트 완전 제거 / Supabase 단독 운영
+
+### ♻️ 리팩토링
+- **구글시트 의존성 완전 제거** — 모든 데이터 경로가 Supabase + 로컬 shelve(캐시)로 단순화
+  - 제거된 함수(14개): `_get_gsheet_connection`, `_get_tab`, `_gsheet_with_retry`, `_get_schedules_sheet`, `_gsheet_sched_save/load/list/delete`, `_gsheet_guests_save`, `_gsheet_users_save`, `_gsheet_exclude_save`, `_ensure_member_header`
+  - 제거된 구글시트 백업 블록: `save_row`, `soft_delete_row`, `hard_delete_row`, `restore_row`, `guest_save`, `user_save_all`, `exclude_list_save`, `shelf_save`, `shelf_load`, `shelf_list_dates`, `shelf_delete`, `_load_records_cached`의 gsheet 폴백/백업 경로 전체
+  - 제거된 임포트: `import gspread`, `from gspread.utils import rowcol_to_a1`, `from google.oauth2.service_account import Credentials`
+  - 제거된 상수: `RS_SCOPES`
+- `_restore_shelf_from_gsheet` → `_restore_from_supabase`로 함수명 변경 (동작은 이미 Supabase 기반)
+- 세션 키 `_gsheet_errors` → `_app_errors`로 명칭 정리 (기능 동일, 이름만 일관화)
+- 백업 상태 변수 `_gsheet_keys/_gsheet_n` → `_supa_keys/_supa_n`으로 명칭 정리
+
+### 📑 구조
+- 구글시트 제거로 12,065줄 → 11,558줄 (-507줄)
+- 데이터 흐름 단순화: Supabase → 로컬 shelve(캐시) 2-tier (기존 3-tier에서)
+
+---
+
+## v7.1.1 (2026-06-08) — dead code 제거 및 코드 정리
+
+### ♻️ 리팩토링
+- 미호출 함수 8개 제거: `_prune_log_sheet`(Supabase 버전으로 대체), `_gsheet_guests_load`·`_gsheet_users_load`(Supabase 전환 후 호출처 없음), `_winrate_to_float_v6`(레거시 미사용), `get_audit_sheet`·`_get_records_sheet`·`_login_lock_row`(Supabase 전환 후 stub 정리), `_keyed_container`(st-key CSS 방식으로 완전 대체)
+- 백업 블록 주석을 "Phase 3 안정화 전까지" → "Supabase 안정화 확인 후 삭제 예정"으로 명확화
+- 통합기록실 백업 상태 카드 라벨 "구글시트 백업" → "Supabase"로 수정
+
+---
+
 ## v7.1.0 (2026-06-08) — Supabase 전환 완료 및 성능·UX 개선
 
 ### ✨ 신규
 - Supabase 공통 헬퍼 `_supabase_prune_log()`: 모든 로그 테이블의 N일 경과 행 자동 삭제
-- 타겟 캐시 클리어 헬퍼 2종 추가
+- 타겟 캐시 클리어 헬퍼 2종
   - `_clear_member_cache()`: 회원 저장·삭제·복구 후 회원 캐시만 초기화
   - `_clear_schedule_cache()`: 점수 저장·기록 재집계 후 기록 캐시만 초기화
 
@@ -18,28 +45,26 @@
 - 회원 삭제 팝업 순서 오류 수정
   - 이전: 삭제 클릭 → "영구삭제 경고" → "휴지통 이동 안내" (순서 거꾸로)
   - 수정: 삭제 클릭 → "휴지통으로 이동?" → 이동 / 휴지통에서 영구삭제 클릭 → "영구삭제 확인" → 삭제
-- 로딩 인디케이터에 "Stop" 텍스트가 함께 노출되던 문제 수정 (visibility 기반 CSS로 개선)
+- 로딩 인디케이터에 "Stop" 텍스트가 함께 노출되던 문제 수정
 
 ### 🔧 개선·변경
-- 페이지 전환 속도 개선: 회원 저장·삭제 시 `st.cache_data.clear()`(전역) 대신 타겟 캐시 클리어로 교체 → 스코어보드·기록실 캐시를 불필요하게 날리지 않아 재방문 시 로딩 단축
-- 통합기록실 백업 점검 섹션의 "구글시트→로컬 복원" → "Supabase→로컬 복원"으로 텍스트·로직 수정
-- 로그 페이지 안내 문구의 "구글시트 탭" → "Supabase 테이블"로 전면 수정
+- 페이지 전환 속도 개선: 회원 저장·삭제 시 `st.cache_data.clear()`(전역) 대신 타겟 캐시 클리어 적용
+- 통합기록실 백업 섹션의 gsheet 관련 텍스트·로직을 Supabase 기준으로 전면 수정
+- 로그 페이지 안내 문구 "구글시트 탭" → "Supabase 테이블"로 전면 수정
 
 ### ♻️ 리팩토링
-- **Supabase 전환 완료 (7.0.x 작업 일괄 반영)**
-  - `audit_log`: gspread insert_row → Supabase INSERT / SELECT
-  - `score_audit`: gspread append_row → Supabase INSERT / SELECT (`from`/`to` 컬럼 하위호환 처리)
-  - `login_log`: gspread insert_row → Supabase INSERT / SELECT
-  - `login_lock`: gspread 행 탐색 패턴 → Supabase UPSERT / SELECT
-  - `view_log`: gspread insert_row → Supabase INSERT / SELECT
-  - `error_logs`: gspread append_row → Supabase INSERT / SELECT
-  - `records`: gspread records sheet → Supabase records 테이블 (commit / delete / full_rebuild)
-  - `_restore_shelf_from_gsheet`: `_gsheet_sched_list/load` → `_supabase_sched_list_dates/load`
-  - `_settings_restore_all`: `_gsheet_*_load` → `_supabase_*_load`
-  - 중복 `from supabase import create_client` 제거
-  - 중복 `_supabase_exclude_load/save` 정의 제거 (섹션 08 두 번째 정의)
-- `records_full_rebuild`: 500행 배치 INSERT로 처리 (quota 절약)
-- `get_audit_sheet()`: 미사용 stub으로 전환
+- **Supabase 전환 Phase 3 완료 (회원명부 → 스코어보드 → 계정·게스트·제외 → 로그류)**
+  - ① 연결부: `_get_supabase()` `@st.cache_resource` 초기화
+  - ② 회원명부: `load_df` → Supabase 우선 + gsheet 폴백, `save_row`/`soft_delete`/`hard_delete`/`restore_row` → Supabase 기본 저장 + gsheet 백업 유지
+  - ③ 스코어보드: `shelf_save`/`shelf_load`/`shelf_list_dates`/`shelf_delete` → `_supabase_sched_*` 함수군 신규 작성, gsheet schedules 탭 백업 유지
+  - ④ 계정·게스트·제외: `_supabase_users_*`, `_supabase_guests_*`, `_supabase_exclude_*` 함수군 신규 작성, gsheet 탭 백업 유지
+  - ⑤ 로그류: `audit_log`·`score_audit`·`login_log`·`login_lock`·`view_log`·`error_logs` 전체 Supabase 전환 (gsheet 백업 없음)
+  - `records` 테이블: `records_commit`/`records_delete_by_date`/`records_full_rebuild` Supabase 전환 (500행 배치 INSERT)
+  - `_restore_shelf_from_gsheet` → `_supabase_sched_*` 사용으로 전환
+  - `_settings_restore_all` → `_supabase_*_load` 사용으로 전환
+  - 중복 `from supabase import create_client` 임포트 제거
+  - 중복 `_supabase_exclude_load/save` 정의 제거
+  - `records_full_rebuild` 500행 배치 INSERT 적용
 
 ---
 
