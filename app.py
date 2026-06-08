@@ -1093,15 +1093,45 @@ def _gsheet_with_retry(fn, label="", max_retries=5):
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
                is_fully_random: bool = False, is_locked: bool = False):
-    # ① 로컬 shelve (빠른 읽기 캐시)
+    """대진표 저장. 로컬 shelve 캐시 + Supabase 운영 저장 + 구글시트 백업."""
+
+    # ① 로컬 shelve — 빠른 읽기 캐시
     with shelve.open(SHELF_PATH) as db:
-        db[date_key] = {"schedule": schedule, "scores": scores,
-                        "is_fully_random": is_fully_random, "is_locked": is_locked}
-    # ② 구글시트 schedules 탭 — 429 대비 지수 백오프 재시도
+        db[date_key] = {
+            "schedule": schedule,
+            "scores": scores,
+            "is_fully_random": is_fully_random,
+            "is_locked": is_locked,
+        }
+
+    # ② Supabase schedules 저장
+    try:
+        _supabase_sched_save(
+            date_key=date_key,
+            schedule=schedule,
+            scores=scores,
+            is_fully_random=is_fully_random,
+            is_locked=is_locked,
+        )
+        try:
+            st.toast("Supabase 대진표 저장 완료", icon="✅")
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            st.error(f"Supabase schedules 저장 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase schedules 저장 실패", e)
+        except Exception:
+            pass
+
+    # ③ 구글시트 schedules 탭 — Phase 3 안정화 전까지 백업 유지
     def _do_save():
         _gsheet_sched_save(date_key, schedule, scores, is_fully_random, is_locked)
 
-    _gsheet_with_retry(_do_save, label=f"schedules 저장 (key={date_key})")
+    _gsheet_with_retry(_do_save, label=f"schedules 백업 저장 (key={date_key})")
 
 def _is_valid_loaded(val: dict) -> bool:
     """로드된 데이터가 정상인지 검증 (컬럼 밀림 손상 감지)."""
@@ -1122,47 +1152,273 @@ def _is_valid_loaded(val: dict) -> bool:
             return False
     return True
 
-def shelf_load(date_key: str) -> Optional[dict]:
-    # ① 로컬 shelve 우선
-    with shelve.open(SHELF_PATH) as db:
-        val = db.get(date_key, None)
-    if val is not None and _is_valid_loaded(val):
-        return val
-    # ② 로컬에 없거나 손상됐으면 구글시트에서 재로드
+def shelf_load(date_key: str):
+    """대진표 로드. Supabase 우선, 실패 시 shelve/구글시트 폴백."""
+
+    # ① Supabase 우선 로드
     try:
-        val = _gsheet_sched_load(date_key)
-        if val and _is_valid_loaded(val):
+        val = _supabase_sched_load(date_key)
+        if _is_valid_loaded(val):
             with shelve.open(SHELF_PATH) as db:
                 db[date_key] = val
             return val
-        # 구글시트 데이터도 손상이면 그대로 반환 (없는 것보다 나음)
-        return val
+    except Exception as e:
+        try:
+            _app_log_error("Supabase schedules 로드 실패", e)
+        except Exception:
+            pass
+
+    # ② 로컬 shelve 폴백
+    try:
+        with shelve.open(SHELF_PATH) as db:
+            val = db.get(date_key)
+
+        if _is_valid_loaded(val):
+            return val
     except Exception:
-        return None
+        pass
+
+    # ③ 구글시트 폴백
+    try:
+        val = _gsheet_sched_load(date_key)
+        if _is_valid_loaded(val):
+            with shelve.open(SHELF_PATH) as db:
+                db[date_key] = val
+            return val
+    except Exception:
+        pass
+
+    return None
 
 def shelf_list_dates() -> List[str]:
-    # ① 로컬 shelve 우선
-    with shelve.open(SHELF_PATH) as db:
-        local_keys = sorted(db.keys(), reverse=True)
-    if local_keys:
-        return local_keys
-    # ② 없으면 구글시트에서 목록 조회
+    """저장된 대진표 date_key 목록. Supabase 우선."""
+
+    # ① Supabase 우선
+    try:
+        keys = _supabase_sched_list_dates(limit=100)
+        if keys:
+            return keys
+    except Exception:
+        pass
+
+    # ② 로컬 shelve 폴백
+    try:
+        with shelve.open(SHELF_PATH) as db:
+            local_keys = sorted(db.keys(), reverse=True)
+        if local_keys:
+            return local_keys
+    except Exception:
+        pass
+
+    # ③ 구글시트 폴백
     try:
         return _gsheet_sched_list()
     except Exception:
         return []
 
 def shelf_delete(date_key: str):
-    # ① 로컬 shelve
-    with shelve.open(SHELF_PATH) as db:
-        if date_key in db:
-            del db[date_key]
-    # ② 구글시트
+    """대진표 삭제. Supabase + 로컬 shelve + 구글시트 백업 삭제."""
+
+    # ① Supabase 삭제
+    try:
+        _supabase_sched_delete(date_key)
+    except Exception as e:
+        try:
+            _app_log_error("Supabase schedules 삭제 실패", e)
+        except Exception:
+            pass
+
+    # ② 로컬 shelve 삭제
+    try:
+        with shelve.open(SHELF_PATH) as db:
+            if date_key in db:
+                del db[date_key]
+    except Exception:
+        pass
+
+    # ③ 구글시트 삭제
     try:
         _gsheet_sched_delete(date_key)
     except Exception:
         pass
 
+def _supabase_sched_load(date_key: str):
+    """Supabase schedules 테이블에서 특정 date_key 대진표 로드.
+    반환 형태는 기존 shelve 구조와 동일:
+    {
+        "schedule": [...],
+        "scores": {...},
+        "is_fully_random": bool,
+        "is_locked": bool
+    }
+    """
+    try:
+        sb = _get_supabase()
+        res = (
+            sb.table("schedules")
+            .select("*")
+            .eq("date_key", date_key)
+            .execute()
+        )
+
+        rows = res.data or []
+
+        try:
+            rows = sorted(rows, key=lambda r: int(r.get("match_idx", 0) or 0))
+        except Exception:
+            rows = sorted(rows, key=lambda r: str(r.get("match_idx", "")))
+
+        if not rows:
+            return None
+
+        schedule = []
+        scores = {}
+        is_fully_random = False
+        is_locked = False
+
+        for idx, r in enumerate(rows):
+            match_idx = str(r.get("match_idx", idx))
+
+            team1 = r.get("team1") or []
+            team2 = r.get("team2") or []
+            exclude_players = r.get("exclude_players") or []
+
+            # 기존 구글시트 로드와 최대한 비슷하게 tuple로 맞춤
+            if isinstance(team1, list):
+                team1 = tuple(team1)
+            if isinstance(team2, list):
+                team2 = tuple(team2)
+
+            schedule.append({
+                "round": str(r.get("round", "")),
+                "league": str(r.get("league", "")),
+                "team1": team1,
+                "team2": team2,
+                "type": str(r.get("type", "")),
+                "exclude_players": exclude_players,
+            })
+
+            s1 = r.get("score1", "")
+            s2 = r.get("score2", "")
+
+            if s1 != "" and s2 != "":
+                try:
+                    scores[match_idx] = {
+                        "score1": int(s1),
+                        "score2": int(s2),
+                        "is_dup": str(r.get("is_dup", "0")).lower() in ("1", "true", "yes"),
+                    }
+                except (ValueError, TypeError):
+                    pass
+
+            if str(r.get("is_fully_random", "")).lower() in ("1", "true", "yes"):
+                is_fully_random = True
+
+            if str(r.get("is_locked", "")).lower() in ("1", "true", "yes"):
+                is_locked = True
+
+        return {
+            "schedule": schedule,
+            "scores": scores,
+            "is_fully_random": is_fully_random,
+            "is_locked": is_locked,
+        }
+
+    except Exception as e:
+        try:
+            _app_log_error("Supabase schedules 로드 실패", e)
+        except Exception:
+            pass
+        return None
+
+
+def _supabase_sched_save(date_key: str, schedule: list, scores: dict,
+                         is_fully_random: bool = False, is_locked: bool = False):
+    """Supabase schedules 테이블에 특정 date_key 대진표 저장."""
+
+    sb = _get_supabase()
+
+    # 같은 date_key 기존 데이터 삭제 후 재삽입
+    sb.table("schedules").delete().eq("date_key", date_key).execute()
+
+    rows = []
+
+    for idx, m in enumerate(schedule):
+        # match_idx는 기존 저장된 값이 있으면 우선 사용
+        match_idx = str(m.get("match_idx", idx))
+
+        # scores dict에서 점수 찾기
+        score_obj = scores.get(str(match_idx), scores.get(match_idx, {}))
+
+        if isinstance(score_obj, dict):
+            score1 = score_obj.get("score1", "")
+            score2 = score_obj.get("score2", "")
+        elif isinstance(score_obj, (list, tuple)) and len(score_obj) >= 2:
+            score1 = score_obj[0]
+            score2 = score_obj[1]
+        else:
+            score1 = m.get("score1", "")
+            score2 = m.get("score2", "")
+
+        rows.append({
+            "date_key": date_key,
+            "is_fully_random": str(bool(is_fully_random)),
+            "is_locked": str(bool(is_locked)),
+            "match_idx": match_idx,
+            "round": str(m.get("round", "")),
+            "league": str(m.get("league", "")),
+            "team1": m.get("team1") or [],
+            "team2": m.get("team2") or [],
+            "type": str(m.get("type", "")),
+            "exclude_players": m.get("exclude_players") or [],
+            "score1": str(score1),
+            "score2": str(score2),
+            "is_dup": str(score_obj.get("is_dup", m.get("is_dup", ""))) if isinstance(score_obj, dict) else str(m.get("is_dup", "")),
+        })
+
+    if rows:
+        sb.table("schedules").insert(rows).execute()
+
+
+def _supabase_sched_list_dates(limit: int = 60):
+    """Supabase schedules date_key 목록 조회."""
+    try:
+        sb = _get_supabase()
+        res = (
+            sb.table("schedules")
+            .select("date_key")
+            .order("date_key", desc=True)
+            .limit(1000)
+            .execute()
+        )
+
+        seen = []
+        for r in res.data or []:
+            dk = r.get("date_key")
+            if dk and dk not in seen:
+                seen.append(dk)
+
+        return seen[:limit]
+
+    except Exception as e:
+        try:
+            _app_log_error("Supabase schedules 목록 조회 실패", e)
+        except Exception:
+            pass
+        return []
+
+
+def _supabase_sched_delete(date_key: str):
+    """Supabase schedules에서 특정 date_key 삭제."""
+    try:
+        sb = _get_supabase()
+        sb.table("schedules").delete().eq("date_key", date_key).execute()
+    except Exception as e:
+        try:
+            _app_log_error("Supabase schedules 삭제 실패", e)
+        except Exception:
+            pass
+        raise
 
 # ── 구글시트 schedules 탭 헬퍼 ────────────────────────────────
 
