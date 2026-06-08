@@ -301,39 +301,38 @@ def _error_log_load(limit: int = 50):
 
 # ── guests 탭 ─────────────────────────────────────────────────
 
-def guest_save(guests: list):
-    """게스트 목록 저장. Supabase + 구글시트 백업."""
-    with shelve.open(GUEST_PATH) as db:
-        db["guests"] = guests
-
+def _gsheet_guests_save(guests: list):
+    """guests 탭 전체 덮어쓰기. 행 1개 = 게스트 1명."""
+    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
+    if ws is None:
+        return
     try:
-        _supabase_guests_save(guests)
-    except Exception as e:
-        try:
-            _app_log_error("Supabase guests 저장 실패", e)
-        except Exception:
-            pass
+        # 헤더 제외 기존 데이터 행 모두 삭제
+        existing = ws.get_all_values()
+        if len(existing) > 1:
+            ws.delete_rows(2, len(existing))
+        if guests:
+            rows = [[
+                str(g.get("name","")),
+                str(g.get("gender","")),
+                str(g.get("league","")),
+                str(g.get("code","")),
+            ] for g in guests]
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+    except Exception as _e:
+        st.session_state.setdefault("_gsheet_errors", []).append(
+            f"guests 저장 오류 → {_e}")
 
-    # Phase 3 안정화 전까지 구글시트 백업 유지
+
+def _gsheet_guests_load() -> list:
+    """guests 탭에서 게스트 목록 로드."""
+    ws = _get_tab(GUESTS_SHEET_NAME, GUESTS_COLS)
+    if ws is None:
+        return []
     try:
-        _gsheet_guests_save(guests)
+        return ws.get_all_records()
     except Exception:
-        pass
-
-
-def guest_load() -> list:
-    """게스트 목록 로드. Supabase 우선, 실패 시 로컬 폴백."""
-    try:
-        val = _supabase_guests_load()
-        if val is not None:
-            with shelve.open(GUEST_PATH) as db:
-                db["guests"] = val
-            return list(val)
-    except Exception:
-        pass
-
-    with shelve.open(GUEST_PATH) as db:
-        return list(db.get("guests", []))
+        return []
 
 def _supabase_guests_load() -> list:
     """Supabase guests 테이블에서 게스트 목록 로드."""
@@ -598,14 +597,33 @@ def _session_cleanup():
             del db[k]
 
 def guest_load() -> list:
-    """게스트 목록 로드. [{name, gender, league, code}, ...]"""
+    """게스트 목록 로드. Supabase 우선, 실패 시 로컬 폴백."""
+    try:
+        val = _supabase_guests_load()
+        if val is not None:
+            with shelve.open(GUEST_PATH) as db:
+                db["guests"] = val
+            return list(val)
+    except Exception:
+        pass
+
     with shelve.open(GUEST_PATH) as db:
         return list(db.get("guests", []))
 
 def guest_save(guests: list):
+    """게스트 목록 저장. Supabase + 구글시트 백업."""
     with shelve.open(GUEST_PATH) as db:
         db["guests"] = guests
-    # 구글시트 동기화
+
+    try:
+        _supabase_guests_save(guests)
+    except Exception as e:
+        try:
+            _app_log_error("Supabase guests 저장 실패", e)
+        except Exception:
+            pass
+
+    # Phase 3 안정화 전까지 구글시트 백업 유지
     try:
         _gsheet_guests_save(guests)
     except Exception:
