@@ -5,4 +5,4 @@ xlsxwriter
 gspread>=6.0.0
 google-auth>=2.0.0
 extra-streamlit-components>=0.1.71
-
+supabase>=2.0.0
