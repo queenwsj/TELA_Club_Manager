@@ -6,6 +6,43 @@
 > - 최신 버전이 파일 상단에 위치
 
 
+## v7.1.0 (2026-06-08) — Supabase 전환 완료 및 성능·UX 개선
+
+### ✨ 신규
+- Supabase 공통 헬퍼 `_supabase_prune_log()`: 모든 로그 테이블의 N일 경과 행 자동 삭제
+- 타겟 캐시 클리어 헬퍼 2종 추가
+  - `_clear_member_cache()`: 회원 저장·삭제·복구 후 회원 캐시만 초기화
+  - `_clear_schedule_cache()`: 점수 저장·기록 재집계 후 기록 캐시만 초기화
+
+### 🐛 버그 수정
+- 회원 삭제 팝업 순서 오류 수정
+  - 이전: 삭제 클릭 → "영구삭제 경고" → "휴지통 이동 안내" (순서 거꾸로)
+  - 수정: 삭제 클릭 → "휴지통으로 이동?" → 이동 / 휴지통에서 영구삭제 클릭 → "영구삭제 확인" → 삭제
+- 로딩 인디케이터에 "Stop" 텍스트가 함께 노출되던 문제 수정 (visibility 기반 CSS로 개선)
+
+### 🔧 개선·변경
+- 페이지 전환 속도 개선: 회원 저장·삭제 시 `st.cache_data.clear()`(전역) 대신 타겟 캐시 클리어로 교체 → 스코어보드·기록실 캐시를 불필요하게 날리지 않아 재방문 시 로딩 단축
+- 통합기록실 백업 점검 섹션의 "구글시트→로컬 복원" → "Supabase→로컬 복원"으로 텍스트·로직 수정
+- 로그 페이지 안내 문구의 "구글시트 탭" → "Supabase 테이블"로 전면 수정
+
+### ♻️ 리팩토링
+- **Supabase 전환 완료 (7.0.x 작업 일괄 반영)**
+  - `audit_log`: gspread insert_row → Supabase INSERT / SELECT
+  - `score_audit`: gspread append_row → Supabase INSERT / SELECT (`from`/`to` 컬럼 하위호환 처리)
+  - `login_log`: gspread insert_row → Supabase INSERT / SELECT
+  - `login_lock`: gspread 행 탐색 패턴 → Supabase UPSERT / SELECT
+  - `view_log`: gspread insert_row → Supabase INSERT / SELECT
+  - `error_logs`: gspread append_row → Supabase INSERT / SELECT
+  - `records`: gspread records sheet → Supabase records 테이블 (commit / delete / full_rebuild)
+  - `_restore_shelf_from_gsheet`: `_gsheet_sched_list/load` → `_supabase_sched_list_dates/load`
+  - `_settings_restore_all`: `_gsheet_*_load` → `_supabase_*_load`
+  - 중복 `from supabase import create_client` 제거
+  - 중복 `_supabase_exclude_load/save` 정의 제거 (섹션 08 두 번째 정의)
+- `records_full_rebuild`: 500행 배치 INSERT로 처리 (quota 절약)
+- `get_audit_sheet()`: 미사용 stub으로 전환
+
+---
+
 ## v7.0.3 (2026-06-08) — 메뉴 전환 로딩 속도 개선 및 로딩 인디케이터 추가
 
 ### 🔧 개선·변경

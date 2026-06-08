@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.0.3
+TELA CLUB Random Match Generator v7.1.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -116,6 +116,23 @@ def _supabase_prune_log(table: str, days: int = 30):
         _get_supabase().table(table).delete().lt("timestamp", cutoff).execute()
     except Exception:
         pass
+
+def _clear_member_cache():
+    """[v7.1.0] 회원 데이터 캐시만 초기화 — 불필요한 records/schedules 캐시는 유지.
+    st.cache_data.clear() 전역 초기화 대신 사용해 페이지 전환 속도 개선."""
+    try:
+        _load_records_cached.clear()
+    except Exception:
+        pass
+
+def _clear_schedule_cache():
+    """[v7.1.0] 스코어보드/기록 캐시만 초기화."""
+    for _fn in [records_load_cached, records_rows_from_shelf_cached,
+                _personal_raw_matches_cached]:
+        try:
+            _fn.clear()
+        except Exception:
+            pass
 
 
 
@@ -4221,7 +4238,7 @@ def _render_player_substitution(schedule, date_key, is_fully_random, key_prefix=
         shelf_save(date_key, serialize_schedule(new_sched), _ex_scores, is_fully_random)
         try:
             records_commit(date_key, new_sched, _ex_scores)
-            _st.cache_data.clear()
+            _clear_schedule_cache()   # [v7.1.0]
         except Exception:
             pass
         _dest = "빈자리(무승부)" if _mode != "다른 회원으로 교체" else display_name(new_code)
@@ -4470,7 +4487,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.0.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.1.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4647,18 +4664,17 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
     box-shadow:0 6px 20px rgba(13,148,136,.35) !important;
     display:flex !important; align-items:center !important;
 }
-[data-testid="stStatusWidget"]:has(*) svg{ display:none !important; }
-[data-testid="stStatusWidget"]:has(*) > div,
-[data-testid="stStatusWidget"]:has(*) label,
-[data-testid="stStatusWidget"]:has(*) span{ font-size:0 !important; }
+[data-testid="stStatusWidget"]:has(*) > *{ visibility:hidden !important; }
+[data-testid="stStatusWidget"]:has(*) button{ display:none !important; }
 [data-testid="stStatusWidget"]:has(*)::before{
     content:"🎾"; font-size:16px; line-height:1;
-    display:inline-block; margin-right:7px;
+    display:inline-block; margin-right:8px;
+    visibility:visible !important;
     animation:tela-ball-bounce .6s infinite ease-in-out;
 }
 [data-testid="stStatusWidget"]:has(*)::after{
     content:"불러오는 중…"; font-size:13px; font-weight:700; color:#fff;
-    white-space:nowrap;
+    white-space:nowrap; visibility:visible !important;
 }
 @keyframes tela-ball-bounce{
     0%,100%{ transform:translateY(0) rotate(0deg); }
@@ -5318,7 +5334,7 @@ def save_row(df, row, is_new, action_detail="", do_log=True):
             action_detail or f"카테고리:{row.get('category','')}"
         )
 
-    st.cache_data.clear()
+    _clear_member_cache()   # [v7.1.0]
 
 def soft_delete_row(mid, member_name):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -5366,7 +5382,7 @@ def soft_delete_row(mid, member_name):
             pass
 
     log_audit("삭제(소프트)", mid, member_name, f"휴지통 이동. {TRASH_DAYS}일 후 영구 삭제.")
-    st.cache_data.clear()
+    _clear_member_cache()   # [v7.1.0]
 
 def hard_delete_row(mid, member_name):
     # ① Supabase 영구 삭제
@@ -5409,7 +5425,7 @@ def hard_delete_row(mid, member_name):
             pass
 
     log_audit("삭제(영구)", mid, member_name, "영구 삭제 완료.")
-    st.cache_data.clear()
+    _clear_member_cache()   # [v7.1.0]
 
 def restore_row(mid, member_name):
     # ① Supabase deleted_at 초기화
@@ -5451,7 +5467,7 @@ def restore_row(mid, member_name):
             pass
 
     log_audit("복구", mid, member_name, "휴지통에서 복구.")
-    st.cache_data.clear()
+    _clear_member_cache()   # [v7.1.0]
 
 def next_id(df):
     return int(df["id"].max()) + 1 if not df.empty else 1
@@ -5901,33 +5917,31 @@ def dialog_detail(row):
 # ─────────────────────────────────────────────────────────
 #  팝업 다이얼로그: 삭제 1차 확인 (비번 전 경고)
 # ─────────────────────────────────────────────────────────
-@st.dialog("⚠️ 회원 삭제 확인")
+@st.dialog("💀 영구삭제 확인")
 def dialog_confirm_delete(target):
+    """[v7.1.0] 휴지통에서 영구삭제 시 호출. 복구 불가 경고."""
     st.markdown(f"""
     <div style="text-align:center; padding: 8px 0 16px;">
-        <div style="font-size:48px; margin-bottom:12px;">🚨</div>
+        <div style="font-size:48px; margin-bottom:12px;">💀</div>
         <div style="font-size:17px; font-weight:700; color:#1a2e4a; margin-bottom:8px;">
-            정말로 삭제하시겠습니까?
+            영구삭제 — 되돌릴 수 없습니다
         </div>
         <div style="font-size:14px; color:#6b7280; line-height:1.6;">
             <b style="color:#dc2626;">[{target['name']}]</b> 회원의 모든 정보가<br>
-            영구적으로 삭제되며 복구할 수 없습니다.
+            즉시 <b>영구적으로 삭제</b>되며 복구할 수 없습니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
     st.divider()
 
-    # [다이어트] 버튼 스타일은 전역 CSS에 통합됨 (.st-key-confirm_del_yes/no)
-
     cy, cn = st.columns([1, 1], gap="small")
     with cy:
-        if st.button("🗑️ 삭제 진행", use_container_width=True, key="confirm_del_yes"):
-            st.session_state.edit_target = target
-            # 이미 세션 인증된 경우 비번 건너뛰고 바로 최종 삭제 확인으로
-            if st.session_state.admin_authed:
-                st.session_state.open_dialog = "delete_confirm"
-            else:
-                st.session_state.open_dialog = "pw_delete"
+        if st.button("💀 영구삭제 진행", use_container_width=True, key="confirm_del_yes"):
+            with st.spinner("영구삭제 중…"):
+                hard_delete_row(target["id"], target["name"])
+            st.session_state.open_dialog = None
+            st.session_state.edit_target = None
+            st.cache_data.clear()
             st.rerun()
     with cn:
         if st.button("✕ 취소", use_container_width=True, key="confirm_del_no"):
@@ -6187,7 +6201,8 @@ def dialog_form(df, existing=None):
 
     if delete_clicked and existing:
         _cleanup_dormant_session()
-        st.session_state.open_dialog    = "confirm_delete"
+        # [v7.1.0] 소프트 삭제: 바로 휴지통 이동 안내로 (영구삭제 경고 건너뜀)
+        st.session_state.open_dialog    = "delete_confirm"
         st.session_state.edit_target    = {"type":"delete","id":existing["id"],"name":existing["name"]}
         st.rerun()
 
@@ -6918,8 +6933,9 @@ def render_roster_page():
                         st.cache_data.clear()
                         st.rerun()
                     if rcol2.button("💀 영구삭제", key=f"hardel_{trow['id']}", use_container_width=True):
-                        hard_delete_row(trow["id"], trow["name"])
-                        st.cache_data.clear()
+                        # [v7.1.0] 영구삭제 확인 다이얼로그 경유
+                        st.session_state.open_dialog = "confirm_delete"
+                        st.session_state.edit_target = {"id": trow["id"], "name": trow["name"]}
                         st.rerun()
         st.markdown("---")
     
@@ -8361,9 +8377,9 @@ if page == "📊 스코어보드":
             _prev = shelf_load(selected_key) or {}
             _ifr  = _prev.get("is_fully_random", False)
             shelf_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
-            # 기록실 캐시 무효화 → 다음 기록실 방문 시 최신 반영
+            # 기록실 캐시 무효화 → 다음 기록실 방문 시 최신 반영 [v7.1.0 타겟 클리어]
             try:
-                st.cache_data.clear()
+                _clear_schedule_cache()
             except Exception:
                 pass
             # audit용 대진 표기
@@ -8630,7 +8646,7 @@ if page == "📊 스코어보드":
                 with st.spinner("기록실 재집계 중…"):
                     try:
                         records_commit(selected_key, schedule, _reagg_scores)
-                        st.cache_data.clear()
+                        _clear_schedule_cache()   # [v7.1.0]
                         st.success(f"✅ '{selected_key}' 기록실 재집계 완료! 중복 선수 데이터가 제거되었습니다.")
                     except Exception as _e:
                         st.error(f"재집계 오류: {_e}")
@@ -9092,7 +9108,7 @@ elif page == "📋 대진표생성":
                         # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
                         try:
                             records_delete_by_date(_sel_key)
-                            st.cache_data.clear()
+                            _clear_schedule_cache()   # [v7.1.0]
                         except Exception:
                             pass
                         st.session_state.pop("_sb_confirm_del", None)
@@ -9498,7 +9514,7 @@ elif page == "📋 대진표생성":
                         _ex_scores = _existing.get("scores", {})
                         try:
                             records_commit(rp_key_run, _adj_matches, _ex_scores)
-                            st.cache_data.clear()
+                            _clear_schedule_cache()   # [v7.1.0]
                         except Exception:
                             pass
 
