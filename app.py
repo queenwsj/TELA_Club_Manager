@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.0.0
+TELA CLUB Random Match Generator v7.0.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4090,11 +4090,11 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.0.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.0.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
-NAVER_CAFE_URL     = "https://cafe.naver.com/f-e/cafes/31209748/menus/29?viewType=L"   # 네이버 카페 공지 게시판
+NAVER_CAFE_URL     = "https://m.cafe.naver.com/ca-fe/web/cafes/31209748/menus/29"   # 네이버 카페 공지(모바일 URL — PC에서도 동작)
 KAKAO_OPENCHAT_URL = ""   # 예: "https://open.kakao.com/o/your-room"
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
@@ -6468,7 +6468,7 @@ def render_roster_page():
         blg1, blg2, _blg3 = st.columns([2, 1, 5])
         with blg1:
             new_league_bulk = st.selectbox(
-                "리그 일괄변경", ["—"] + LEAGUE_NAMES,
+                "리그 일괄변경", ["—"] + LEAGUE_NAMES[:3],   # [v7.0.1] 회원 리그는 A·B·C만
                 key="bulk_league_sel", label_visibility="collapsed")
         with blg2:
             if st.button("✅ 리그적용", key="bulk_league_apply", use_container_width=True):
@@ -7142,6 +7142,18 @@ if page == "🏠 메인":
         unsafe_allow_html=True,
     )
 
+    # [v7.0.1] 온라인 공지 바로가기 — 초록 배너 바로 아래(설정된 링크만, 모바일 친화)
+    _links = []
+    if NAVER_CAFE_URL:
+        _links.append(("📋 네이버 카페 공지", NAVER_CAFE_URL))
+    if KAKAO_OPENCHAT_URL:
+        _links.append(("💬 카카오톡 오픈채팅", KAKAO_OPENCHAT_URL))
+    if _links:
+        _lc = st.columns(len(_links))
+        for _col, (_lbl, _url) in zip(_lc, _links):
+            _col.link_button(_lbl, _url, use_container_width=True)
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
     # 위젯 공통 데이터 1회 로드 (실패해도 무시)
     try:
         _hdf = load_df()
@@ -7159,16 +7171,18 @@ if page == "🏠 메인":
                   ("정회원",   _active, "#0d9488"),
                   ("운영진",   _officer, "#7c3aed"),
                   ("휴면",     _dormant, "#ca8a04")]
-        _mc = st.columns(4)
-        for _col, (_lbl, _val, _clr) in zip(_mc, _stats):
-            _col.markdown(
-                f"<div style='border:1px solid #e2e8f0;border-radius:14px;"
-                f"padding:14px 10px;text-align:center;background:#fff'>"
-                f"<div style='font-size:1.7rem;font-weight:800;color:{_clr};"
-                f"line-height:1.1'>{_val}</div>"
-                f"<div style='font-size:0.78rem;color:#64748b;margin-top:2px'>{_lbl}</div>"
-                f"</div>",
-                unsafe_allow_html=True)
+        # [v7.0.1] st.columns 대신 HTML 그리드 → 모바일에서도 항상 가로 4칸 유지
+        _stat_cards = "".join(
+            f"<div style='border:1px solid #e2e8f0;border-radius:14px;"
+            f"padding:14px 4px;text-align:center;background:#fff'>"
+            f"<div style='font-size:1.5rem;font-weight:800;color:{_clr};"
+            f"line-height:1.1'>{_val}</div>"
+            f"<div style='font-size:0.72rem;color:#64748b;margin-top:2px'>{_lbl}</div></div>"
+            for (_lbl, _val, _clr) in _stats)
+        st.markdown(
+            f"<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px'>"
+            f"{_stat_cards}</div>",
+            unsafe_allow_html=True)
 
     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
@@ -7289,11 +7303,11 @@ if page == "🏠 메인":
                 if str(r.get("category", "") or "").strip() == "탈퇴":
                     continue
                 _lg = str(r.get("league", "") or "").strip()
-                if _lg in LEAGUE_NAMES:
+                if _lg in LEAGUE_NAMES[:3]:   # [v7.0.1] A·B·C만 집계
                     _lg_counts[_lg] = _lg_counts.get(_lg, 0) + 1
             _lgmax = max(_lg_counts.values()) if _lg_counts else 0
             _bars = ""
-            for _lg in LEAGUE_NAMES:
+            for _lg in LEAGUE_NAMES[:3]:   # [v7.0.1] A·B·C만 표기
                 _cnt = _lg_counts.get(_lg, 0)
                 _clr = LEAGUE_COLORS[LEAGUE_NAMES.index(_lg)]
                 _pct = int(_cnt / _lgmax * 100) if _lgmax else 0
@@ -7343,19 +7357,6 @@ if page == "🏠 메인":
                     f"<div style='font-size:0.74rem;color:#94a3b8;"
                     f"margin:-6px 0 10px;padding-left:2px'>{_card_desc.get(_key,'')}</div>",
                     unsafe_allow_html=True)
-
-    # 온라인 공지 바로가기 (설정된 링크만, 개수에 맞춰 균형 배치 — 모바일에서도 깔끔)
-    _links = []
-    if NAVER_CAFE_URL:
-        _links.append(("📋 네이버 카페 공지", NAVER_CAFE_URL))
-    if KAKAO_OPENCHAT_URL:
-        _links.append(("💬 카카오톡 오픈채팅", KAKAO_OPENCHAT_URL))
-    if _links:
-        st.markdown("---")
-        st.caption("온라인 공지")
-        _lc = st.columns(len(_links))
-        for _col, (_lbl, _url) in zip(_lc, _links):
-            _col.link_button(_lbl, _url, use_container_width=True)
 
     st.stop()
 
@@ -9841,6 +9842,12 @@ elif page == "🏆 통합기록실":
   <div style="font-size:0.65rem;color:#9ca3af;margin-top:2px">{_sub}</div>
 </div>"""
 
+        # [v7.0.1] 왕 카드 3개를 HTML 그리드로 렌더 → 모바일에서도 항상 가로 3칸 유지
+        def _award_row(cards):
+            return ("<div style='display:grid;grid-template-columns:repeat(3,1fr);"
+                    "gap:8px;align-items:stretch;margin-bottom:4px'>"
+                    + "".join(cards) + "</div>")
+
         # ── 연간 모드: 전 리그 통합 수상 ─────────────────────
         if _ft == "yearly":
             _yr = _fv
@@ -9854,7 +9861,6 @@ elif page == "🏆 통합기록실":
 
             _df_all = _df_rec.copy()
             _df_all_act = _df_all[(_df_all["승"] + _df_all["무"] + _df_all["패"]) > 0]
-            _ac = st.columns(3)
             _ch = ["", "", ""]
             if not _df_all_act.empty:
                 # 득점왕 (1순위)
@@ -9886,7 +9892,9 @@ elif page == "🏆 통합기록실":
                 _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", "—", "기록 없음", "#9ca3af")
                 _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "기록 없음", "#9ca3af")
             for _ci, _h in enumerate(_ch):
-                _ac[_ci].markdown(_h, unsafe_allow_html=True)
+                if not _h:
+                    _ch[_ci] = "<div></div>"
+            st.markdown(_award_row(_ch), unsafe_allow_html=True)
             st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
         # ── 리그별 섹션 ──────────────────────────────────────
@@ -9907,7 +9915,6 @@ elif page == "🏆 통합기록실":
                 f'</div>', unsafe_allow_html=True)
 
             _df_active = _df_lg_full[(_df_lg_full["승"] + _df_lg_full["무"] + _df_lg_full["패"]) > 0]
-            _award_cols = st.columns(3)
             _cards_html = ["", "", ""]
 
             # 수정6: 월간 카드 제목 = "{리그} 월간 최다득점" 등
@@ -9957,7 +9964,9 @@ elif page == "🏆 통합기록실":
                 _cards_html[2] = _award_card("👑", _t_rate,  "—", "기록 없음", "#9ca3af")
 
             for _ci, _html in enumerate(_cards_html):
-                _award_cols[_ci].markdown(_html, unsafe_allow_html=True)
+                if not _html:
+                    _cards_html[_ci] = "<div></div>"
+            st.markdown(_award_row(_cards_html), unsafe_allow_html=True)
 
             st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
