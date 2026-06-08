@@ -110,6 +110,18 @@ def _get_supabase():
     )
 
 
+# Supabase 연결 테스트 — 임시
+if st.session_state.get("role") == "admin":
+    with st.expander("🧪 Supabase 연결 테스트", expanded=False):
+        if st.button("Supabase schedules 조회 테스트"):
+            try:
+                sb = _get_supabase()
+                res = sb.table("schedules").select("id,date_key").limit(5).execute()
+                st.success(f"Supabase 연결 성공: {len(res.data)}건 조회")
+                st.write(res.data)
+            except Exception as e:
+                st.error(f"Supabase 연결 실패: {e}")
+
 
 # ========================================================================
 # 01. 저장소 경로 · 상수 · 구글시트 설정 탭 헬퍼
