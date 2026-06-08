@@ -7180,22 +7180,6 @@ if st.session_state.pop("_collapse_sidebar_mobile", False):
 log_page_view(_u, page)
 
 
-# Supabase 연결 테스트 — 관리자 전용 임시 코드
-try:
-    if st.session_state.get("role") == "admin":
-        with st.expander("🧪 Supabase 연결 테스트", expanded=False):
-            if st.button("Supabase schedules 조회 테스트"):
-                try:
-                    sb = _get_supabase()
-                    res = sb.table("schedules").select("id,date_key").limit(5).execute()
-                    st.success(f"Supabase 연결 성공: {len(res.data)}건 조회")
-                    st.write(res.data)
-                except Exception as e:
-                    st.error(f"Supabase 연결 실패: {e}")
-except Exception:
-    pass
-
-
 # ========================================================================
 # [v7.0.0] 메인(홈) 화면 + 공통 홈 버튼
 #   · 로그인 직후 기본 착지 화면(메뉴 이력 미기록).
@@ -7212,6 +7196,25 @@ if page != "🏠 메인":
             # [v7.0.0 수정1] 메인 영역 버튼은 접기 신호를 보내지 않음
             #   (모바일은 이미 사이드바가 접힌 상태 → 신호 보내면 도리어 펼쳐짐)
             st.rerun()
+
+
+
+
+# Supabase 연결 테스트 — 관리자 전용 임시 코드
+try:
+    if st.session_state.get("role") == "admin":
+        with st.expander("🧪 Supabase 연결 테스트", expanded=False):
+            if st.button("Supabase schedules 조회 테스트"):
+                try:
+                    sb = _get_supabase()
+                    res = sb.table("schedules").select("id,date_key").limit(5).execute()
+                    st.success(f"Supabase 연결 성공: {len(res.data)}건 조회")
+                    st.write(res.data)
+                except Exception as e:
+                    st.error(f"Supabase 연결 실패: {e}")
+except Exception:
+    pass
+
 
 # ── 메인(홈) 화면 렌더링 ──
 if page == "🏠 메인":
