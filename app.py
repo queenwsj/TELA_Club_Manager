@@ -5173,17 +5173,97 @@ def _render_lock_manager(date_key: str, key_prefix: str, in_sidebar: bool = Fals
                 else:
                     st.error("❌ 비밀번호가 틀렸습니다.")
 
+def _supabase_members_load_records() -> list:
+    """Supabase members 테이블에서 회원명부 records(list[dict]) 로드."""
+    try:
+        sb = _get_supabase()
+        res = (
+            sb.table("members")
+            .select("*")
+            .order("id")
+            .execute()
+        )
+
+        rows = res.data or []
+
+        # 기존 앱 컬럼 기준으로 누락 컬럼 보정
+        fixed = []
+        for r in rows:
+            row = {}
+            for col in RS_COLUMNS:
+                val = r.get(col, "")
+                if val is None:
+                    val = ""
+                row[col] = val
+            fixed.append(row)
+
+        return fixed
+
+    except Exception as e:
+        try:
+            _app_log_error("Supabase members 로드 실패", e)
+        except Exception:
+            pass
+        return []
+
+
+def _supabase_member_upsert(row: dict):
+    """Supabase members 테이블에 회원 1명 추가/수정."""
+    sb = _get_supabase()
+
+    clean = {}
+    for col in RS_COLUMNS:
+        val = row.get(col, "")
+        if val is None:
+            val = ""
+        clean[col] = str(val).strip()
+
+    # id는 bigint primary key라 숫자로 넣어야 함
+    if clean.get("id"):
+        clean["id"] = int(float(clean["id"]))
+
+    sb.table("members").upsert(clean).execute()
+
+
+def _supabase_member_update_field(member_id: int, field: str, value):
+    """Supabase members 특정 필드 1개 업데이트."""
+    sb = _get_supabase()
+    sb.table("members").update({field: value}).eq("id", int(member_id)).execute()
+
+
+def _supabase_member_hard_delete(member_id: int):
+    """Supabase members에서 회원 완전 삭제."""
+    sb = _get_supabase()
+    sb.table("members").delete().eq("id", int(member_id)).execute()
+
 @st.cache_data(ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
 def _load_records_cached() -> list:
     """
-    구글 시트 전체 레코드를 캐싱(TTL 600초).
-    [v7.0.3] TTL을 120→600초로 상향 — 저장/수정 시 항상 st.cache_data.clear()로
-    즉시 무효화되므로, 네비게이션 중 불필요한 시트 재조회(5~7초 지연)를 크게 줄인다.
-    캐시 미스(실제 네트워크 조회)일 때만 테니스공 스피너가 표시된다.
+    회원명부 전체 레코드 캐싱.
+    Phase 3-7: Supabase 우선 로드, 실패/빈 값이면 구글시트 폴백.
     """
-    wb    = _get_gsheet_connection()
-    sheet = wb.sheet1
-    return sheet.get_all_records()
+    # ① Supabase 우선
+    try:
+        rows = _supabase_members_load_records()
+        if rows:
+            return rows
+    except Exception as e:
+        try:
+            _app_log_error("Supabase members 캐시 로드 실패", e)
+        except Exception:
+            pass
+
+    # ② 구글시트 폴백
+    try:
+        wb = _get_gsheet_connection()
+        sheet = wb.sheet1
+        return sheet.get_all_records()
+    except Exception as e:
+        try:
+            _app_log_error("Google Sheets members 폴백 로드 실패", e)
+        except Exception:
+            pass
+        return []
 
 def load_df(include_deleted=False):
     records = _load_records_cached()
@@ -5268,20 +5348,49 @@ def load_df_for_match() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def save_league_to_sheet(member_id: int, league_value: str):
-    """구글 시트의 특정 회원(id 기준) league 컬럼 업데이트."""
-    sheet   = _get_gsheet_connection().sheet1
-    all_ids = sheet.col_values(1)
-    headers = sheet.row_values(1)
-    if "league" not in headers:
-        st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
-        return False
-    league_col = headers.index("league") + 1
+    """특정 회원(id 기준) league 컬럼 업데이트. Supabase + 구글시트 백업."""
+
+    # ① Supabase 업데이트
     try:
-        idx = all_ids.index(str(member_id))
-    except ValueError:
-        st.error(f"시트에서 id={member_id}를 찾을 수 없습니다.")
+        _supabase_member_update_field(member_id, "league", str(league_value))
+    except Exception as e:
+        try:
+            st.error(f"Supabase 리그 저장 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase league 저장 실패", e)
+        except Exception:
+            pass
         return False
-    sheet.update_cell(idx + 1, league_col, league_value)
+
+    # ② 구글시트 백업 업데이트
+    try:
+        sheet = _get_gsheet_connection().sheet1
+        all_ids = sheet.col_values(1)
+        headers = sheet.row_values(1)
+
+        if "league" not in headers:
+            st.error("구글 시트에 league 컬럼이 없습니다. 앱을 새로고침해주세요.")
+            return False
+
+        league_col = headers.index("league") + 1
+
+        try:
+            idx = all_ids.index(str(member_id))
+        except ValueError:
+            st.warning(f"구글시트에서 id={member_id}를 찾지 못했습니다. Supabase에는 저장되었습니다.")
+            st.cache_data.clear()
+            return True
+
+        sheet.update_cell(idx + 1, league_col, league_value)
+
+    except Exception as e:
+        try:
+            _app_log_error("구글시트 league 백업 실패", e)
+        except Exception:
+            pass
+
     st.cache_data.clear()
     return True
 
@@ -5317,87 +5426,212 @@ def _ensure_member_header():
 
 def save_row(df, row, is_new, action_detail="", do_log=True):
     _ensure_member_header()
-    sheet = _get_gsheet_connection().sheet1
-    # 실제 시트 헤더 순서대로 저장 (컬럼 밀림 방지)
-    headers = sheet.row_values(1)
-    if not headers:
-        headers = RS_COLUMNS
+
     row["updated_at"] = datetime.today().strftime("%Y-%m-%d %H:%M")
     if "deleted_at" not in row:
         row["deleted_at"] = ""
-    values = [str(row.get(c,"") or "") for c in headers]
+
     action = "등록" if is_new else "수정"
-    if is_new:
-        _gsheet_with_retry(
-            lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
-            label=f"회원 등록 (id={row.get('id','')})")
-    else:
-        all_ids = sheet.col_values(1)
+
+    # ① Supabase 저장
+    try:
+        _supabase_member_upsert(row)
+    except Exception as e:
         try:
-            ri         = all_ids.index(str(row["id"])) + 1
-            start_cell = rowcol_to_a1(ri, 1)
-            end_cell   = rowcol_to_a1(ri, len(headers))
-            _gsheet_with_retry(
-                lambda: sheet.update(f"{start_cell}:{end_cell}", [values], value_input_option="USER_ENTERED"),
-                label=f"회원 수정 (id={row.get('id','')})")
-        except ValueError:
+            st.error(f"Supabase 회원명부 저장 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase members 저장 실패", e)
+        except Exception:
+            pass
+        return
+
+    # ② 구글시트 백업 저장
+    try:
+        sheet = _get_gsheet_connection().sheet1
+
+        # 실제 시트 헤더 순서대로 저장
+        headers = sheet.row_values(1)
+        if not headers:
+            headers = RS_COLUMNS
+
+        values = [str(row.get(c, "") or "") for c in headers]
+
+        if is_new:
             _gsheet_with_retry(
                 lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
-                label=f"회원 수정→등록 (id={row.get('id','')})")
-    # [v6.4.2] do_log=False면 감사 로그 생략 (수정했으나 실제 변경이 없는 경우 등)
+                label=f"회원 등록 백업 (id={row.get('id','')})"
+            )
+        else:
+            all_ids = sheet.col_values(1)
+            try:
+                ri = all_ids.index(str(row["id"])) + 1
+                start_cell = rowcol_to_a1(ri, 1)
+                end_cell = rowcol_to_a1(ri, len(headers))
+                _gsheet_with_retry(
+                    lambda: sheet.update(
+                        f"{start_cell}:{end_cell}",
+                        [values],
+                        value_input_option="USER_ENTERED"
+                    ),
+                    label=f"회원 수정 백업 (id={row.get('id','')})"
+                )
+            except ValueError:
+                _gsheet_with_retry(
+                    lambda: sheet.append_row(values, value_input_option="USER_ENTERED"),
+                    label=f"회원 수정→등록 백업 (id={row.get('id','')})"
+                )
+
+    except Exception as e:
+        try:
+            _app_log_error("구글시트 members 백업 실패", e)
+        except Exception:
+            pass
+
+    # ③ 감사 로그
     if do_log:
-        log_audit(action, row.get("id",""), row.get("name",""), action_detail or f"카테고리:{row.get('category','')}")
+        log_audit(
+            action,
+            row.get("id", ""),
+            row.get("name", ""),
+            action_detail or f"카테고리:{row.get('category','')}"
+        )
+
+    st.cache_data.clear()
 
 def soft_delete_row(mid, member_name):
-    sheet   = _get_gsheet_connection().sheet1
-    all_ids = sheet.col_values(1)
-    if not all_ids or all_ids[0] != "id":
-        raise RuntimeError("시트 헤더가 손상되었습니다.")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ① Supabase deleted_at 업데이트
     try:
+        _supabase_member_update_field(int(mid), "deleted_at", ts)
+    except Exception as e:
+        try:
+            st.error(f"Supabase 소프트삭제 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase members 소프트삭제 실패", e)
+        except Exception:
+            pass
+        return
+
+    # ② 구글시트 백업
+    try:
+        sheet = _get_gsheet_connection().sheet1
+        all_ids = sheet.col_values(1)
+        if not all_ids or all_ids[0] != "id":
+            raise RuntimeError("시트 헤더가 손상되었습니다.")
+
         idx = all_ids.index(str(mid))
         if idx == 0:
             raise RuntimeError("헤더 행은 삭제할 수 없습니다.")
-        ri       = idx + 1
-        del_col  = RS_COLUMNS.index("deleted_at") + 1
+
+        ri = idx + 1
+        del_col = RS_COLUMNS.index("deleted_at") + 1
         del_cell = rowcol_to_a1(ri, del_col)
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         _gsheet_with_retry(
             lambda: sheet.update(del_cell, [[ts]], value_input_option="USER_ENTERED"),
-            label=f"소프트삭제 (id={mid})")
-        log_audit("삭제(소프트)", mid, member_name, f"휴지통 이동. {TRASH_DAYS}일 후 영구 삭제.")
+            label=f"소프트삭제 백업 (id={mid})"
+        )
+
     except ValueError:
         pass
+    except Exception as e:
+        try:
+            _app_log_error("구글시트 소프트삭제 백업 실패", e)
+        except Exception:
+            pass
+
+    log_audit("삭제(소프트)", mid, member_name, f"휴지통 이동. {TRASH_DAYS}일 후 영구 삭제.")
+    st.cache_data.clear()
 
 def hard_delete_row(mid, member_name):
-    sheet   = _get_gsheet_connection().sheet1
-    all_ids = sheet.col_values(1)
-    if not all_ids or all_ids[0] != "id":
-        raise RuntimeError("시트 헤더가 손상되었습니다.")
+    # ① Supabase 영구 삭제
     try:
+        _supabase_member_hard_delete(int(mid))
+    except Exception as e:
+        try:
+            st.error(f"Supabase 영구삭제 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase members 영구삭제 실패", e)
+        except Exception:
+            pass
+        return
+
+    # ② 구글시트 백업 삭제
+    try:
+        sheet = _get_gsheet_connection().sheet1
+        all_ids = sheet.col_values(1)
+
+        if not all_ids or all_ids[0] != "id":
+            raise RuntimeError("시트 헤더가 손상되었습니다.")
+
         idx = all_ids.index(str(mid))
         if idx == 0:
             raise RuntimeError("헤더 행은 삭제할 수 없습니다.")
+
         _gsheet_with_retry(
             lambda: sheet.delete_rows(idx + 1),
-            label=f"영구삭제 (id={mid})")
-        log_audit("삭제(영구)", mid, member_name, "영구 삭제 완료.")
+            label=f"영구삭제 백업 (id={mid})"
+        )
+
     except ValueError:
         pass
+    except Exception as e:
+        try:
+            _app_log_error("구글시트 영구삭제 백업 실패", e)
+        except Exception:
+            pass
+
+    log_audit("삭제(영구)", mid, member_name, "영구 삭제 완료.")
+    st.cache_data.clear()
 
 def restore_row(mid, member_name):
-    sheet   = _get_gsheet_connection().sheet1
-    all_ids = sheet.col_values(1)
+    # ① Supabase deleted_at 초기화
     try:
+        _supabase_member_update_field(int(mid), "deleted_at", "")
+    except Exception as e:
+        try:
+            st.error(f"Supabase 복구 실패: {e}")
+        except Exception:
+            pass
+        try:
+            _app_log_error("Supabase members 복구 실패", e)
+        except Exception:
+            pass
+        return
+
+    # ② 구글시트 백업 복구
+    try:
+        sheet = _get_gsheet_connection().sheet1
+        all_ids = sheet.col_values(1)
+
         idx = all_ids.index(str(mid))
-        ri  = idx + 1
-        del_col  = RS_COLUMNS.index("deleted_at") + 1
+        ri = idx + 1
+
+        del_col = RS_COLUMNS.index("deleted_at") + 1
         del_cell = rowcol_to_a1(ri, del_col)
+
         _gsheet_with_retry(
             lambda: sheet.update(del_cell, [[""]], value_input_option="USER_ENTERED"),
-            label=f"복구 (id={mid})")
-        log_audit("복구", mid, member_name, "휴지통에서 복구.")
+            label=f"복구 백업 (id={mid})"
+        )
+
     except ValueError:
         pass
+    except Exception as e:
+        try:
+            _app_log_error("구글시트 복구 백업 실패", e)
+        except Exception:
+            pass
+
+    log_audit("복구", mid, member_name, "휴지통에서 복구.")
+    st.cache_data.clear()
 
 def next_id(df):
     return int(df["id"].max()) + 1 if not df.empty else 1
