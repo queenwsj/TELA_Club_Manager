@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.0.1
+TELA CLUB Random Match Generator v7.0.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -762,6 +762,40 @@ def _render_force_pw_change(u: dict):
         st.session_state.pop("force_pw2", None)
         st.success("✅ 비밀번호가 변경되었습니다. 잠시 후 메뉴로 이동합니다.")
         st.rerun()
+
+
+def _mobile_collapse_now():
+    """[v7.0.2] 모바일(좁은 화면)에서 사이드바를 접는 JS 컴포넌트를 렌더한다.
+    PC(>=768px)에서는 아무 동작도 하지 않는다. 매 호출 고유 nonce로 재실행을 보장한다."""
+    import streamlit.components.v1 as _components
+    _nonce = st.session_state.get("_collapse_nonce", 0) + 1
+    st.session_state["_collapse_nonce"] = _nonce
+    _js = """
+        <script>
+        (function(){
+          try {
+            var doc = window.parent.document;
+            var w = window.parent.innerWidth || doc.documentElement.clientWidth;
+            if (w >= 768) return;  // 모바일만 (PC는 그대로 펼침)
+            function collapse(){
+              var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                     || doc.querySelector('[data-testid="stSidebarCollapseButton"]')
+                     || doc.querySelector('button[kind="headerNoPadding"]')
+                     || doc.querySelector('[aria-label="Close sidebar"]')
+                     || doc.querySelector('[aria-label="Collapse sidebar"]');
+              if (btn) { btn.click(); return true; }
+              return false;
+            }
+            if (!collapse()) {
+              setTimeout(collapse, 120);
+              setTimeout(collapse, 300);
+              setTimeout(collapse, 600);
+            }
+          } catch(e) {}
+        })();
+        </script>
+    """
+    _components.html("<!-- collapse-nonce:" + str(_nonce) + " -->" + _js, height=0)
 
 
 # ========================================================================
@@ -4090,11 +4124,12 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.0.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.0.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
-NAVER_CAFE_URL     = "https://m.cafe.naver.com/ca-fe/web/cafes/31209748/menus/29"   # 네이버 카페 공지(모바일 URL — PC에서도 동작)
+NAVER_CAFE_URL_MOBILE = "https://m.cafe.naver.com/ca-fe/web/cafes/31209748/menus/29"      # 네이버 카페 공지(모바일)
+NAVER_CAFE_URL_PC     = "https://cafe.naver.com/f-e/cafes/31209748/menus/29?viewType=L"   # 네이버 카페 공지(PC)
 KAKAO_OPENCHAT_URL = ""   # 예: "https://open.kakao.com/o/your-room"
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
@@ -5582,6 +5617,8 @@ def dialog_form(df, existing=None):
     if save_clicked:
         # ── 검증 단계 (순차적으로 모든 에러를 수집) ──
         errors = []
+        # [v7.0.2] 입회일(date_input) 문자열 — 휴면/탈퇴일이 입회일 이전인지 검사용
+        _jd_str = join_date.strftime("%Y-%m-%d") if hasattr(join_date, "strftime") else str(join_date)
 
         # 1. 필수 필드
         if not name.strip():
@@ -5621,6 +5658,9 @@ def dialog_form(df, existing=None):
         ld_str = normalize_date(leave_date_str.strip())
         if ld_str and not validate_date(ld_str):
             errors.append("탈퇴일 형식이 올바르지 않습니다. (YYYY-MM-DD)")
+        # 5-A. [v7.0.2] 탈퇴일이 입회일 이전이면 등록 불가
+        elif ld_str and ld_str < _jd_str:
+            errors.append(f"탈퇴일({ld_str})은 입회일({_jd_str}) 이전으로 지정할 수 없습니다.")
 
         # 5-B. 재입회일 — 정규화 후 형식 검증 (v6.2)
         rj_str = normalize_date(rejoin_date_str.strip())
@@ -5643,6 +5683,8 @@ def dialog_form(df, existing=None):
                 errors.append(f"휴면 기간 #{i+1}: 종료일 형식 오류 (예: 20260101)"); continue
             if e and s > e:
                 errors.append(f"휴면 기간 #{i+1}: 종료일이 시작일보다 빠를 수 없습니다."); continue
+            if s < _jd_str:   # [v7.0.2] 휴면 시작일이 입회일 이전이면 등록 불가
+                errors.append(f"휴면 기간 #{i+1}: 시작일({s})이 입회일({_jd_str}) 이전으로 지정할 수 없습니다."); continue
             clean_dorm_list.append({"start": s, "end": e})
 
         # 12번: 시작일 오름차순 자동 정렬
@@ -6100,19 +6142,28 @@ def render_roster_page():
         ("휴면",   ["휴면"],     "dormant"),
         ("탈퇴",   ["탈퇴"],     "left"),
     ]
-    sc = st.columns(len(groups)+1)
-    for col,(label,cats,cls) in zip(sc[:-1],groups):
-        m,f = stat_counts(cats)
-        col.markdown(f'<div class="stat-card {cls}"><div class="stat-label">{label}</div>'
-                     f'<div class="stat-num">{m+f}</div><div class="stat-sub">남 {m} · 여 {f}</div></div>',
-                     unsafe_allow_html=True)
+    # [v7.0.2] st.columns 대신 HTML 그리드 → 모바일에서도 항상 가로 배치
+    _stat_html = []
+    for (label, cats, cls) in groups:
+        m, f = stat_counts(cats)
+        _stat_html.append(
+            f'<div class="stat-card {cls}" style="padding:10px 5px;text-align:center">'
+            f'<div class="stat-label">{label}</div>'
+            f'<div class="stat-num">{m+f}</div>'
+            f'<div class="stat-sub" style="font-size:10px">남 {m} · 여 {f}</div></div>')
     # 총 회원수 = 탈퇴 제외
     active_df = df[df["category"] != "탈퇴"] if not df.empty else df
     tm = len(active_df[active_df["gender"]=="남"]) if not active_df.empty else 0
     tf = len(active_df[active_df["gender"]=="여"]) if not active_df.empty else 0
-    sc[-1].markdown(f'<div class="stat-card total"><div class="stat-label white">총 회원수</div>'
-                    f'<div class="stat-num white">{tm+tf}</div><div class="stat-sub white">남 {tm} · 여 {tf}</div></div>',
-                    unsafe_allow_html=True)
+    _stat_html.append(
+        f'<div class="stat-card total" style="padding:10px 5px;text-align:center">'
+        f'<div class="stat-label white">총 회원수</div>'
+        f'<div class="stat-num white">{tm+tf}</div>'
+        f'<div class="stat-sub white" style="font-size:10px">남 {tm} · 여 {tf}</div></div>')
+    st.markdown(
+        f'<div style="display:grid;grid-template-columns:repeat({len(_stat_html)},1fr);'
+        f'gap:6px">' + "".join(_stat_html) + '</div>',
+        unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     
     # ─────────────────────────────────────────────────────────
@@ -6899,6 +6950,7 @@ if _u:
         st.session_state["app_user"] = None
         _cookie_clear_user()
         st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그아웃 후 메인 착지
+        st.session_state.pop("_pw_screen_collapsed", None)   # [v7.0.2] 재로그인 시 비번화면 접기 재동작
         st.session_state.pop("_last_logged_page", None)
         st.rerun()
 else:
@@ -6916,6 +6968,7 @@ else:
                     _login_reset(_id)   # [v6.9.0] 성공 → 실패 카운트 초기화
                     st.session_state["app_user"] = _r
                     st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 메인 착지
+                    st.session_state["_collapse_sidebar_mobile"] = True   # [v7.0.2] 로그인 후 모바일 사이드바 접기
                     log_login(_r)   # [v6.8.1] 로그인 기록
                     _cookie_save_user(_r)
                     _tok = _session_save(_r)
@@ -6948,6 +7001,7 @@ else:
                     _login_reset(_lid)   # [v6.9.0]
                     st.session_state["app_user"] = _result
                     st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 메인 착지
+                    st.session_state["_collapse_sidebar_mobile"] = True   # [v7.0.2] 로그인 후 모바일 사이드바 접기
                     log_login(_result)   # [v6.8.1] 로그인 기록
                     _cookie_save_user(_result)
                     _tok = _session_save(_result)
@@ -6990,6 +7044,10 @@ if not _u:
 # ── [v6.1 수정1] 기본 비밀번호 사용자 → 강제 변경 (부관리자 포함) ──
 if current_user_must_change_pw():
     _render_force_pw_change(_u)
+    # [v7.0.2] 비밀번호 변경 화면에서도 모바일 사이드바를 접는다(최초 1회).
+    if not st.session_state.get("_pw_screen_collapsed"):
+        st.session_state["_pw_screen_collapsed"] = True
+        _mobile_collapse_now()
     st.stop()
 
 st.sidebar.markdown("---")
@@ -7066,41 +7124,7 @@ with st.sidebar.expander("🔍 회원 빠른검색", expanded=False):
 # [v6.7] 모바일(좁은 화면)에서 메뉴 버튼을 누르면 사이드바를 자동으로 접는다.
 #   PC(넓은 화면)는 접지 않음. Streamlit 사이드바 접기 컨트롤을 JS로 눌러 처리.
 if st.session_state.pop("_collapse_sidebar_mobile", False):
-    import streamlit.components.v1 as _components
-    # [v6.7.1] 매 호출 고유 nonce → iframe 재생성 강제 → 스크립트 재실행 보장.
-    #   (동일 HTML이면 Streamlit이 같은 컴포넌트로 보고 다시 실행하지 않아,
-    #    두 번째 메뉴 클릭부터 사이드바가 안 접히던 문제 수정.)
-    _collapse_nonce = st.session_state.get("_collapse_nonce", 0) + 1
-    st.session_state["_collapse_nonce"] = _collapse_nonce
-    _collapse_js = """
-        <script>
-        (function(){
-          try {
-            var doc = window.parent.document;
-            var w = window.parent.innerWidth || doc.documentElement.clientWidth;
-            if (w >= 768) return;  // 모바일만 (PC는 그대로 펼침)
-            function collapse(){
-              var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button')
-                     || doc.querySelector('[data-testid="stSidebarCollapseButton"]')
-                     || doc.querySelector('button[kind="headerNoPadding"]')
-                     || doc.querySelector('[aria-label="Close sidebar"]')
-                     || doc.querySelector('[aria-label="Collapse sidebar"]');
-              if (btn) { btn.click(); return true; }
-              return false;
-            }
-            if (!collapse()) {
-              setTimeout(collapse, 120);
-              setTimeout(collapse, 300);
-              setTimeout(collapse, 600);
-            }
-          } catch(e) {}
-        })();
-        </script>
-    """
-    _components.html(
-        "<!-- collapse-nonce:" + str(_collapse_nonce) + " -->" + _collapse_js,
-        height=0,
-    )
+    _mobile_collapse_now()
 
 # [v6.9.0] 메뉴 열람 이력 기록 (페이지가 실제로 바뀐 경우에만)
 log_page_view(_u, page)
@@ -7142,10 +7166,12 @@ if page == "🏠 메인":
         unsafe_allow_html=True,
     )
 
-    # [v7.0.1] 온라인 공지 바로가기 — 초록 배너 바로 아래(설정된 링크만, 모바일 친화)
+    # [v7.0.2] 온라인 공지 바로가기 — 네이버 카페 모바일/PC 2버튼(설정된 링크만)
     _links = []
-    if NAVER_CAFE_URL:
-        _links.append(("📋 네이버 카페 공지", NAVER_CAFE_URL))
+    if NAVER_CAFE_URL_MOBILE:
+        _links.append(("📱 네이버 카페(모바일)", NAVER_CAFE_URL_MOBILE))
+    if NAVER_CAFE_URL_PC:
+        _links.append(("💻 네이버 카페(PC)", NAVER_CAFE_URL_PC))
     if KAKAO_OPENCHAT_URL:
         _links.append(("💬 카카오톡 오픈채팅", KAKAO_OPENCHAT_URL))
     if _links:
@@ -7167,10 +7193,11 @@ if page == "🏠 메인":
         _active  = int((_hdf["category"] == "정회원").sum())
         _officer = int(_hdf["category"].isin(OFFICER_CATS).sum())
         _dormant = int((_hdf["category"] == "휴면").sum())
-        _stats = [("전체 회원", _total, "#0f172a"),
+        # [v7.0.2] 회원명부 카드 순서와 동일: 운영진·정회원·휴면·전체회원
+        _stats = [("운영진",   _officer, "#7c3aed"),
                   ("정회원",   _active, "#0d9488"),
-                  ("운영진",   _officer, "#7c3aed"),
-                  ("휴면",     _dormant, "#ca8a04")]
+                  ("휴면",     _dormant, "#ca8a04"),
+                  ("전체 회원", _total, "#0f172a")]
         # [v7.0.1] st.columns 대신 HTML 그리드 → 모바일에서도 항상 가로 4칸 유지
         _stat_cards = "".join(
             f"<div style='border:1px solid #e2e8f0;border-radius:14px;"
@@ -9760,10 +9787,10 @@ elif page == "🏆 통합기록실":
 
     _now = kst_today()
     
-    # 데이터 손상 시 안내
-    if not st.session_state.get("_draws_reagg_dismissed"):
+    # 데이터 손상 시 안내 (관리자 전용 기능 안내이므로 관리자에게만 표시)
+    if is_admin() and not st.session_state.get("_draws_reagg_dismissed"):
         st.info(
-            "ℹ️ 기록실은 이제 저장된 스코어보드에서 **직접 계산**됩니다. "
+            "기록실은 이제 저장된 스코어보드에서 **직접 계산**됩니다. "
             "데이터가 이상하면 위 **🔄 새로고침** 버튼을 누르세요. "
             "구글시트의 과거 누적 데이터를 완전히 정리하려면 관리자 메뉴의 **🛠️ 기록실 완전 재구축**을 사용하세요.",
             icon="ℹ️"
@@ -9867,30 +9894,30 @@ elif page == "🏆 통합기록실":
                 _mp = _df_all_act["득점"].max()
                 _wp = _df_all_act[_df_all_act["득점"] == _mp].iloc[0]
                 _yr_lbl = f"{_yr[2:]}년 통합"
-                _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", _wp["이름"],
+                _ch[0] = _award_card("🎯", f"{_yr_lbl}<br>득점왕", _wp["이름"],
                                      f"{int(_mp)}점", "#2563eb",
                                      f"득실차 {int(_wp['득실차']):+d}")
                 # 다승왕
                 _mw = _df_all_act["승"].max()
                 _ww = _df_all_act[_df_all_act["승"] == _mw].iloc[0]
-                _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", _ww["이름"],
+                _ch[1] = _award_card("🥇", f"{_yr_lbl}<br>다승왕", _ww["이름"],
                                      f"{int(_mw)}승", "#f59e0b",
                                      f"승률 {_ww['승률']}")
                 # 승률왕 (연간: 80경기 이상, 단 2026년은 50경기 이상)
                 _yr_min = _winrate_min_games("yearly", _yr)
                 _wr, _wr_cnt = _pick_winrate_king(_df_all_act, _yr_min)
                 if _wr is not None:
-                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", _wr["이름"],
+                    _ch[2] = _award_card("👑", f"{_yr_lbl}<br>승률왕", _wr["이름"],
                                          _wr["승률"], "#7c3aed",
                                          f"{int(_wr['승'])}승 {int(_wr['무'])}무 {int(_wr['패'])}패 · {int(_wr['출전경기'])}경기")
                 else:
-                    _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—",
+                    _ch[2] = _award_card("👑", f"{_yr_lbl}<br>승률왕", "—",
                                          f"{_yr_min}경기↑ 필요", "#9ca3af")
             else:
                 _yr_lbl = f"{_yr[2:]}년 통합"
-                _ch[0] = _award_card("🎯", f"{_yr_lbl} 득점왕", "—", "기록 없음", "#9ca3af")
-                _ch[1] = _award_card("🥇", f"{_yr_lbl} 다승왕", "—", "기록 없음", "#9ca3af")
-                _ch[2] = _award_card("👑", f"{_yr_lbl} 승률왕", "—", "기록 없음", "#9ca3af")
+                _ch[0] = _award_card("🎯", f"{_yr_lbl}<br>득점왕", "—", "기록 없음", "#9ca3af")
+                _ch[1] = _award_card("🥇", f"{_yr_lbl}<br>다승왕", "—", "기록 없음", "#9ca3af")
+                _ch[2] = _award_card("👑", f"{_yr_lbl}<br>승률왕", "—", "기록 없음", "#9ca3af")
             for _ci, _h in enumerate(_ch):
                 if not _h:
                     _ch[_ci] = "<div></div>"
@@ -9927,13 +9954,13 @@ elif page == "🏆 통합기록실":
                     _ym_label = f"{_ym_parts[0][2:]}년 {_ym_parts[1]}월"
                 except Exception:
                     _ym_label = _ym
-                _t_score = f"{_rec_lg} {_ym_label} 최다득점"
-                _t_wins  = f"{_rec_lg} {_ym_label} 최다승"
-                _t_rate  = f"{_rec_lg} {_ym_label} 최고승률"
+                _t_score = f"{_rec_lg} {_ym_label}<br>최다득점"
+                _t_wins  = f"{_rec_lg} {_ym_label}<br>최다승"
+                _t_rate  = f"{_rec_lg} {_ym_label}<br>최고승률"
             else:
-                _t_score = f"{_rec_lg} 득점왕"
-                _t_wins  = f"{_rec_lg} 다승왕"
-                _t_rate  = f"{_rec_lg} 승률왕"
+                _t_score = f"{_rec_lg}<br>득점왕"
+                _t_wins  = f"{_rec_lg}<br>다승왕"
+                _t_rate  = f"{_rec_lg}<br>승률왕"
 
             if not _df_active.empty:
                 # 득점왕 (카드 0번)
@@ -11092,17 +11119,21 @@ elif page == "🎯 이벤트 팀편성":
 
     # ── 등급별 현황 ──────────────────────────────────────────
     st.markdown("### 📊 등급별 현황")
-    _gsc = st.columns(6)
-    for _gi, _gv in enumerate(["1","2","3","4","5","미지정"]):
+    # [v7.0.2] st.columns 대신 HTML 그리드 → 모바일에서도 항상 가로 6칸
+    _gcards = []
+    for _gv in ["1", "2", "3", "4", "5", "미지정"]:
         _cnt = len(_team_df[_team_df["grade"] == _gv])
         _gc  = GRADE_COLORS.get(_gv, "#9ca3af")
         _glbl = f"{_gv}등급" if _gv.isdigit() else _gv
-        _gsc[_gi].markdown(
-            f"<div style='text-align:center;padding:10px;background:{_gc}11;"
-            f"border-left:4px solid {_gc};border-radius:8px;'>"
-            f"<div style='font-size:22px;font-weight:900;color:{_gc}'>{_cnt}</div>"
-            f"<div style='font-size:11px;color:#6b7280;font-weight:700'>{_glbl}</div>"
-            f"</div>", unsafe_allow_html=True)
+        _gcards.append(
+            f"<div style='text-align:center;padding:10px 3px;background:{_gc}11;"
+            f"border-left:4px solid {_gc};border-radius:8px'>"
+            f"<div style='font-size:20px;font-weight:900;color:{_gc}'>{_cnt}</div>"
+            f"<div style='font-size:10px;color:#6b7280;font-weight:700'>{_glbl}</div></div>")
+    st.markdown(
+        "<div style='display:grid;grid-template-columns:repeat(6,1fr);gap:5px'>"
+        + "".join(_gcards) + "</div>",
+        unsafe_allow_html=True)
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
