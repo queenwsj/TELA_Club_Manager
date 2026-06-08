@@ -402,26 +402,23 @@ def _supabase_exclude_load() -> list:
 
 def _supabase_exclude_save(names: list):
     """Supabase excluded_players 전체 덮어쓰기."""
-    try:
-        sb = _get_supabase()
+    sb = _get_supabase()
 
-        # excluded_players.name은 primary key라 빈 값/NULL이 들어갈 수 없음
-        sb.table("excluded_players").delete().neq("name", "").execute()
+    rows = [
+        {"name": str(n).strip()}
+        for n in sorted(set(names))
+        if str(n).strip()
+    ]
 
-        rows = [
-            {"name": str(n).strip()}
-            for n in sorted(set(names))
-            if str(n).strip()
-        ]
+    # 기존 데이터 전체 삭제
+    delete_res = sb.table("excluded_players").delete().neq("name", "").execute()
 
-        if rows:
-            sb.table("excluded_players").upsert(rows).execute()
+    # 새 데이터 삽입
+    if rows:
+        insert_res = sb.table("excluded_players").upsert(rows).execute()
+        return insert_res
 
-    except Exception as e:
-        try:
-            _app_log_error("Supabase exclude 저장 실패", e)
-        except Exception:
-            pass
+    return delete_res
 
 
 def exclude_list_save(names: list):
@@ -432,8 +429,10 @@ def exclude_list_save(names: list):
         db["excluded"] = clean
 
     try:
-        _supabase_exclude_save(clean)
+        res = _supabase_exclude_save(clean)
+        st.toast("Supabase 제외선수 저장 완료", icon="✅")
     except Exception as e:
+        st.error(f"Supabase exclude 저장 실패: {e}")
         try:
             _app_log_error("Supabase exclude 저장 실패", e)
         except Exception:
@@ -442,8 +441,8 @@ def exclude_list_save(names: list):
     # Phase 3 안정화 전까지 구글시트 백업 유지
     try:
         _gsheet_exclude_save(clean)
-    except Exception:
-        pass
+    except Exception as e:
+        st.warning(f"구글시트 exclude 백업 실패: {e}")
 
 
 def exclude_list_load() -> list:
