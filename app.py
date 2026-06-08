@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v6.9.2
+TELA CLUB Random Match Generator v6.9.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4090,7 +4090,7 @@ from gspread.utils import rowcol_to_a1
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "6.9.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "6.9.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
@@ -6446,8 +6446,34 @@ def render_roster_page():
         help="켜면 한 회원을 4줄짜리 카드로 표시합니다. PC에서는 끄면 기존 표 형태로 보입니다.",
     )
 
-    CW  = [0.22, 0.28, 0.55, 0.65, 0.55, 0.82, 0.85, 0.46, 0.38, 0.95, 0.72, 0.75, 1.0, 0.72, 0.68, 1.1, 0.85]
-    HDR = ["☑","No.","구분","리그","등급","성명","카페ID","생년월일","성별","연락처","거주지","입회일","휴면기간","탈퇴일","입회신청서","메모","관리"]
+    # ── [v6.9.3] 리스트(PC 표) 컬럼 동적 구성 ──
+    #   · 거주지 : 리스트에서 제거 (모바일 카드·열람 다이얼로그에서 확인)
+    #   · 탈퇴일 : '탈퇴' 필터에서만 표시 (일반회원·운영진 리스트엔 숨김)
+    #   · 생년월일: 전체일자(YYYY-MM-DD) 표기 대응으로 폭 확대 → 줄밀림 방지
+    _show_leave_col = (filter_cat == "탈퇴")
+    _COL_SPEC = [
+        ("☑",        0.22),
+        ("No.",      0.28),
+        ("구분",      0.55),
+        ("리그",      0.65),
+        ("등급",      0.55),
+        ("성명",      0.82),
+        ("카페ID",    0.85),
+        ("생년월일",   0.92),
+        ("성별",      0.38),
+        ("연락처",     0.95),
+        ("입회일",     0.75),
+        ("휴면기간",   1.00),
+    ]
+    if _show_leave_col:
+        _COL_SPEC.append(("탈퇴일", 0.72))
+    _COL_SPEC += [
+        ("입회신청서", 0.68),
+        ("메모",      1.10),
+        ("관리",      0.85),
+    ]
+    HDR = [h for (h, _w) in _COL_SPEC]
+    CW  = [w for (_h, w) in _COL_SPEC]
 
     # ── [v6.2.1] 운영진(부관리자/관리자) 계정 매핑 — 리스트·카드 표시용 ──
     try:
@@ -6657,28 +6683,36 @@ def render_roster_page():
             app_val   = str(row.get("application","") or "—")
             app_color = {"Yes":"#16a34a","No":"#dc2626"}.get(app_val,"#9ca3af")
     
-            rc[col_offset+0].markdown(cell(idx+1,"#9ca3af"), unsafe_allow_html=True)
-            rc[col_offset+1].markdown(f"<div style='padding:5px 0'>{badge(row.get('category',''))}</div>", unsafe_allow_html=True)
+            # [v6.9.3] 동적 컬럼(거주지 제거·탈퇴일 조건부)에 맞춘 러닝 인덱스
+            ci = col_offset
+            # No.
+            rc[ci].markdown(cell(idx+1,"#9ca3af"), unsafe_allow_html=True); ci += 1
+            # 구분
+            rc[ci].markdown(f"<div style='padding:5px 0'>{badge(row.get('category',''))}</div>", unsafe_allow_html=True); ci += 1
             # ── 리그 셀 (표시만, 랜덤매치에서 수정) ──
             lg_val = str(row.get('league','') or '').strip()
             _lg_color = LEAGUE_COLORS[LEAGUE_NAMES.index(lg_val)] if lg_val in LEAGUE_NAMES else "#9ca3af"
-            rc[col_offset+2].markdown(
+            rc[ci].markdown(
                 f"<div style='padding:5px 0;{RS_FS};color:{_lg_color};font-weight:700'>{lg_val or '—'}</div>",
-                unsafe_allow_html=True
-            )
+                unsafe_allow_html=True); ci += 1
             # ── 등급 셀 ──
             gd_val = str(row.get('grade','') or '').strip()
-            rc[col_offset+3].markdown(
+            rc[ci].markdown(
                 f"<div style='padding:5px 0'>{grade_badge(gd_val)}</div>",
-                unsafe_allow_html=True
-            )
-            rc[col_offset+4].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True)
-            rc[col_offset+5].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True)
-            rc[col_offset+6].markdown(cell(by_val), unsafe_allow_html=True)
-            rc[col_offset+7].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True)
-            rc[col_offset+8].markdown(phone_cell(row.get('phone','') or ''), unsafe_allow_html=True)
-            rc[col_offset+9].markdown(cell(row.get('region','') or '—',"#374151"), unsafe_allow_html=True)
-            rc[col_offset+10].markdown(cell(row.get('join_date','') or '—',"#6b7280"), unsafe_allow_html=True)
+                unsafe_allow_html=True); ci += 1
+            # 성명
+            rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
+            # 카페ID
+            rc[ci].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True); ci += 1
+            # 생년월일
+            rc[ci].markdown(cell(by_val), unsafe_allow_html=True); ci += 1
+            # 성별
+            rc[ci].markdown(f"<div style='padding:5px 0'>{gender_html(str(row.get('gender','')))}</div>", unsafe_allow_html=True); ci += 1
+            # 연락처
+            rc[ci].markdown(phone_cell(row.get('phone','') or ''), unsafe_allow_html=True); ci += 1
+            # [v6.9.3] 거주지 컬럼은 리스트에서 제거 (모바일 카드·열람에서 확인)
+            # 입회일
+            rc[ci].markdown(cell(row.get('join_date','') or '—',"#6b7280"), unsafe_allow_html=True); ci += 1
     
             # 휴면 기간 요약
             dorm_raw = str(row.get('dormant_period','') or '').strip()
@@ -6697,20 +6731,26 @@ def render_roster_page():
                     dorm_disp = f"{last['start']}~{last['end']} 외 {dorm_cnt-1}건"
             else:
                 dorm_disp = "—"
-            rc[col_offset+11].markdown(
+            # 휴면기간
+            rc[ci].markdown(
                 f"<div style='padding:7px 0;{RS_FS};color:#ca8a04' title='{dorm_raw}'>{dorm_disp}</div>",
-                unsafe_allow_html=True)
+                unsafe_allow_html=True); ci += 1
     
-            rc[col_offset+12].markdown(cell(row.get('leave_date','') or '—',"#dc2626"), unsafe_allow_html=True)
-            rc[col_offset+13].markdown(
+            # [v6.9.3] 탈퇴일: '탈퇴' 필터에서만 컬럼 표시 (일반회원·운영진 리스트엔 숨김)
+            if _show_leave_col:
+                rc[ci].markdown(cell(row.get('leave_date','') or '—',"#dc2626"), unsafe_allow_html=True); ci += 1
+            # 입회신청서
+            rc[ci].markdown(
                 f"<div style='padding:5px 0'><span style='{RS_FS};font-weight:700;color:{app_color}'>{app_val}</span></div>",
-                unsafe_allow_html=True)
-            rc[col_offset+14].markdown(
+                unsafe_allow_html=True); ci += 1
+            # 메모
+            rc[ci].markdown(
                 f"<div style='padding:7px 0;{RS_FS};color:#4b5563' title='{memo_txt}'>{memo_disp}</div>",
-                unsafe_allow_html=True)
+                unsafe_allow_html=True); ci += 1
     
             # [다이어트] 행별 inline CSS 제거 - 전역 와일드카드 사용
-            with rc[col_offset+15]:
+            # 관리
+            with rc[ci]:
                 btn_c1, btn_c2 = st.columns([1, 1])
                 with btn_c1:
                     if st.button("열람", key=f"detail_{row['id']}", use_container_width=True,
