@@ -380,35 +380,81 @@ def _supabase_guests_save(guests: list):
 
 # ── exclude 탭 ────────────────────────────────────────────────
 
-def _gsheet_exclude_save(names: list):
-    """exclude 탭 전체 덮어쓰기. 행 1개 = 제외 선수 1명."""
-    ws = _get_tab(EXCLUDE_SHEET_NAME, EXCLUDE_COLS)
-    if ws is None:
-        return
-    try:
-        existing = ws.get_all_values()
-        if len(existing) > 1:
-            ws.delete_rows(2, len(existing))
-        if names:
-            ws.append_rows([[n] for n in sorted(set(names))],
-                           value_input_option="USER_ENTERED")
-    except Exception as _e:
-        st.session_state.setdefault("_gsheet_errors", []).append(
-            f"exclude 저장 오류 → {_e}")
+def exclude_list_save(names: list):
+    """기록 제외 선수 목록 저장. Supabase + 구글시트 백업."""
+    clean = sorted(set([str(n).strip() for n in names if str(n).strip()]))
 
+    with shelve.open(EXCLUDE_PATH) as db:
+        db["excluded"] = clean
 
-def _gsheet_exclude_load() -> list:
-    """exclude 탭에서 제외 선수 목록 로드."""
-    ws = _get_tab(EXCLUDE_SHEET_NAME, EXCLUDE_COLS)
-    if ws is None:
-        return []
     try:
-        rows = ws.get_all_records()
-        return [str(r.get("player_name","")).strip()
-                for r in rows if r.get("player_name","").strip()]
+        _supabase_exclude_save(clean)
+    except Exception as e:
+        try:
+            _app_log_error("Supabase exclude 저장 실패", e)
+        except Exception:
+            pass
+
+    # Phase 3 안정화 전까지 구글시트 백업 유지
+    try:
+        _gsheet_exclude_save(clean)
     except Exception:
+        pass
+
+
+def exclude_list_load() -> list:
+    """기록 제외 선수 목록 로드. Supabase 우선."""
+    try:
+        val = _supabase_exclude_load()
+        if val is not None:
+            with shelve.open(EXCLUDE_PATH) as db:
+                db["excluded"] = val
+            return list(val)
+    except Exception:
+        pass
+
+    with shelve.open(EXCLUDE_PATH) as db:
+        return list(db.get("excluded", []))
+
+def _supabase_exclude_load() -> list:
+    """Supabase excluded_players 테이블에서 제외 선수 목록 로드."""
+    try:
+        sb = _get_supabase()
+        res = sb.table("excluded_players").select("name").order("name").execute()
+        return [
+            str(r.get("name", "")).strip()
+            for r in (res.data or [])
+            if r.get("name")
+        ]
+    except Exception as e:
+        try:
+            _app_log_error("Supabase exclude 로드 실패", e)
+        except Exception:
+            pass
         return []
 
+
+def _supabase_exclude_save(names: list):
+    """Supabase excluded_players 전체 덮어쓰기."""
+    try:
+        sb = _get_supabase()
+
+        sb.table("excluded_players").delete().neq("name", "").execute()
+
+        rows = [
+            {"name": str(n).strip()}
+            for n in sorted(set(names))
+            if str(n).strip()
+        ]
+
+        if rows:
+            sb.table("excluded_players").upsert(rows).execute()
+
+    except Exception as e:
+        try:
+            _app_log_error("Supabase exclude 저장 실패", e)
+        except Exception:
+            pass
 
 # ── users 탭 ──────────────────────────────────────────────────
 
