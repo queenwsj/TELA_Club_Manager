@@ -33,23 +33,6 @@ TELA CLUB Random Match Generator v7.0.3
 
 
 
-
-# ========================================================================
-# 00-S. Supabase 연결
-# ========================================================================
-
-from supabase import create_client
-
-@st.cache_resource(ttl=3600)
-def _get_supabase():
-    """Supabase 클라이언트 생성"""
-    return create_client(
-        st.secrets["supabase"]["url"],
-        st.secrets["supabase"]["service_role"],
-    )
-
-
-
 # ========================================================================
 # 00. IMPORT / 기본 설정
 # ========================================================================
@@ -109,6 +92,22 @@ def _keyed_container(key: str):
         return st.container(key=key)
     except TypeError:
         return st.container()
+
+
+
+# ========================================================================
+# 00-S. Supabase 연결
+# ========================================================================
+
+from supabase import create_client
+
+@st.cache_resource(ttl=3600)
+def _get_supabase():
+    """Supabase 클라이언트 생성"""
+    return create_client(
+        st.secrets["supabase"]["url"],
+        st.secrets["supabase"]["service_role"],
+    )
 
 
 
