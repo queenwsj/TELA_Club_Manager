@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.2.0
+TELA CLUB Random Match Generator v7.2.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -103,6 +103,12 @@ def _supabase_prune_log(table: str, days: int = 30):
     except Exception:
         pass
 
+def _log_bg(fn, *args, **kwargs):
+    """[v7.2] 로그 함수를 백그라운드 스레드에서 실행.
+    로그는 fire-and-forget이므로 메인 스레드를 블로킹하지 않는다."""
+    import threading
+    threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
+
 def _clear_member_cache():
     """[v7.1.0] 회원 데이터 캐시만 초기화 — 불필요한 records/schedules 캐시는 유지.
     st.cache_data.clear() 전역 초기화 대신 사용해 페이지 전환 속도 개선."""
@@ -182,16 +188,13 @@ def _error_log_to_sheet(timestamp, page, operation, user, message, tb=""):
 def _score_audit_to_sheet(timestamp, date_key, match_idx, matchup, editor, frm, to):
     """[v7 Supabase] score_audit 테이블에 점수 수정 1건 삽입."""
     try:
-        _get_supabase().table("score_audit").insert({
-            "timestamp": str(timestamp),
-            "date_key":  str(date_key),
-            "match_idx": str(match_idx),
-            "matchup":   str(matchup or "")[:120],
-            "editor":    str(editor  or ""),
-            "from_val":  str(frm     or ""),
-            "to_val":    str(to      or ""),
-        }).execute()
-        _supabase_prune_log("score_audit", days=30)
+        _row = {"timestamp": str(timestamp), "date_key": str(date_key),
+                "match_idx": str(match_idx), "matchup": str(matchup or "")[:120],
+                "editor": str(editor or ""), "from_val": str(frm or ""), "to_val": str(to or "")}
+        def _do_score_audit():
+            _get_supabase().table("score_audit").insert(_row).execute()
+            _supabase_prune_log("score_audit", days=30)
+        _log_bg(_do_score_audit)  # [v7.2] 비동기
     except Exception:
         pass
 
@@ -503,7 +506,17 @@ def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.strip().encode()).hexdigest()
 
 def user_load_all() -> dict:
-    """전체 계정 로드. Supabase 우선, 실패 시 기존 저장소 폴백."""
+    """[v7.2] 계정 로드. shelve(로컬 디스크) 우선 — 앱 시작 시 Supabase와 동기화됨.
+    shelve가 비어 있을 때만 Supabase 재조회 (rerun마다 네트워크 왕복 방지).
+    계정 저장 시 user_save_all()이 shelve·Supabase 양쪽을 갱신하므로 신선도 보장."""
+    try:
+        with shelve.open(USER_PATH) as db:
+            val = db.get("users", {})
+        if val:
+            return dict(val)
+    except Exception:
+        pass
+    # shelve 비어있으면 Supabase 재조회 후 shelve에 캐시
     try:
         val = _supabase_users_load()
         if val:
@@ -512,9 +525,7 @@ def user_load_all() -> dict:
             return dict(val)
     except Exception:
         pass
-
-    with shelve.open(USER_PATH) as db:
-        return dict(db.get("users", {}))
+    return {}
 
 def user_save_all(data: dict):
     """전체 계정 저장. Supabase + 기존 구글시트 백업."""
@@ -4141,7 +4152,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.2.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.2.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4386,15 +4397,17 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     try:
         ts      = kst_now_str("%Y-%m-%d %H:%M:%S")
         _editor = _editor_display_name()
-        _get_supabase().table("audit_log").insert({
-            "timestamp":   ts,
-            "action":      str(action      or ""),
-            "member_id":   str(member_id   or ""),
-            "member_name": str(member_name or ""),
-            "detail":      str(detail      or ""),
-            "editor":      str(_editor     or ""),
-        }).execute()
-        _supabase_prune_log("audit_log", days=30)
+        def _do_audit():
+            _get_supabase().table("audit_log").insert({
+                "timestamp":   ts,
+                "action":      str(action      or ""),
+                "member_id":   str(member_id   or ""),
+                "member_name": str(member_name or ""),
+                "detail":      str(detail      or ""),
+                "editor":      str(_editor     or ""),
+            }).execute()
+            _supabase_prune_log("audit_log", days=30)
+        _log_bg(_do_audit)  # [v7.2] 비동기
     except Exception:
         pass
 
@@ -4407,14 +4420,16 @@ def log_login(user: dict):
         _role_ko = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}.get(
             user.get("role", ""), user.get("role", "") or "회원")
         _nm = _editor_display_name() or user.get("name", "")
-        _get_supabase().table("login_log").insert({
-            "timestamp": ts,
-            "login_id":  str(user.get("id", "") or ""),
-            "name":      str(_nm     or ""),
-            "role":      str(_role_ko or ""),
-            "result":    "성공",
-        }).execute()
-        _supabase_prune_log("login_log", days=30)
+        def _do_login_log():
+            _get_supabase().table("login_log").insert({
+                "timestamp": ts,
+                "login_id":  str(user.get("id", "") or ""),
+                "name":      str(_nm     or ""),
+                "role":      str(_role_ko or ""),
+                "result":    "성공",
+            }).execute()
+            _supabase_prune_log("login_log", days=30)
+        _log_bg(_do_login_log)  # [v7.2] 비동기
     except Exception:
         pass
 
@@ -4448,14 +4463,17 @@ def log_login_fail(login_id: str, locked: bool = False):
     try:
         ts = kst_now_str("%Y-%m-%d %H:%M:%S")
         _nm, _role = _resolve_login_identity(login_id)
-        _get_supabase().table("login_log").insert({
-            "timestamp": ts,
-            "login_id":  str((login_id or "").strip()),
-            "name":      str(_nm   or ""),
-            "role":      str(_role or ""),
-            "result":    "차단" if locked else "실패",
-        }).execute()
-        _supabase_prune_log("login_log", days=30)
+        _r = "차단" if locked else "실패"
+        def _do_fail_log():
+            _get_supabase().table("login_log").insert({
+                "timestamp": ts,
+                "login_id":  str((login_id or "").strip()),
+                "name":      str(_nm   or ""),
+                "role":      str(_role or ""),
+                "result":    _r,
+            }).execute()
+            _supabase_prune_log("login_log", days=30)
+        _log_bg(_do_fail_log)  # [v7.2] 비동기
     except Exception:
         pass
 
@@ -4540,14 +4558,16 @@ def log_page_view(user: dict, page: str):
             user.get("role", ""), user.get("role", "") or "회원")
         _nm = _editor_display_name() or user.get("name", "")
         _pg = page.split(" ", 1)[-1] if " " in page else page
-        _get_supabase().table("view_log").insert({
-            "timestamp": ts,
-            "login_id":  str(user.get("id", "") or ""),
-            "name":      str(_nm     or ""),
-            "role":      str(_role_ko or ""),
-            "page":      str(_pg     or ""),
-        }).execute()
-        _supabase_prune_log("view_log", days=30)
+        def _do_log_view():
+            _get_supabase().table("view_log").insert({
+                "timestamp": ts,
+                "login_id":  str(user.get("id", "") or ""),
+                "name":      str(_nm     or ""),
+                "role":      str(_role_ko or ""),
+                "page":      str(_pg     or ""),
+            }).execute()
+            _supabase_prune_log("view_log", days=30)
+        _log_bg(_do_log_view)  # [v7.2] 메인 스레드 블로킹 없음
     except Exception:
         pass
 
