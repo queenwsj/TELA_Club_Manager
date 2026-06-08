@@ -409,6 +409,57 @@ def _gsheet_users_load() -> dict:
     except Exception:
         return {}
 
+def _supabase_users_load() -> dict:
+    """Supabase users 테이블에서 계정 목록 로드."""
+    try:
+        sb = _get_supabase()
+        res = sb.table("users").select("user_id,pw_hash,role,name").execute()
+        rows = res.data or []
+
+        return {
+            str(r["user_id"]): {
+                "pw_hash": str(r.get("pw_hash", "")),
+                "role": str(r.get("role", "member")),
+                "name": str(r.get("name", "")),
+            }
+            for r in rows
+            if r.get("user_id")
+        }
+
+    except Exception as e:
+        try:
+            _app_log_error("Supabase users 로드 실패", e)
+        except Exception:
+            pass
+        return {}
+
+
+def _supabase_users_save(users: dict):
+    """Supabase users 테이블에 계정 목록 저장."""
+    try:
+        sb = _get_supabase()
+
+        rows = []
+        for uid, udata in users.items():
+            uid = str(uid).strip()
+            if not uid:
+                continue
+
+            rows.append({
+                "user_id": uid,
+                "pw_hash": str(udata.get("pw_hash", "")),
+                "role": str(udata.get("role", "member")),
+                "name": str(udata.get("name", "")),
+            })
+
+        if rows:
+            sb.table("users").upsert(rows).execute()
+
+    except Exception as e:
+        try:
+            _app_log_error("Supabase users 저장 실패", e)
+        except Exception:
+            pass
 
 # ── 앱 시작 시 복원 ───────────────────────────────────────────
 
@@ -538,18 +589,40 @@ def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.strip().encode()).hexdigest()
 
 def user_load_all() -> dict:
-    """전체 계정 로드. 구조: {user_id: {pw_hash, role, name}}"""
+    """전체 계정 로드. Supabase 우선, 실패 시 기존 저장소 폴백."""
+    try:
+        val = _supabase_users_load()
+        if val:
+            with shelve.open(USER_PATH) as db:
+                db["users"] = val
+            return dict(val)
+    except Exception:
+        pass
+
     with shelve.open(USER_PATH) as db:
         return dict(db.get("users", {}))
 
 def user_save_all(data: dict):
+    """전체 계정 저장. Supabase + 기존 구글시트 백업."""
     with shelve.open(USER_PATH) as db:
         db["users"] = data
-    # 구글시트 동기화
+
+    try:
+        _supabase_users_save(data)
+    except Exception as e:
+        try:
+            _app_log_error("계정/권한 Supabase 저장 실패", e)
+        except Exception:
+            pass
+
+    # Phase 3 안정화 전까지 구글시트 백업 유지
     try:
         _gsheet_users_save(data)
     except Exception as e:
-        _app_log_error("계정/권한 구글시트 저장 실패", e)
+        try:
+            _app_log_error("계정/권한 구글시트 저장 실패", e)
+        except Exception:
+            pass
 
 
 _BG_ERRORS = []   # [v6.3] 백그라운드 스레드 오류 큐 (세션 접근 불가 → 메인 스레드가 비움)
