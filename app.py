@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.2.1
+TELA CLUB Random Match Generator v7.2.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -140,6 +140,7 @@ SHELF_PATH   = os.path.join(SAVE_DIR, "scoreboard")
 USER_PATH    = os.path.join(SAVE_DIR, "users")
 GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
 SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
+SESSION_EXPIRE_DAYS = 30   # [v7.2.2] 세션 토큰(자동 로그인) 만료 기간 — 정의 누락으로 인한 로그인 직후 NameError 크래시 해결
 RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
 EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
 SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 구글시트 탭명
@@ -350,16 +351,19 @@ def _supabase_users_load() -> dict:
 
 
 def _supabase_users_save(users: dict):
-    """Supabase users 테이블에 계정 목록 저장."""
+    """[v7.2.2] Supabase users 테이블 전체 동기화.
+    upsert만 하면 '삭제된 계정'이 Supabase에 남는 문제가 있어,
+    현재 users dict에 없는 계정은 삭제한다(완전 동기화)."""
     try:
         sb = _get_supabase()
 
         rows = []
+        keep_ids = []
         for uid, udata in users.items():
             uid = str(uid).strip()
             if not uid:
                 continue
-
+            keep_ids.append(uid)
             rows.append({
                 "user_id": uid,
                 "pw_hash": str(udata.get("pw_hash", "")),
@@ -367,6 +371,19 @@ def _supabase_users_save(users: dict):
                 "name": str(udata.get("name", "")),
             })
 
+        # ① 현재 목록에 없는 계정 삭제 (관리자 계정 삭제 동기화)
+        try:
+            if keep_ids:
+                sb.table("users").delete().not_.in_("user_id", keep_ids).execute()
+            else:
+                sb.table("users").delete().neq("user_id", "").execute()
+        except Exception as _de:
+            try:
+                _app_log_error("Supabase users 삭제 동기화 실패", _de)
+            except Exception:
+                pass
+
+        # ② 현재 계정 upsert
         if rows:
             sb.table("users").upsert(rows).execute()
 
@@ -505,30 +522,32 @@ import hashlib
 def _hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.strip().encode()).hexdigest()
 
+@st.cache_data(ttl=60, show_spinner=False)
 def user_load_all() -> dict:
-    """[v7.2] 계정 로드. shelve(로컬 디스크) 우선 — 앱 시작 시 Supabase와 동기화됨.
-    shelve가 비어 있을 때만 Supabase 재조회 (rerun마다 네트워크 왕복 방지).
-    계정 저장 시 user_save_all()이 shelve·Supabase 양쪽을 갱신하므로 신선도 보장."""
-    try:
-        with shelve.open(USER_PATH) as db:
-            val = db.get("users", {})
-        if val:
-            return dict(val)
-    except Exception:
-        pass
-    # shelve 비어있으면 Supabase 재조회 후 shelve에 캐시
+    """[v7.2.2] 계정 로드. Supabase 우선(60초 캐시), 실패 시 shelve 폴백.
+    rerun마다 6회+ 호출돼도 60초 캐시로 네트워크 왕복을 1회로 줄인다.
+    계정 저장 시 user_save_all()에서 user_load_all.clear()로 즉시 무효화하므로
+    비밀번호·권한 변경이 곧바로 반영된다(shelve-first의 stale 문제 해소)."""
     try:
         val = _supabase_users_load()
         if val:
-            with shelve.open(USER_PATH) as db:
-                db["users"] = val
+            try:
+                with shelve.open(USER_PATH) as db:
+                    db["users"] = val
+            except Exception:
+                pass
             return dict(val)
     except Exception:
         pass
-    return {}
+    # Supabase 실패 시 로컬 shelve 폴백
+    try:
+        with shelve.open(USER_PATH) as db:
+            return dict(db.get("users", {}))
+    except Exception:
+        return {}
 
 def user_save_all(data: dict):
-    """전체 계정 저장. Supabase + 기존 구글시트 백업."""
+    """[v7.2.2] 전체 계정 저장. Supabase 우선 + 로컬 shelve 캐시 + 캐시 무효화."""
     with shelve.open(USER_PATH) as db:
         db["users"] = data
 
@@ -539,6 +558,12 @@ def user_save_all(data: dict):
             _app_log_error("계정/권한 Supabase 저장 실패", e)
         except Exception:
             pass
+
+    # [v7.2.2] 계정 캐시 즉시 무효화 → 비번/권한 변경 즉시 반영
+    try:
+        user_load_all.clear()
+    except Exception:
+        pass
 
 _BG_ERRORS = []   # [v6.3] 백그라운드 스레드 오류 큐 (세션 접근 불가 → 메인 스레드가 비움)
 
@@ -4152,7 +4177,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.2.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.2.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4341,6 +4366,34 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
     0%,100%{ transform:translateY(0) rotate(0deg); }
     50%{ transform:translateY(-5px) rotate(180deg); }
 }
+
+/* [v7.2.2] 모바일에서 특정 컬럼 블록을 세로 적층 대신 가로 유지 */
+/* 시스템 로그 메뉴 버튼 (5개) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-logtab_"]){
+    flex-wrap:nowrap !important; gap:4px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-logtab_"]) [data-testid="stColumn"]{
+    min-width:0 !important; flex:1 1 0 !important; width:auto !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-logtab_"]) button{
+    padding-left:2px !important; padding-right:2px !important;
+    font-size:11px !important; white-space:nowrap !important;
+}
+/* 계정 관리 행: 한 명당 가로 한 줄 (ID·이름·새PW·변경·삭제) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]){
+    flex-wrap:nowrap !important; gap:4px !important; align-items:center !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) [data-testid="stColumn"]{
+    min-width:0 !important; flex:1 1 0 !important; width:auto !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) button{
+    padding-left:4px !important; padding-right:4px !important;
+    font-size:12px !important; white-space:nowrap !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) [data-testid="stColumn"]:first-child,
+[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) [data-testid="stColumn"]:nth-child(2){
+    font-size:11px !important; overflow:hidden !important; text-overflow:ellipsis !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -4478,6 +4531,17 @@ def log_login_fail(login_id: str, locked: bool = False):
         pass
 
 # ── [v6.9.0 → v7 Supabase] 로그인 실패 횟수·계정 잠금 ──────────────
+
+def _login_dedup(_id: str, _pw: str) -> bool:
+    """[v7.2.2] 동일 (아이디·비번) 로그인 시도 중복 처리 방지.
+    text_input on_change(엔터)와 버튼 클릭이 같은 rerun에서 동시 발화해
+    실패가 2회 카운트되던 문제 해결. 이미 처리한 조합이면 True 반환(스킵)."""
+    import hashlib
+    tok = hashlib.sha256(f"{_id}\x00{_pw}".encode("utf-8")).hexdigest()
+    if st.session_state.get("_login_last_tok") == tok:
+        return True
+    st.session_state["_login_last_tok"] = tok
+    return False
 
 def _login_is_locked(login_id: str) -> bool:
     """[v7 Supabase] login_lock 테이블에서 잠금 여부 조회."""
@@ -6556,6 +6620,35 @@ def render_roster_page():
                     st.rerun()
                 elif not st.session_state.admin_authed:
                     st.warning("관리자 인증이 필요합니다.")
+
+        # [v7.2.2] 일괄 등급 변경 (체크박스로 선택 후 등급 일괄 적용)
+        bgr1, bgr2, _bgr3 = st.columns([2, 1, 5])
+        with bgr1:
+            new_grade_bulk = st.selectbox(
+                "등급 일괄변경", GRADE_OPTIONS,
+                format_func=lambda x: GRADE_LABELS_PLAIN.get(x, x),
+                key="bulk_grade_sel", label_visibility="collapsed")
+        with bgr2:
+            if st.button("✅ 등급적용", key="bulk_grade_apply", use_container_width=True):
+                if st.session_state.admin_authed and sel_count > 0:
+                    _gv = "" if new_grade_bulk == "—" else new_grade_bulk
+                    with st.spinner(f"{sel_count}명 등급 변경 중…"):
+                        for _, r in df[df["id"].isin(sel_ids)].iterrows():
+                            row_d = r.to_dict()
+                            row_d["grade"] = _gv
+                            save_row(df, row_d, is_new=False,
+                                     action_detail=f"벌크 등급 변경 → {new_grade_bulk}")
+                    for sid in list(sel_ids):
+                        k = f"chk_{sid}"
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.session_state.bulk_selected = set()
+                    _clear_member_cache()
+                    st.rerun()
+                elif not st.session_state.admin_authed:
+                    st.warning("관리자 인증이 필요합니다.")
+                elif sel_count == 0:
+                    st.warning("회원을 먼저 선택하세요.")
     
     # ─────────────────────────────────────────────────────────
     #  회원 목록 테이블 (체크박스 항상 표시)
@@ -6976,6 +7069,8 @@ else:
             _id = st.session_state.get("login_id", "")
             _pw = st.session_state.get("login_pw", "")
             if _id and _pw:
+                if _login_dedup(_id, _pw):   # [v7.2.2] 중복 발화 스킵
+                    return
                 # [v6.9.0] 잠긴 계정은 인증 시도 자체를 막음
                 if _login_is_locked(_id):
                     st.session_state["_login_locked"] = True
@@ -6983,6 +7078,7 @@ else:
                 _r = app_authenticate(_id, _pw)
                 if _r:
                     _login_reset(_id)   # [v6.9.0] 성공 → 실패 카운트 초기화
+                    st.session_state.pop("_login_last_tok", None)  # [v7.2.2]
                     st.session_state["app_user"] = _r
                     st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 메인 착지
                     st.session_state["_collapse_sidebar_mobile"] = True   # [v7.0.2] 로그인 후 모바일 사이드바 접기
@@ -7010,12 +7106,15 @@ else:
             st.rerun()
 
         if st.button("로그인", key="login_btn", type="primary", use_container_width=True):
-            if _lid and _lpw and _login_is_locked(_lid):
+            if _lid and _lpw and _login_dedup(_lid, _lpw):   # [v7.2.2] 중복 발화 스킵
+                pass
+            elif _lid and _lpw and _login_is_locked(_lid):
                 st.session_state["_login_locked"] = True
             else:
                 _result = app_authenticate(_lid, _lpw)
                 if _result:
                     _login_reset(_lid)   # [v6.9.0]
+                    st.session_state.pop("_login_last_tok", None)  # [v7.2.2]
                     st.session_state["app_user"] = _result
                     st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그인 후 메인 착지
                     st.session_state["_collapse_sidebar_mobile"] = True   # [v7.0.2] 로그인 후 모바일 사이드바 접기
@@ -11075,66 +11174,10 @@ elif page == "🎯 이벤트 팀편성":
         st.error(f"회원 데이터 로드 오류: {_e}")
         st.stop()
 
-    # ── 등급 직접 수정 (관리자) ──────────────────────────────
+    # ── 등급 편집 안내 [v7.2.2] 회원명부 체크박스로 이전됨 ──────────
     if is_admin():
-        with st.expander("✏️ 등급 일괄 수정 (관리자)", expanded=False):
-            st.caption("회원 등급을 직접 수정합니다. 저장 시 구글 시트에 즉시 반영됩니다.")
-            _edit_df = _team_df[_team_df["category"].isin(
-                ["마스터","고문","회장","총무","경기이사","홍보이사","정회원","휴면"]
-            )].copy().sort_values(["grade","name"]).reset_index(drop=True)
-
-            if _edit_df.empty:
-                st.info("수정 가능한 회원이 없습니다.")
-            else:
-                _GE_COLS = 4
-                for _ge_i in range(0, len(_edit_df), _GE_COLS):
-                    _ge_chunk = _edit_df.iloc[_ge_i:_ge_i+_GE_COLS]
-                    _ge_col_objs = st.columns(_GE_COLS)
-                    for _ge_ci, (_, _ge_mem) in enumerate(_ge_chunk.iterrows()):
-                        _ge_mid   = int(_ge_mem["id"])
-                        _ge_name  = _ge_mem["name"]
-                        _ge_grade = str(_ge_mem.get("grade","") or "").strip()
-                        _ge_cur   = _ge_grade if _ge_grade in ["1","2","3","4","5"] else "—"
-                        _ge_color = GRADE_COLORS.get(_ge_cur, "#9ca3af")
-                        with _ge_col_objs[_ge_ci]:
-                            st.markdown(
-                                f"<div style='font-size:12px;font-weight:700;color:#1a2e4a;margin-bottom:2px'>"
-                                f"{_ge_name}</div>"
-                                f"<div style='font-size:10px;color:{_ge_color};margin-bottom:2px'>"
-                                f"현재: {GRADE_LABELS_PLAIN.get(_ge_cur,'미지정')}</div>",
-                                unsafe_allow_html=True)
-                            st.selectbox(
-                                f"등급_{_ge_mid}", GRADE_OPTIONS,
-                                index=GRADE_OPTIONS.index(_ge_cur) if _ge_cur in GRADE_OPTIONS else 0,
-                                format_func=lambda x: GRADE_LABELS_PLAIN.get(x, x),
-                                label_visibility="collapsed",
-                                key=f"ge_grade_{_ge_mid}"
-                            )
-
-                if st.button("💾 등급 전체 저장", type="primary", key="ge_save_all"):
-                    if not st.session_state.get("admin_authed"):
-                        st.warning("관리자 인증이 필요합니다. 회원명부에서 먼저 인증해주세요.")
-                    else:
-                        _df_full_save = load_df(include_deleted=False)
-                        _ge_ok = 0; _ge_fail = 0
-                        with st.spinner("등급 저장 중…"):
-                            for _, _ge_mem in _edit_df.iterrows():
-                                _ge_mid = int(_ge_mem["id"])
-                                _nv = st.session_state.get(f"ge_grade_{_ge_mid}", "—")
-                                try:
-                                    _r2s = _df_full_save[_df_full_save["id"]==_ge_mid].iloc[0].to_dict()
-                                    _r2s["grade"] = "" if _nv == "—" else _nv
-                                    save_row(_df_full_save, _r2s, is_new=False,
-                                             action_detail=f"이벤트팀편성 등급수정 → {_nv}")
-                                    _ge_ok += 1
-                                except Exception:
-                                    _ge_fail += 1
-                        st.cache_data.clear()
-                        if _ge_fail:
-                            st.warning(f"✅ {_ge_ok}명 완료, ⚠️ {_ge_fail}명 실패")
-                        else:
-                            st.success(f"✅ {_ge_ok}명 등급 저장 완료!")
-                        st.rerun()
+        st.info("ℹ️ 등급 일괄 수정은 **회원명부**에서 회원을 체크박스로 선택한 뒤 "
+                "'등급 일괄변경'으로 할 수 있습니다.")
 
     # ── 등급별 현황 ──────────────────────────────────────────
     st.markdown("### 📊 등급별 현황")
