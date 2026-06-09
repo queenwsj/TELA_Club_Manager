@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.2.2
+TELA CLUB Random Match Generator v7.2.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4177,7 +4177,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.2.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.2.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -6620,35 +6620,6 @@ def render_roster_page():
                     st.rerun()
                 elif not st.session_state.admin_authed:
                     st.warning("관리자 인증이 필요합니다.")
-
-        # [v7.2.2] 일괄 등급 변경 (체크박스로 선택 후 등급 일괄 적용)
-        bgr1, bgr2, _bgr3 = st.columns([2, 1, 5])
-        with bgr1:
-            new_grade_bulk = st.selectbox(
-                "등급 일괄변경", GRADE_OPTIONS,
-                format_func=lambda x: GRADE_LABELS_PLAIN.get(x, x),
-                key="bulk_grade_sel", label_visibility="collapsed")
-        with bgr2:
-            if st.button("✅ 등급적용", key="bulk_grade_apply", use_container_width=True):
-                if st.session_state.admin_authed and sel_count > 0:
-                    _gv = "" if new_grade_bulk == "—" else new_grade_bulk
-                    with st.spinner(f"{sel_count}명 등급 변경 중…"):
-                        for _, r in df[df["id"].isin(sel_ids)].iterrows():
-                            row_d = r.to_dict()
-                            row_d["grade"] = _gv
-                            save_row(df, row_d, is_new=False,
-                                     action_detail=f"벌크 등급 변경 → {new_grade_bulk}")
-                    for sid in list(sel_ids):
-                        k = f"chk_{sid}"
-                        if k in st.session_state:
-                            del st.session_state[k]
-                    st.session_state.bulk_selected = set()
-                    _clear_member_cache()
-                    st.rerun()
-                elif not st.session_state.admin_authed:
-                    st.warning("관리자 인증이 필요합니다.")
-                elif sel_count == 0:
-                    st.warning("회원을 먼저 선택하세요.")
     
     # ─────────────────────────────────────────────────────────
     #  회원 목록 테이블 (체크박스 항상 표시)
