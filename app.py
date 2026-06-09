@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.3.0
+TELA CLUB Random Match Generator v7.3.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4177,7 +4177,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.3.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.3.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4820,6 +4820,29 @@ def _supabase_member_hard_delete(member_id: int):
     """Supabase members에서 회원 완전 삭제."""
     sb = _get_supabase()
     sb.table("members").delete().eq("id", int(member_id)).execute()
+
+
+def save_row(df, row, is_new=False, action_detail="", do_log=True):
+    """
+    회원 1명 추가/수정 저장 래퍼.
+    [v7.3.1 복원] v7.1.0에서 Supabase 래퍼로 전환됐다가 v7.2.0 구글시트 정리 중
+    함수 정의가 함께 삭제되어, 호출부(회원 저장 다이얼로그·일괄 변경) 4곳에서
+    `NameError: name 'save_row' is not defined`가 발생하던 문제 수정.
+      ① Supabase members 테이블 upsert
+      ② 회원 캐시 무효화(_clear_member_cache)
+      ③ do_log=True면 감사 로그 기록 — action 라벨: 신규=추가 / 수정=수정.
+         (수정자 editor는 log_audit 내부에서 자동 기록)
+    저장 실패 시 예외를 그대로 올려 호출부(st.spinner) 상위에서 사용자에게 노출한다.
+    """
+    _supabase_member_upsert(row)
+    _clear_member_cache()
+    if do_log:
+        log_audit(
+            "추가" if is_new else "수정",
+            row.get("id", ""),
+            str(row.get("name", "") or ""),
+            action_detail,
+        )
 
 @st.cache_data(ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
 def _load_records_cached() -> list:
