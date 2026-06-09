@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.3.2
+TELA CLUB Random Match Generator v7.3.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4177,7 +4177,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.3.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.3.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -5542,14 +5542,24 @@ def dialog_form(df, existing=None):
         region = st.text_input("거주지",
             value=existing["region"] if existing else "", placeholder="서울 강남구")
 
-    # 행3: 입회일 / 이메일
-    c7,c8 = st.columns([1,2])
+    # 행3: 입회일 / 리그 / 이메일
+    #   [v7.3.3] 회원 정보에서 직접 리그(A·B·C) 등록·수정 가능하도록 추가.
+    #   회원 리그는 A·B·C만 사용(LEAGUE_NAMES[:3]). '—' 선택 시 미지정(빈 값).
+    c7, c_lg, c8 = st.columns([1, 1, 1.4])
     with c7:
         jd_val = None
         if existing and existing.get("join_date"):
             try: jd_val = datetime.strptime(str(existing["join_date"]),"%Y-%m-%d").date()
             except ValueError: pass
         join_date = st.date_input("입회일", value=jd_val or date.today())
+    with c_lg:
+        _LEAGUE_OPTS = ["—"] + LEAGUE_NAMES[:3]   # 미지정 + A·B·C
+        _ex_league = str(existing.get("league","") or "").strip() if existing else ""
+        _lg_idx = _LEAGUE_OPTS.index(_ex_league) if _ex_league in _LEAGUE_OPTS else 0
+        league_sel = st.selectbox(
+            "리그", _LEAGUE_OPTS, index=_lg_idx,
+            help="회원 소속 리그(A·B·C). 비우려면 '—' 선택. 일괄 변경은 회원 목록 상단에서도 가능합니다."
+        )
     with c8:
         email = st.text_input("이메일",
             value=existing["email"] if existing else "", placeholder="example@email.com")
@@ -5895,8 +5905,8 @@ def dialog_form(df, existing=None):
                 "region":         region.strip(),
                 "memo":           memo.strip(),
                 "deleted_at":     "",
-                # league: 기존 값 보존 (수정 시 league가 지워지는 버그 방지)
-                "league":         existing.get("league", "") if existing else "",
+                # [v7.3.3] 회원 정보에서 선택한 리그를 반영 ('—'이면 미지정=빈 값)
+                "league":         "" if league_sel == "—" else league_sel,
                 "grade":          "" if grade_sel == "—" else grade_sel,
                 "rejoin_date":    rj_str,
             }
@@ -5923,6 +5933,7 @@ def dialog_form(df, existing=None):
                     ("탈퇴일", "leave_date"), ("재입회일", "rejoin_date"),
                     ("이메일", "email"), ("신청서", "application"),
                     ("지역", "region"), ("메모", "memo"), ("등급", "grade"),
+                    ("리그", "league"),
                 ]:
                     _diff(_lbl, _fld)
                 # [v6.4.2] 실제 변경이 없으면(_chgs 비어있음) 감사 로그를 남기지 않는다.
@@ -5930,8 +5941,9 @@ def dialog_form(df, existing=None):
                 action_detail = "수정 → " + (", ".join(_chgs) if _chgs else "변경 없음")
             else:
                 _has_changes = True   # 신규 등록은 항상 기록
+                _league_disp = "미지정" if league_sel == "—" else league_sel
                 action_detail = (f"신규등록 → 카테고리:{final_cat}, 등급:{_grade_disp}, "
-                                 f"연락처:{phone_normalized}")
+                                 f"리그:{_league_disp}, 연락처:{phone_normalized}")
             with st.spinner("Supabase에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None),
                          action_detail=action_detail, do_log=_has_changes)
