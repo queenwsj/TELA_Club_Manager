@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.2.3
+TELA CLUB Random Match Generator v7.3.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4177,7 +4177,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.2.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.3.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4342,24 +4342,30 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 .match-card { border:1px solid #ddd; border-radius:6px; margin-bottom:4px; overflow:hidden; background:#fff; }
 
 /* [v7.0.3] 로딩(실행) 인디케이터 — 메뉴 전환·데이터 로딩 중 '프리징처럼 보이는' 문제 개선.
-   Streamlit 실행 상태 위젯에 내용이 있을 때만(:has) 테니스공 펄럭임 + '불러오는 중' 표시. */
+   Streamlit 실행 상태 위젯에 내용이 있을 때만(:has) 테니스공 펄럭임 + 문구 표시.
+   [v7.3.0] 수정5: ① 공↔문구 간격 축소(8→3px) ② 화면 우상단 → 화면 정중앙 고정 배치.
+            질문1: ::before/::after content는 페이지별로 동적 오버라이드(아래 라우팅부 참조). */
 [data-testid="stStatusWidget"]:has(*){
+    position:fixed !important;
+    top:50% !important; left:50% !important;
+    transform:translate(-50%,-50%) !important;   /* 화면 정중앙 */
+    z-index:1000000 !important;
     background:#0d9488 !important;
     border-radius:9999px !important;
-    padding:6px 16px 6px 14px !important;
-    box-shadow:0 6px 20px rgba(13,148,136,.35) !important;
+    padding:10px 20px 10px 16px !important;
+    box-shadow:0 8px 28px rgba(13,148,136,.40) !important;
     display:flex !important; align-items:center !important;
 }
 [data-testid="stStatusWidget"]:has(*) > *{ visibility:hidden !important; }
 [data-testid="stStatusWidget"]:has(*) button{ display:none !important; }
 [data-testid="stStatusWidget"]:has(*)::before{
-    content:"🎾"; font-size:16px; line-height:1;
-    display:inline-block; margin-right:8px;
+    content:"🎾"; font-size:18px; line-height:1;
+    display:inline-block; margin-right:3px;          /* [v7.3.0] 간격 8→3px */
     visibility:visible !important;
     animation:tela-ball-bounce .6s infinite ease-in-out;
 }
 [data-testid="stStatusWidget"]:has(*)::after{
-    content:"불러오는 중…"; font-size:13px; font-weight:700; color:#fff;
+    content:"불러오는 중…"; font-size:14px; font-weight:700; color:#fff;
     white-space:nowrap; visibility:visible !important;
 }
 @keyframes tela-ball-bounce{
@@ -4377,22 +4383,48 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 }
 [data-testid="stHorizontalBlock"]:has([class*="st-key-logtab_"]) button{
     padding-left:2px !important; padding-right:2px !important;
-    font-size:11px !important; white-space:nowrap !important;
+    font-size:13px !important; white-space:nowrap !important;
 }
-/* 계정 관리 행: 한 명당 가로 한 줄 (ID·이름·새PW·변경·삭제) */
+/* 계정 관리 행: 한 명당 가로 한 줄 (정보·새PW·변경·삭제) [v7.3.0 수정1] */
 [data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]){
     flex-wrap:nowrap !important; gap:4px !important; align-items:center !important;
 }
 [data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) [data-testid="stColumn"]{
-    min-width:0 !important; flex:1 1 0 !important; width:auto !important;
+    min-width:0 !important;
 }
 [data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) button{
-    padding-left:4px !important; padding-right:4px !important;
+    padding-left:6px !important; padding-right:6px !important;
     font-size:12px !important; white-space:nowrap !important;
 }
-[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) [data-testid="stColumn"]:first-child,
-[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) [data-testid="stColumn"]:nth-child(2){
-    font-size:11px !important; overflow:hidden !important; text-overflow:ellipsis !important;
+[data-testid="stHorizontalBlock"]:has([class*="st-key-chpwbtn_"]) input{
+    font-size:12px !important; padding:6px 8px !important;
+}
+/* [v7.3.0 수정4] 일괄변경 드롭다운+적용버튼 한 줄 유지(모바일) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_cat_apply"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_grade_apply"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_league_apply"]){
+    flex-wrap:nowrap !important; gap:6px !important; align-items:center !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_cat_apply"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_grade_apply"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_league_apply"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_cat_apply"]) button,
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_grade_apply"]) button,
+[data-testid="stHorizontalBlock"]:has([class*="st-key-bulk_league_apply"]) button{
+    white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
+}
+/* [v7.3.0 추가1] 상단 Home·Refresh 버튼 한 줄 유지(모바일) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-refresh_btn_top"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-refresh_btn_top"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-refresh_btn_top"]) button{
+    padding-left:6px !important; padding-right:6px !important;
+    font-size:13px !important; white-space:nowrap !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -6070,18 +6102,30 @@ def render_roster_page():
             st.markdown(f"**등록 계정 ({len(all_users)}개)**")
 
             # 계정 목록
-            _ROLE_KO = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}
+            # [v7.3.0 수정1] 모바일 한 줄 정렬 — ID·이름·권한을 한 셀로 합쳐 컴팩트화.
+            #   행 구성: [정보(ID·이름·권한) | 새PW | 변경 | 삭제/주계정]
+            _ROLE_KO    = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}
+            _ROLE_SHORT = {"admin": "관리",   "sub_admin": "부관리",   "member": "회원"}
+            _ROLE_CLR   = {"admin": "#b45309", "sub_admin": "#0f766e", "member": "#64748b"}
             _admin_id = st.secrets.get("ADMIN_ID", "admin")
             for uid, uinfo in list(all_users.items()):
-                ucols = st.columns([2, 2, 1, 1, 1])
-                ucols[0].write(uid)
-                ucols[1].write(f"{uinfo.get('name','')} ({_ROLE_KO.get(uinfo.get('role',''), uinfo.get('role',''))})")
+                _rrole = uinfo.get("role", "")
+                ucols = st.columns([2.7, 1.7, 0.9, 0.8])
+                ucols[0].markdown(
+                    f"<div style='font-size:11px;line-height:1.3;white-space:nowrap;"
+                    f"overflow:hidden;text-overflow:ellipsis' "
+                    f"title='{uid} · {uinfo.get('name','')}'>"
+                    f"<span style='color:#94a3b8'>{uid}</span> "
+                    f"<b>{uinfo.get('name','')}</b>"
+                    f"<span style='color:{_ROLE_CLR.get(_rrole,'#64748b')};"
+                    f"font-weight:700'> · {_ROLE_SHORT.get(_rrole, _rrole)}</span></div>",
+                    unsafe_allow_html=True)
                 # 비밀번호 변경
                 new_pw_key = f"chpw_{uid}"
-                new_pw = ucols[2].text_input("새PW", key=new_pw_key,
+                new_pw = ucols[1].text_input("새PW", key=new_pw_key,
                                               label_visibility="collapsed",
                                               placeholder="새 PW")
-                if ucols[3].button("변경", key=f"chpwbtn_{uid}"):
+                if ucols[2].button("변경", key=f"chpwbtn_{uid}", use_container_width=True):
                     if new_pw.strip():
                         user_change_pw(uid, new_pw.strip())
                         st.success(f"'{uid}' 비밀번호 변경 완료")
@@ -6090,14 +6134,14 @@ def render_roster_page():
                         st.warning("새 비밀번호를 입력하세요.")
                 # 삭제 (관리자 본인 제외)
                 if uid != _admin_id:
-                    if ucols[4].button("🗑", key=f"delusr_{uid}"):
+                    if ucols[3].button("🗑", key=f"delusr_{uid}", use_container_width=True):
                         # [v6.4.2] 계정 삭제도 감사 로그에 기록 (수정자=삭제 실행자)
                         log_audit("계정삭제", uid, uinfo.get("name", ""),
-                                  f"권한:{_ROLE_KO.get(uinfo.get('role',''), uinfo.get('role',''))} 계정 삭제")
+                                  f"권한:{_ROLE_KO.get(_rrole, _rrole)} 계정 삭제")
                         user_delete(uid)
                         st.rerun()
                 else:
-                    ucols[4].caption("주계정")
+                    ucols[3].caption("주계정")
 
             st.markdown("---")
             st.markdown("**신규 계정 추가**")
@@ -6508,103 +6552,75 @@ def render_roster_page():
             f"{'…' if len(sel_names)>7 else ''}</div>",
             unsafe_allow_html=True)
     
-        ba1, ba2, ba3, ba4 = st.columns([2, 2, 1.5, 1.5])
-    
-        # 일괄 카테고리 변경
-        with ba1:
-            bac1, bac2 = st.columns([2, 1])
-            with bac1:
-                new_cat = st.selectbox("카테고리 변경", ["—"] + CATEGORIES,
-                                       key="bulk_cat_sel", label_visibility="collapsed")
-            with bac2:
-                if st.button("✅ 적용", key="bulk_cat_apply", use_container_width=True):
-                    if new_cat != "—" and st.session_state.admin_authed:
-                        with st.spinner(f"{sel_count}명 카테고리 변경 중…"):
-                            for _, r in df[df["id"].isin(sel_ids)].iterrows():
-                                row_d = r.to_dict()
-                                row_d["category"] = new_cat
-                                save_row(df, row_d, is_new=False,
-                                         action_detail=f"벌크 카테고리 변경 → {new_cat}")
-                        # 체크박스 세션 초기화
-                        for sid in list(sel_ids):
-                            k = f"chk_{sid}"
-                            if k in st.session_state:
-                                del st.session_state[k]
-                        st.session_state.bulk_selected = set()
-                        st.cache_data.clear()
-                        st.rerun()
-                    elif not st.session_state.admin_authed:
-                        st.warning("관리자 인증이 필요합니다.")
+        # ── [v7.3.0 수정3·4] 일괄 변경 툴바 ──────────────────────────
+        #   · 수정3: 각 드롭다운에 무엇을 바꾸는지 라벨(플레이스홀더)을 내장 → 혼동 방지.
+        #   · 수정4: 연락처 추출 삭제 / '선택 해제'는 리그적용 아래로 이동 /
+        #            각 행을 [드롭다운+적용버튼] 한 줄로 배치(모바일 CSS로 가로 유지).
+        _PH_CAT    = "📁 카테고리 변경…"
+        _PH_GRADE  = "🏅 등급 변경…"
+        _PH_LEAGUE = "🏆 리그 변경…"
 
-        # 일괄 등급 변경
-        with ba2:
-            bag1, bag2 = st.columns([2, 1])
-            with bag1:
-                new_grade_bulk = st.selectbox(
-                    "등급 일괄변경", ["—"] + ["1","2","3","4","5"],
-                    key="bulk_grade_sel", label_visibility="collapsed",
-                    format_func=lambda x: GRADE_LABELS.get(x, x)
-                )
-            with bag2:
-                if st.button("✅ 적용", key="bulk_grade_apply", use_container_width=True):
-                    if new_grade_bulk != "—" and st.session_state.admin_authed:
-                        with st.spinner(f"{sel_count}명 등급 변경 중…"):
-                            for _, r in df[df["id"].isin(sel_ids)].iterrows():
-                                row_d = r.to_dict()
-                                row_d["grade"] = new_grade_bulk
-                                save_row(df, row_d, is_new=False,
-                                         action_detail=f"벌크 등급 변경 → {new_grade_bulk}등급")
-                        for sid in list(sel_ids):
-                            k = f"chk_{sid}"
-                            if k in st.session_state:
-                                del st.session_state[k]
-                        st.session_state.bulk_selected = set()
-                        st.cache_data.clear()
-                        st.rerun()
-                    elif not st.session_state.admin_authed:
-                        st.warning("관리자 인증이 필요합니다.")
+        # ① 일괄 카테고리 변경
+        bac1, bac2 = st.columns([2.4, 1])
+        with bac1:
+            new_cat = st.selectbox("카테고리 일괄변경", [_PH_CAT] + CATEGORIES,
+                                   key="bulk_cat_sel", label_visibility="collapsed")
+        with bac2:
+            if st.button("✅ 적용", key="bulk_cat_apply", use_container_width=True):
+                if new_cat != _PH_CAT and st.session_state.admin_authed:
+                    with st.spinner(f"{sel_count}명 카테고리 변경 중…"):
+                        for _, r in df[df["id"].isin(sel_ids)].iterrows():
+                            row_d = r.to_dict()
+                            row_d["category"] = new_cat
+                            save_row(df, row_d, is_new=False,
+                                     action_detail=f"벌크 카테고리 변경 → {new_cat}")
+                    # 체크박스 세션 초기화
+                    for sid in list(sel_ids):
+                        k = f"chk_{sid}"
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.session_state.bulk_selected = set()
+                    st.cache_data.clear()
+                    st.rerun()
+                elif not st.session_state.admin_authed:
+                    st.warning("관리자 인증이 필요합니다.")
 
-        # 연락처 추출
-        with ba3:
-            sel_rows   = df[df["id"].isin(sel_ids)].copy()
-            lines      = ["구분\t성명\t연락처"]
-            for _, r in sel_rows.iterrows():
-                lines.append(f"{str(r.get('category','') or '').strip()}\t"
-                             f"{str(r.get('name','') or '').strip()}\t"
-                             f"{str(r.get('phone','') or '').strip()}")
-            phone_text = "\n".join(lines)
-            today_str  = kst_today_str("%Y%m%d")
-            st.download_button(
-                "📋 연락처 추출",
-                data=phone_text.encode("utf-8-sig"),
-                file_name=f"contacts_{today_str}.txt",
-                mime="text/plain",
-                use_container_width=True,
-                key="bulk_phone_dl"
+        # ② 일괄 등급 변경
+        bag1, bag2 = st.columns([2.4, 1])
+        with bag1:
+            new_grade_bulk = st.selectbox(
+                "등급 일괄변경", [_PH_GRADE] + ["1","2","3","4","5"],
+                key="bulk_grade_sel", label_visibility="collapsed",
+                format_func=lambda x: GRADE_LABELS.get(x, x)
             )
-    
-        # 선택 해제
-        with ba4:
-            if st.button("✕ 선택 해제", key="bulk_none", use_container_width=True):
-                for sid in list(sel_ids):
-                    k = f"chk_{sid}"
-                    if k in st.session_state:
-                        del st.session_state[k]
-                st.session_state.bulk_selected  = set()
-                st.session_state.bulk_all_flag  = False
-                if "hdr_chk_all" in st.session_state:
-                    del st.session_state["hdr_chk_all"]
-                st.rerun()
+        with bag2:
+            if st.button("✅ 적용", key="bulk_grade_apply", use_container_width=True):
+                if new_grade_bulk != _PH_GRADE and st.session_state.admin_authed:
+                    with st.spinner(f"{sel_count}명 등급 변경 중…"):
+                        for _, r in df[df["id"].isin(sel_ids)].iterrows():
+                            row_d = r.to_dict()
+                            row_d["grade"] = new_grade_bulk
+                            save_row(df, row_d, is_new=False,
+                                     action_detail=f"벌크 등급 변경 → {new_grade_bulk}등급")
+                    for sid in list(sel_ids):
+                        k = f"chk_{sid}"
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.session_state.bulk_selected = set()
+                    st.cache_data.clear()
+                    st.rerun()
+                elif not st.session_state.admin_authed:
+                    st.warning("관리자 인증이 필요합니다.")
 
-        # [v7.0.0] 일괄 리그 변경 (카테고리·등급 패턴과 동일)
-        blg1, blg2, _blg3 = st.columns([2, 1, 5])
+        # ③ 일괄 리그 변경 [v7.0.0]
+        blg1, blg2 = st.columns([2.4, 1])
         with blg1:
             new_league_bulk = st.selectbox(
-                "리그 일괄변경", ["—"] + LEAGUE_NAMES[:3],   # [v7.0.1] 회원 리그는 A·B·C만
+                "리그 일괄변경", [_PH_LEAGUE] + LEAGUE_NAMES[:3],   # [v7.0.1] 회원 리그는 A·B·C만
                 key="bulk_league_sel", label_visibility="collapsed")
         with blg2:
             if st.button("✅ 리그적용", key="bulk_league_apply", use_container_width=True):
-                if new_league_bulk != "—" and st.session_state.admin_authed:
+                if new_league_bulk != _PH_LEAGUE and st.session_state.admin_authed:
                     with st.spinner(f"{sel_count}명 리그 변경 중…"):
                         for _, r in df[df["id"].isin(sel_ids)].iterrows():
                             row_d = r.to_dict()
@@ -6620,6 +6636,18 @@ def render_roster_page():
                     st.rerun()
                 elif not st.session_state.admin_authed:
                     st.warning("관리자 인증이 필요합니다.")
+
+        # ④ 선택 해제 (리그적용 아래) [v7.3.0 수정4]
+        if st.button("✕ 선택 해제", key="bulk_none", use_container_width=True):
+            for sid in list(sel_ids):
+                k = f"chk_{sid}"
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.session_state.bulk_selected  = set()
+            st.session_state.bulk_all_flag  = False
+            if "hdr_chk_all" in st.session_state:
+                del st.session_state["hdr_chk_all"]
+            st.rerun()
     
     # ─────────────────────────────────────────────────────────
     #  회원 목록 테이블 (체크박스 항상 표시)
@@ -7190,6 +7218,34 @@ for _si, (_sec, _items) in enumerate(_nav_sections):
             st.session_state["_collapse_sidebar_mobile"] = True   # [v6.7] 모바일 자동 접기 신호
             st.rerun()
 page = st.session_state["current_page"]
+
+# ── [v7.3.0 질문1] 페이지별 로딩 문구 ─────────────────────────────
+#   전역 CSS의 테니스공 인디케이터(::before/::after content)를 페이지마다 다르게 덮어쓴다.
+#   동일 셀렉터를 '뒤에' 주입하므로 후순위 규칙이 이겨 페이지별 문구가 적용된다.
+#   홈·Refresh 버튼 클릭 직후엔 1회성 오버라이드(_loading_oneshot)가 우선한다.
+_LOADING_LABELS = {
+    "🏠 메인":         ("🏠", "테라클럽으로 이동 중…"),
+    "🏆 통합기록실":   ("🏆", "클럽 랭킹 집계 중…"),
+    "👤 개인기록실":   ("🧍", "플레이 기록 정리 중…"),
+    "📊 스코어보드":   ("📊", "오늘의 스코어 정리 중…"),
+    "📋 대진표생성":   ("🎾", "코트 매칭 준비 중…"),
+    "🗂️ 대진표보관함": ("📦", "보관된 매치 불러오는 중…"),
+    "🎯 이벤트 팀편성": ("🎯", "이벤트 코트 세팅 중…"),
+    "👥 회원명부":     ("👥", "클럽 멤버 확인 중…"),
+    "🧾 로그":         ("🛠️", "운영 로그 확인 중…"),
+}
+_oneshot_label = st.session_state.pop("_loading_oneshot", None)
+if _oneshot_label:
+    _ld_emoji, _ld_text = _oneshot_label
+else:
+    _ld_emoji, _ld_text = _LOADING_LABELS.get(page, ("🎾", "불러오는 중…"))
+st.markdown(
+    "<style>"
+    f'[data-testid="stStatusWidget"]:has(*)::before{{content:"{_ld_emoji}" !important;}}'
+    f'[data-testid="stStatusWidget"]:has(*)::after{{content:"{_ld_text}" !important;}}'
+    "</style>",
+    unsafe_allow_html=True)
+
 st.sidebar.markdown("---")
 
 # [v7.0.0] 전역 회원 빠른검색 — 어느 페이지서든 이름 → 개인기록실 점프.
@@ -7221,17 +7277,34 @@ log_page_view(_u, page)
 # [v7.0.0] 메인(홈) 화면 + 공통 홈 버튼
 #   · 로그인 직후 기본 착지 화면(메뉴 이력 미기록).
 #   · 사이드바 메뉴를 카드로 노출해 한눈에 진입할 수 있게 한다.
-#   · 콘텐츠 페이지에서는 상단에 '🏠 홈' 버튼을 항상 표시한다.
+#   · 콘텐츠 페이지에서는 상단에 'Home·Refresh' 버튼을 항상 한 줄로 표시한다. [v7.3.0]
 # ========================================================================
-# ── 콘텐츠 페이지 공통 상단 홈 버튼 (메인 화면 자신은 제외) ──
+# ── [v7.3.0 추가1] 콘텐츠 페이지 공통 상단 Home·Refresh 버튼 (한 줄) ──
+#   · Home    : 메인(홈) 화면으로 이동.
+#   · Refresh : 현재 화면 새로고침(rerun). (데이터 재로딩 '새로고침'과 구분되는 '화면' 새로고침)
+#   · 모바일에서도 두 버튼을 한 줄로 유지(전역 CSS :has 강제, 키 refresh_btn_top 기준).
+#   · 메인 화면은 Home 생략, Refresh만 노출.
 if page != "🏠 메인":
-    _hb_col, _ = st.columns([1, 7])
-    with _hb_col:
-        if st.button("🏠 홈", key="home_btn_top", use_container_width=True,
+    _tb1, _tb2, _tbsp = st.columns([2.2, 2.2, 3.6])
+    with _tb1:
+        if st.button("🏠 Home", key="home_btn_top", use_container_width=True,
                      help="메인(홈) 화면으로 이동"):
             st.session_state["current_page"] = "🏠 메인"
+            st.session_state["_loading_oneshot"] = ("🏠", "테라클럽으로 이동 중…")
             # [v7.0.0 수정1] 메인 영역 버튼은 접기 신호를 보내지 않음
             #   (모바일은 이미 사이드바가 접힌 상태 → 신호 보내면 도리어 펼쳐짐)
+            st.rerun()
+    with _tb2:
+        if st.button("🔄 Refresh", key="refresh_btn_top", use_container_width=True,
+                     help="현재 화면을 새로고침합니다"):
+            st.session_state["_loading_oneshot"] = ("🎾", "최신 상태로 정리 중…")
+            st.rerun()
+else:
+    _tb1, _tbsp = st.columns([2.2, 5.8])
+    with _tb1:
+        if st.button("🔄 Refresh", key="refresh_btn_top", use_container_width=True,
+                     help="현재 화면을 새로고침합니다"):
+            st.session_state["_loading_oneshot"] = ("🎾", "최신 상태로 정리 중…")
             st.rerun()
 
 
@@ -7514,12 +7587,14 @@ if page == "🧾 로그":
                "각 로그는 Supabase의 audit_log / score_audit / login_log / error_logs 테이블에 저장됩니다.")
 
     # ── 로그 종류 선택 버튼 ──────────────────────────────────
+    # [v7.3.0 수정2] 모바일에서 5개 버튼이 한 줄에 들어가도록 라벨 축약(이모지 제거).
+    #   상세 제목·이모지는 각 섹션 헤더에서 그대로 노출된다.
     _LOG_TABS = [
-        ("audit", "📋 변경 이력"),
-        ("score", "📜 점수 수정 이력"),
-        ("login", "🔑 로그인 이력"),
-        ("view", "👀 열람 이력"),
-        ("error", "🗂️ 오류 로그"),
+        ("audit", "변경"),
+        ("score", "점수"),
+        ("login", "로그인"),
+        ("view", "열람"),
+        ("error", "오류"),
     ]
     if "_log_view" not in st.session_state:
         st.session_state["_log_view"] = "audit"
