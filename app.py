@@ -1,19 +1,19 @@
 """
-TELA CLUB Random Match Generator v7.3.1
+TELA CLUB Random Match Generator v7.3.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
 00. import / 기본 설정
-01. 저장소 경로·상수·구글시트 탭 헬퍼
+01. 저장소 경로·상수·Supabase 테이블 헬퍼
 02. 로그인 유지·계정·쿠키·권한
-03. 점수판/대진표 저장소(shelve + Google Sheets)
+03. 점수판/대진표 저장소(shelve + Supabase)
 04. 리그/매칭 공통 데이터 구조
 05. 매칭 알고리즘: 조건부 랜덤
 06. 매칭 알고리즘: 완전 랜덤
 07. 대진표 검증·표시·스코어보드 통계
 08. 기록실 집계·제외 선수 관리
 08-B. 개인기록실 헬퍼 (공통 UI 헬퍼·raw 캐시·페어·라이벌·요약·추이·교차분석)
-09. 회원명부: 설정·CSS·Google Sheets·검증 함수
+09. 회원명부: 설정·CSS·Supabase·검증 함수
 10. 회원명부: 다이얼로그·렌더링
 11. 사이드바 로그인·메뉴 라우팅
 11-B. 페이지: 로그 (관리자 전용) [v6.4.0] audit_log·score_audit·error_logs 통합 조회
@@ -131,7 +131,7 @@ def _clear_schedule_cache():
 
 
 # ========================================================================
-# 01. 저장소 경로 · 상수 · 구글시트 설정 탭 헬퍼
+# 01. 저장소 경로 · 상수 · Supabase 설정 탭 헬퍼
 # ========================================================================
 
 SAVE_DIR   = os.path.join(os.path.dirname(__file__), ".tela_data")
@@ -143,7 +143,7 @@ SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그
 SESSION_EXPIRE_DAYS = 30   # [v7.2.2] 세션 토큰(자동 로그인) 만료 기간 — 정의 누락으로 인한 로그인 직후 NameError 크래시 해결
 RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
 EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
-SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 구글시트 탭명
+SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 Supabase 테이블명
 GUESTS_SHEET_NAME  = "guests"   # 게스트 목록 탭
 EXCLUDE_SHEET_NAME = "exclude"  # 기록 제외 선수 탭
 USERS_SHEET_NAME   = "users"    # 계정 탭
@@ -489,7 +489,7 @@ def guest_load() -> list:
         return list(db.get("guests", []))
 
 def guest_save(guests: list):
-    """게스트 목록 저장. Supabase + 구글시트 백업."""
+    """게스트 목록 저장. Supabase + Supabase 백업."""
     with shelve.open(GUEST_PATH) as db:
         db["guests"] = guests
 
@@ -934,7 +934,7 @@ def is_sub_admin() -> bool:
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
                is_fully_random: bool = False, is_locked: bool = False):
-    """대진표 저장. 로컬 shelve 캐시 + Supabase 운영 저장 + 구글시트 백업."""
+    """대진표 저장. 로컬 shelve 캐시 + Supabase 운영 저장 + Supabase 백업."""
 
     # ① 로컬 shelve — 빠른 읽기 캐시
     with shelve.open(SHELF_PATH) as db:
@@ -1040,7 +1040,7 @@ def shelf_list_dates() -> List[str]:
     return []
 
 def shelf_delete(date_key: str):
-    """대진표 삭제. Supabase + 로컬 shelve + 구글시트 백업 삭제."""
+    """대진표 삭제. Supabase + 로컬 shelve + Supabase 백업 삭제."""
 
     # ① Supabase 삭제
     try:
@@ -1102,7 +1102,7 @@ def _supabase_sched_load(date_key: str):
             team2 = r.get("team2") or []
             exclude_players = r.get("exclude_players") or []
 
-            # 기존 구글시트 로드와 최대한 비슷하게 tuple로 맞춤
+            # 기존 Supabase 로드와 최대한 비슷하게 tuple로 맞춤
             if isinstance(team1, list):
                 team1 = tuple(team1)
             if isinstance(team2, list):
@@ -1239,7 +1239,7 @@ def _supabase_sched_delete(date_key: str):
             pass
         raise
 
-# ── 구글시트 schedules 탭 헬퍼 ────────────────────────────────
+# ── Supabase schedules 테이블 헬퍼 ────────────────────────────────
 
     def _get_col(name, default=""):
         try:
@@ -2515,9 +2515,9 @@ def deserialize_schedule(schedule):
 
 
 # ============================================================
-# 섹션 12-B: 누적 기록실 (구글시트 저장)
+# 섹션 12-B: 누적 기록실 (Supabase 저장)
 # ============================================================
-# 구글시트 "records" 워크시트 구조:
+# Supabase "records" 워크시트 구조:
 # date_key | year_month | year | player_key | display_name | league | wins | losses | pf | pa | draws
 # ※ draws는 기존 시트 컬럼(wins/losses/pf/pa) 뒤에 append로 추가됨
 
@@ -2747,7 +2747,7 @@ def exclude_list_load() -> list:
 
 
 def exclude_list_save(names: list):
-    """제외 선수 이름 목록 저장. Supabase + shelve + 구글시트 백업."""
+    """제외 선수 이름 목록 저장. Supabase + shelve + Supabase 백업."""
     clean = sorted(set([str(n).strip() for n in names if str(n).strip()]))
 
     # 로컬 캐시 저장
@@ -2794,7 +2794,7 @@ def records_load_cached() -> list:
 def _records_rows_from_shelf() -> list:
     """
     로컬 저장된 모든 스코어보드(shelf)에서 직접 선수별 통계를 계산.
-    구글시트 records 탭의 누적/오염 데이터에 의존하지 않으므로 항상 정확.
+    Supabase records 테이블의 누적/오염 데이터에 의존하지 않으므로 항상 정확.
     이벤트 대진표([이벤트])는 제외.
     반환: records 시트와 동일한 형식의 dict 리스트.
     """
@@ -2904,7 +2904,7 @@ def _row_period_keys(r: dict) -> tuple:
     """
     [v5.9.8 버그수정] 기록 행에서 (year_month, year)를 도출.
     - 우선 date_key('YYYY-MM-DD...')에서 직접 계산 → 저장된 year_month가
-      비어있거나 형식이 어긋난 행(구글시트 폴백 등)에서도 월간 조회가 정확.
+      비어있거나 형식이 어긋난 행(Supabase 폴백 등)에서도 월간 조회가 정확.
     - date_key 파싱 실패 시에만 저장된 year_month / year 컬럼으로 폴백.
     """
     from datetime import datetime as _dt
@@ -2927,13 +2927,13 @@ def records_get_df(filter_type: str, filter_value: str) -> "pd.DataFrame":
     제외 선수 목록에 있는 player_key는 조회에서도 제외.
 
     ※ 집계 소스: 로컬 스코어보드(shelf)에서 직접 계산 → 항상 정확.
-      shelf가 비어있으면(서버 재시작 등) 구글시트 records 탭으로 폴백.
+      shelf가 비어있으면(서버 재시작 등) Supabase records 테이블으로 폴백.
     ※ [v5.9.8] 기간 필터는 저장된 year/year_month 컬럼이 아니라
       date_key에서 도출한 값으로 비교 → 폴백 데이터의 year_month 누락 대응.
     """
     all_rows = records_rows_from_shelf_cached()
     if not all_rows:
-        # 폴백: 구글시트 누적 데이터
+        # 폴백: Supabase 누적 데이터
         all_rows = records_load_cached()
 
     excluded = set(exclude_list_load())  # 제외 선수 이름 세트
@@ -3075,7 +3075,7 @@ def _personal_raw_matches_cached() -> list:
     집계 dict가 아닌 '경기 단위 정규화 레코드'를 shelf에서 1회만 추출해 캐싱한다.
     (B-1: 데이터 소스 통일 / B-2: 캐싱으로 반복 순회 제거)
 
-    ※ raw 스케줄(팀 구성)은 shelf에만 존재하고 구글시트 records 탭에는
+    ※ raw 스케줄(팀 구성)은 shelf에만 존재하고 Supabase records 테이블에는
        집계값만 저장되므로, 파트너/상대 분석은 시트 폴백이 불가능하다.
        shelf가 비어 있으면 빈 리스트를 반환한다.
 
@@ -3156,7 +3156,7 @@ def _personal_raw_matches_cached() -> list:
 
 
 def _personal_get_all_rows() -> list:
-    """전체 집계 rows 반환 (shelf 우선, 폴백 구글시트). 월별 리그 탭 등 집계용."""
+    """전체 집계 rows 반환 (shelf 우선, 폴백 Supabase). 월별 리그 탭 등 집계용."""
     rows = records_rows_from_shelf_cached()
     if not rows:
         rows = records_load_cached()
@@ -4177,7 +4177,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.3.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.3.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4456,7 +4456,7 @@ if st.session_state.admin_authed and st.session_state.auth_time:
 
 
 # ========================================================================
-# 09-C. 회원명부 Google Sheets 연결 · CRUD
+# 09-C. 회원명부 Supabase 연결 · CRUD
 # ========================================================================
 @st.cache_resource(ttl=3600)
 def _editor_display_name() -> str:
@@ -4825,7 +4825,7 @@ def _supabase_member_hard_delete(member_id: int):
 def save_row(df, row, is_new=False, action_detail="", do_log=True):
     """
     회원 1명 추가/수정 저장 래퍼.
-    [v7.3.1 복원] v7.1.0에서 Supabase 래퍼로 전환됐다가 v7.2.0 구글시트 정리 중
+    [v7.3.1 복원] v7.1.0에서 Supabase 래퍼로 전환됐다가 v7.2.0 백엔드 정리(구글시트 제거) 중
     함수 정의가 함께 삭제되어, 호출부(회원 저장 다이얼로그·일괄 변경) 4곳에서
     `NameError: name 'save_row' is not defined`가 발생하던 문제 수정.
       ① Supabase members 테이블 upsert
@@ -4834,6 +4834,11 @@ def save_row(df, row, is_new=False, action_detail="", do_log=True):
          (수정자 editor는 log_audit 내부에서 자동 기록)
     저장 실패 시 예외를 그대로 올려 호출부(st.spinner) 상위에서 사용자에게 노출한다.
     """
+    # [v7.3.2] 저장 시각(updated_at) 자동 기록.
+    #   updated_at은 RS_COLUMNS에 포함되지만 다이얼로그 row_data에는 없어,
+    #   기존엔 upsert 시 ""로 덮어써져 '업데이트 일정'이 빈칸이 되던 문제 수정.
+    row = dict(row)
+    row["updated_at"] = kst_now_str("%Y-%m-%d %H:%M:%S")
     _supabase_member_upsert(row)
     _clear_member_cache()
     if do_log:
@@ -4940,7 +4945,7 @@ def load_df_for_match() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def save_league_to_sheet(member_id: int, league_value: str):
-    """특정 회원(id 기준) league 컬럼 업데이트. Supabase + 구글시트 백업."""
+    """특정 회원(id 기준) league 컬럼 업데이트. Supabase + Supabase 백업."""
 
     # ① Supabase 업데이트
     try:
@@ -5927,7 +5932,7 @@ def dialog_form(df, existing=None):
                 _has_changes = True   # 신규 등록은 항상 기록
                 action_detail = (f"신규등록 → 카테고리:{final_cat}, 등급:{_grade_disp}, "
                                  f"연락처:{phone_normalized}")
-            with st.spinner("구글 시트에 저장 중…"):
+            with st.spinner("Supabase에 저장 중…"):
                 save_row(df, row_data, is_new=(existing is None),
                          action_detail=action_detail, do_log=_has_changes)
 
@@ -5977,7 +5982,7 @@ def render_roster_page():
     <div class="app-header">
       <span style="font-size:36px">🎾</span>
       <div><h1>테라클럽 회원 명부</h1>
-      <p>TELA CLUB Member Roster · Google Sheets 연동</p></div>
+      <p>TELA CLUB Member Roster · Supabase 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
     # ── 비로그인: 본인 인증 후 제한 열람 모드 ───────────────────
@@ -6016,11 +6021,11 @@ def render_roster_page():
         # 인증 성공 → 제한 열람 (v6.2: 카드형, 나가기 버튼 제거)
         st.info("🔍 제한 열람 모드 — 구분 · 성명 · 연락처만 표시됩니다.")
 
-        with st.spinner("📡 구글 시트에서 데이터 불러오는 중…"):
+        with st.spinner("📡 Supabase에서 데이터 불러오는 중…"):
             try:
                 df_guest = load_df(include_deleted=False)
             except Exception as e:
-                st.error(f"⚠️ Google Sheets 연결 오류: {e}")
+                st.error(f"⚠️ Supabase 연결 오류: {e}")
                 st.stop()
 
         # 탈퇴 제외
@@ -6197,11 +6202,11 @@ def render_roster_page():
     # ─────────────────────────────────────────────────────────
     #  데이터 로드
     # ─────────────────────────────────────────────────────────
-    with st.spinner("📡 구글 시트에서 데이터 불러오는 중…"):
+    with st.spinner("📡 Supabase에서 데이터 불러오는 중…"):
         try:
             df = load_df(include_deleted=False)
         except Exception as e:
-            st.error(f"⚠️ Google Sheets 연결 오류: {e}")
+            st.error(f"⚠️ Supabase 연결 오류: {e}")
             st.stop()
 
     # ── 알림 배지 계산 (로그인 시에만 표시) ──────────────────
@@ -7781,7 +7786,7 @@ if page == "📊 스코어보드":
     # [v6.3] 백그라운드 스레드 오류를 세션 로그로 흡수
     while _BG_ERRORS:
         _app_log_error(_BG_ERRORS.pop(0))   # 세션+시트 영구 기록
-    # 구글시트 동기화 오류 표시 (관리자만, 비우지 않고 '계정 관리'에서도 조회 가능)
+    # Supabase 동기화 오류 표시 (관리자만, 비우지 않고 '계정 관리'에서도 조회 가능)
     if is_admin():
         _errs = st.session_state.get("_app_errors", [])
         if _errs:
@@ -7945,7 +7950,7 @@ if page == "📊 스코어보드":
         st.caption(f"🖊️ 최근 점수 입력: {_latest[1]} · {_latest[0]}")
 
     def _save_score(idx, s1, s2):
-        """점수 저장: shelf 즉시 저장 → 구글시트(records·audit)는 백그라운드 처리"""
+        """점수 저장: shelf 즉시 저장 → Supabase(records·audit)는 백그라운드 처리"""
         # [v6.3] 수정자·시각, [v6.3.1] 전체 수정 이력(history) 기록
         # [v6.4.2] 수정자는 회원명부 cafe_id 조회로 얻은 실제 이름
         _editor   = _editor_display_name()
@@ -8196,7 +8201,7 @@ if page == "📊 스코어보드":
     # ── [v6.3.1] 점수 수정 이력 (운영진 전용, score_audit 시트 조회) ──
     if is_sub_admin():
         with st.expander("📜 점수 수정 이력 (운영진 전용)", expanded=False):
-            st.caption("이 날짜의 점수 입력·수정 기록입니다. (구글시트 score_audit 탭에 영구 저장)")
+            st.caption("이 날짜의 점수 입력·수정 기록입니다. (Supabase score_audit 테이블에 영구 저장)")
             if st.button("이력 불러오기", key="load_score_audit"):
                 st.session_state["_score_audit_view"] = _score_audit_load(selected_key)
             _av = st.session_state.get("_score_audit_view")
@@ -8229,7 +8234,7 @@ if page == "📊 스코어보드":
     if is_admin():
         if st.button("🔁 기록실 재집계 (관리자)", type="secondary",
                      use_container_width=True,
-                     help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 구글시트에 덮어씁니다."):
+                     help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 Supabase에 덮어씁니다."):
             _reagg_scores = st.session_state.get("sb_scores", {})
             if not _reagg_scores:
                 _sd = shelf_load(selected_key)
@@ -8444,7 +8449,7 @@ elif page == "📋 대진표생성":
     league_counts = None
 
     # ══════════════════════════════════════════════════════════
-    # 참가자 선택 팝업 — 구글 시트 회원명부 직접 연동
+    # 참가자 선택 팝업 — Supabase 회원명부 직접 연동
     # ══════════════════════════════════════════════════════════
     @st.dialog("👥 참가자 선택 (회원명부 연동)", width="large")
     def _member_select_popup():
@@ -8697,7 +8702,7 @@ elif page == "📋 대진표생성":
                         # [v6.5] 대진표 삭제 감사 로그
                         log_audit("대진표삭제", "", _sel_key,
                                   f"대진표 삭제 (키:{_sel_key}, 기록실 포함)")
-                        # 구글시트 records 탭에서도 해당 날짜 행 모두 삭제
+                        # Supabase records 테이블에서도 해당 날짜 행 모두 삭제
                         try:
                             records_delete_by_date(_sel_key)
                             _clear_schedule_cache()   # [v7.1.0]
@@ -9539,10 +9544,10 @@ function showMsg() {{
             st.info("👈 사이드바에서 리그·페어링 방식·인원을 설정하고 비밀번호 입력 후 **대진표 생성** 버튼을 눌러주세요.")
 
         # ═══════════════════════════════════════════════════════
-        # 리그 설정 (구글 시트 직접 연동)
+        # 리그 설정 (Supabase 직접 연동)
         # ═══════════════════════════════════════════════════════
         st.markdown("---")
-        with st.expander("🏷️ 회원 리그 설정 (구글 시트 직접 연동)", expanded=False):
+        with st.expander("🏷️ 회원 리그 설정 (Supabase 직접 연동)", expanded=False):
             st.caption("체크박스로 회원을 선택하고 이동 대상 리그를 선택 후 일괄 저장하세요.")
 
             # [v5.9.10] 회원명부처럼 모바일 보기 토글 (PC는 표, 모바일은 세로 카드)
@@ -9561,7 +9566,7 @@ function showMsg() {{
                 with st.spinner("회원 명부 불러오는 중…"):
                     _lg_df = load_df_for_match()   # TTL 캐시 사용 (429 방지)
             except Exception as _e:
-                st.error(f"구글 시트 연결 오류: {_e}")
+                st.error(f"Supabase 연결 오류: {_e}")
                 _lg_df = pd.DataFrame()
 
             if not _lg_df.empty:
@@ -9734,12 +9739,12 @@ function showMsg() {{
                                         st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
                                         st.rerun()
             else:
-                st.info("구글 시트에 회원 데이터가 없습니다.")
+                st.info("Supabase에 회원 데이터가 없습니다.")
 
             # ── 게스트 관리 (회원명부 미반영) ────────────────────
             st.markdown("---")
             st.markdown("#### 👤 게스트 관리")
-            st.caption("회원명부·구글 시트 미반영 · 직접 삭제 전까지 유지됩니다.")
+            st.caption("회원명부·Supabase 미반영 · 직접 삭제 전까지 유지됩니다.")
 
             # 추가 폼
             _gc1, _gc2, _gc3, _gc4 = st.columns([2, 2, 1, 1])
@@ -9814,12 +9819,12 @@ function showMsg() {{
 # ========================================================================
 elif page == "🏆 통합기록실":
     st.markdown("## 🏆 통합기록실 (누적 통계)")
-    st.caption("점수 저장 시 구글시트에 자동 누적됩니다. 중복 선수 및 제외 지정 선수는 기록에서 제외됩니다.")
+    st.caption("점수 저장 시 Supabase에 자동 누적됩니다. 중복 선수 및 제외 지정 선수는 기록에서 제외됩니다.")
 
     # ── 관리자 전용: 기록 제외 선수 관리 ────────────────────────
     if is_admin():
         with st.expander("⚙️ 관리자: 기록 제외 선수 설정 (코치 등)", expanded=False):
-            st.caption("여기 등록된 선수는 기록실 집계·조회에서 완전히 제외됩니다. 이름은 구글시트 player_key와 동일하게 입력하세요.")
+            st.caption("여기 등록된 선수는 기록실 집계·조회에서 완전히 제외됩니다. 이름은 Supabase player_key와 동일하게 입력하세요.")
             _ex_list = exclude_list_load()
 
             # 현재 제외 목록
@@ -9839,7 +9844,7 @@ elif page == "🏆 통합기록실":
             st.markdown("---")
             _add_c1, _add_c2 = st.columns([5, 1])
             _new_ex = _add_c1.text_input("제외할 선수 이름 입력",
-                                          placeholder="예: 윤지수  (구글시트 player_key와 동일하게)",
+                                          placeholder="예: 윤지수  (Supabase player_key와 동일하게)",
                                           label_visibility="collapsed", key="new_exclude_inp")
             if _add_c2.button("➕ 추가", key="add_exclude_btn", use_container_width=True):
                 if _new_ex.strip():
@@ -9906,8 +9911,8 @@ elif page == "🏆 통합기록실":
         # ── [기능1] 데이터 백업 상태 점검 · 강제 복원 ──────────
         with st.expander("🛡️ 데이터 백업 상태 점검 (관리자)", expanded=False):
             st.caption(
-                "경기 기록(대진표·점수)은 로컬 + 구글시트에 이중 저장됩니다. "
-                "Streamlit Cloud 재시작 시 로컬이 초기화돼도 구글시트에서 자동 복원됩니다. "
+                "경기 기록(대진표·점수)은 로컬 + Supabase에 이중 저장됩니다. "
+                "Streamlit Cloud 재시작 시 로컬이 초기화돼도 Supabase에서 자동 복원됩니다. "
                 "아래에서 백업 상태를 확인하고 필요 시 강제 복원할 수 있습니다."
             )
             _bk_c1, _bk_c2 = st.columns(2)
@@ -9954,7 +9959,7 @@ elif page == "🏆 통합기록실":
             _bk_stat = st.session_state.get("_backup_status")
             if _bk_stat:
                 _g_pal = _WLD_PALETTE["games"]
-                _ok_match = _bk_stat["local"] == _bk_stat["gsheet"]
+                _ok_match = _bk_stat["local"] == _bk_stat["supabase"]
                 _sync_color = "#16a34a" if _ok_match else "#d97706"
                 _sync_txt = "동기화됨 ✅" if _ok_match else "차이 있음 ⚠️"
                 st.markdown(
@@ -9968,8 +9973,8 @@ elif page == "🏆 통합기록실":
                                      min_width=110, value_size="0.95rem")
                     ), unsafe_allow_html=True)
                 if not _ok_match:
-                    st.info("로컬과 구글시트 개수가 다릅니다. 위 **강제 복원**으로 맞출 수 있습니다 "
-                            "(구글시트가 원본이므로 로컬에만 있는 항목은 다음 저장 시 시트에도 반영됩니다).")
+                    st.info("로컬과 Supabase 개수가 다릅니다. 위 **강제 복원**으로 맞출 수 있습니다 "
+                            "(Supabase가 원본이므로 로컬에만 있는 항목은 다음 저장 시 시트에도 반영됩니다).")
 
 
     _now = kst_today()
@@ -9979,7 +9984,7 @@ elif page == "🏆 통합기록실":
         st.info(
             "기록실은 이제 저장된 스코어보드에서 **직접 계산**됩니다. "
             "데이터가 이상하면 위 **🔄 새로고침** 버튼을 누르세요. "
-            "구글시트의 과거 누적 데이터를 완전히 정리하려면 관리자 메뉴의 **🛠️ 기록실 완전 재구축**을 사용하세요.",
+            "Supabase의 과거 누적 데이터를 완전히 정리하려면 관리자 메뉴의 **🛠️ 기록실 완전 재구축**을 사용하세요.",
             icon="ℹ️"
         )
         if st.button("✅ 안내 닫기", key="dismiss_draws_notice"):
@@ -11136,7 +11141,7 @@ elif page == "🗂️ 대진표보관함":
                     if is_admin():
                         st.markdown("---")
                         with st.expander("🗑️ 관리자: 이 대진표 삭제", expanded=False):
-                            st.warning("삭제하면 보관함과 구글시트에서 영구 제거됩니다. "
+                            st.warning("삭제하면 보관함과 Supabase에서 영구 제거됩니다. "
                                        "(통합기록실 집계는 별도 — 필요 시 재집계 하세요.)")
                             _del_ok = st.checkbox(
                                 f"'{_arch_label(_sel_key)}' 대진표를 삭제하겠습니다.",
