@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.5.0
+TELA CLUB Random Match Generator v7.5.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4151,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.5.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.5.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4435,6 +4435,25 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stHorizontalBlock"]:has([class*="st-key-add_guest_btn"]) button,
 [data-testid="stHorizontalBlock"]:has([class*="st-key-del_guest_"]) button{
     white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
+}
+/* [v7.5.1 수정1] 홈 바로가기 카드: 모바일에서도 PC처럼 가로(섹션별 한 줄) 배치 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-home_card_"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-home_card_"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-home_card_"]) button{
+    padding-left:6px !important; padding-right:6px !important; font-size:0.82rem !important;
+}
+/* [v7.5.1 수정2] 매치업 예상: 같은 팀 두 칸을 모바일에서도 가로 한 줄로 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-mu_a1"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-mu_b1"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-mu_a1"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-mu_b1"]) [data-testid="stColumn"]{
+    min-width:0 !important;
 }
 /* [v7.4.2 수정2] 모바일에서 페이지 제목이 한 줄에 들어오도록 글자 크기 상한·일관화 */
 @media (max-width: 640px){
@@ -9820,9 +9839,15 @@ function showMsg() {{
             _all_guests = guest_load()
             if _all_guests:
                 st.markdown(f"**등록된 게스트 ({len(_all_guests)}명)**")
-                _gh = st.columns([2, 2, 1, 1])
-                _gh[0].markdown("**리그**"); _gh[1].markdown("**이름**")
-                _gh[2].markdown("**성별**"); _gh[3].markdown("**삭제**")
+                st.markdown(
+                    "<div style='display:flex;gap:0.3rem;align-items:center;"
+                    "font-size:11px;font-weight:700;color:#6b7280;"
+                    "border-bottom:2px solid #e2e8f0;padding:4px 0;margin-top:2px'>"
+                    "<span style='flex:2 1 0'>리그</span>"
+                    "<span style='flex:2 1 0'>이름</span>"
+                    "<span style='flex:1 1 0'>성별</span>"
+                    "<span style='flex:1 1 0;text-align:center'>삭제</span>"
+                    "</div>", unsafe_allow_html=True)
                 for _gm in list(_all_guests):
                     _lc_g = LEAGUE_COLORS[active_leagues.index(_gm["league"])] \
                             if _gm["league"] in active_leagues else "#555"
