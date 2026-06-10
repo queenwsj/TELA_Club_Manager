@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.4.1
+TELA CLUB Random Match Generator v7.4.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4151,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.4.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.4.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4422,6 +4422,13 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stHorizontalBlock"]:has([class*="st-key-lgctrl_sa_"]) button,
 [data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) button{
     white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
+}
+/* [v7.4.2 수정2] 모바일에서 페이지 제목이 한 줄에 들어오도록 글자 크기 상한·일관화 */
+@media (max-width: 640px){
+  section.main h1, [data-testid="stMain"] h1{ font-size:1.45rem !important; line-height:1.25 !important; }
+  section.main h2, [data-testid="stMain"] h2{ font-size:1.2rem !important; line-height:1.25 !important; }
+  .app-header h1{ font-size:1.35rem !important; line-height:1.2 !important; }
+  .app-header span{ font-size:26px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -6030,8 +6037,8 @@ def render_roster_page():
 
     st.markdown("""
     <div class="app-header">
-      <span style="font-size:36px">🎾</span>
-      <div><h1>테라클럽 회원 명부</h1>
+      <span style="font-size:36px">👥</span>
+      <div><h1>회원 관리</h1>
       <p>TELA CLUB Member Roster · Supabase 연동</p></div>
     </div>""", unsafe_allow_html=True)
 
@@ -7663,7 +7670,7 @@ if page in _DORMANT_BLOCKED_PAGES and _current_member_is_dormant():
 
 if page == "🧾 로그":
 
-    st.markdown("## 🧾 시스템 로그")
+    st.markdown("## 🛠️ 시스템 로그")
 
     # ── 접근 권한: 관리자(admin)만 ───────────────────────────
     if not is_admin():
@@ -7843,7 +7850,7 @@ if page == "🧾 로그":
 
 if page == "📊 스코어보드":
 
-    st.markdown("## 🎾 TELA 클럽 랭킹리그 스코어보드")
+    st.markdown("## 📊 경기 결과")
 
     # 스코어보드 열람은 누구나 가능, 점수 입력은 부관리자 이상 (_can_edit로 제어)
     # [v6.3] 백그라운드 스레드 오류를 세션 로그로 흡수
@@ -8803,7 +8810,7 @@ elif page == "📋 대진표생성":
     # ── 메인 타이틀 ─────────────────────────────────────────
     mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
     league_badge = " · ".join(active_leagues)
-    st.title("🎾 TELA CLUB 대진표 생성")
+    st.markdown("## 🎾 대진 생성")
     st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
 
     # ── 결과 고정 (시드) — 본문 배치 ──────────────────────────
@@ -9820,27 +9827,25 @@ function showMsg() {{
 
         with st.expander("📖 사용 방법 및 규칙 안내"):
             st.markdown("""
-### v5.8 기능 안내
-
-| 항목 | 내용 |
+### 사용 방법
+| 단계 | 내용 |
 |------|------|
-| **회원 사전 등록** | 👥 회원 관리에서 리그별 회원 등록 후 체크박스로 선택 |
-| **대진표 불러오기** | 📂 저장된 대진표 불러오기에서 날짜 선택 후 로드 |
-| **페이지 복귀 유지** | 스코어보드↔대진표생성 이동해도 마지막 대진표 유지 |
-| **리그 수 설정** | 1~5개 자유 설정 (A→B→C→D→E 순) |
-| **페어링 방식** | 🔵 조건부 / 🔴 완전 랜덤 선택 |
-| **재생성 버튼** | 동일 설정으로 새 대진표 즉시 생성 |
-| **카카오톡 복사** | 대진표를 카카오톡용 텍스트로 한 번에 복사 |
-| **QR코드** | 앱 URL QR코드로 회원 공유 |
+| ① 회원 등록·리그 배정 | 👥 **회원 관리**에서 회원 등록 후 리그(A·B·C) 배정. 이 화면 하단 **🏷️ 회원 리그 설정**에서도 바로 변경 가능 |
+| ② 참가자 선택 | 사이드바에서 리그·페어링 방식·인원을 설정하고 참가 회원을 선택 |
+| ③ 대진표 생성 | 비밀번호 입력 후 **대진표 생성** 클릭. 같은 설정으로 **재생성**도 가능 |
+| ④ 점수 입력 | 사이드바 **📊 경기 결과**에서 날짜+일련번호로 불러와 경기별 **💾 저장** |
+| ⑤ 공유 | **🖼️ 대진표 이미지 공유**(카톡·네이버카페) · 카카오톡 텍스트 복사 · QR코드 |
 
-### 공통 출전 규칙
-- 최소 3경기 보장 → 이벤트 라운드(4R)로 보충
+### 페어링·옵션
+- **페어링 방식** — 🔵 조건부(같은 팀·상대 중복 회피 + 경기 수 균형) / 🔴 완전 랜덤
+- **⚖️ 체급(등급) 균형 매칭** — 켜면 팀 간 등급 합이 비슷하도록 배정 (사이드바 토글, 기본 꺼짐)
+- **🔒 결과 고정(시드)** — 켜고 생성하면 같은 입력에 대해 동일한 대진을 재현
+- **🔁 결원 교체** — 노쇼·당일 취소 시 해당 경기만 부분 재배정
+
+### 출전 규칙
+- 최소 3경기 보장 → 부족하면 이벤트 라운드(4R)로 보충
 - 최대 4경기 제한
-
-### 점수판
-1. 대진표 생성 후 사이드바 **📊 스코어보드** 선택
-2. 날짜+일련번호 입력 (대진표생성과 동일하게)
-3. 각 경기 **💾 저장** 버튼 클릭 → 새로고침 후에도 유지
+- 페이지 이동(경기 결과 ↔ 대진 생성)해도 마지막 대진표가 유지됨
 """)
 
 
@@ -9848,7 +9853,7 @@ function showMsg() {{
 # 14. 페이지: 통합기록실 (기존 기록실 — 전체 선수 통계)
 # ========================================================================
 elif page == "🏆 통합기록실":
-    st.markdown("## 🏆 통합기록실 (누적 통계)")
+    st.markdown("## 🏆 클럽 기록")
     st.caption("점수 저장 시 Supabase에 자동 누적됩니다. 중복 선수 및 제외 지정 선수는 기록에서 제외됩니다.")
 
     # ── 관리자 전용: 기록 제외 선수 관리 ────────────────────────
@@ -10486,7 +10491,7 @@ elif page == "🏆 통합기록실":
 # 14-B. 페이지: 개인기록실 (v5.9 신규)
 # ========================================================================
 elif page == "👤 개인기록실":
-    st.markdown("## 👤 개인기록실")
+    st.markdown("## 🧍 개인 기록")
     st.caption("회원 개인의 월별 리그 기록, 파트너 궁합, 라이벌 전적을 조회합니다.")
 
     _now_pr = date.today()
@@ -11102,7 +11107,7 @@ elif page == "🗂️ 대진표보관함":
     if get_app_user() and not is_sub_admin():
         st.warning("🔒 대진표 보관함은 관리자·부관리자만 이용할 수 있습니다.")
         st.stop()
-    st.markdown("## 🗂️ 대진표 보관함")
+    st.markdown("## 📦 대진 보관함")
     st.caption("저장된 지난 대진표를 날짜별로 다시 보거나, 회원 이름으로 검색합니다.")
 
     _arch_keys = shelf_list_dates()
@@ -11245,7 +11250,7 @@ elif page == "🎯 이벤트 팀편성":
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">🎯</span>
-      <div><h1>이벤트 팀편성</h1>
+      <div><h1>이벤트 편성</h1>
       <p>회원 등급(1~5)을 기반으로 균형 잡힌 팀을 구성하고 대진표를 생성합니다.</p></div>
     </div>""", unsafe_allow_html=True)
 
