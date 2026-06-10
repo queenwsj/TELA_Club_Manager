@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.0
+TELA CLUB Random Match Generator v7.6.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4151,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -5126,6 +5126,14 @@ def grade_badge(g):
     lbl   = {"1":"1등급","2":"2등급","3":"3등급","4":"4등급","5":"5등급"}.get(gs, gs)
     return f'<span class="badge {cls}">{lbl}</span>'
 
+def member_type_badge(mt):
+    """[v7.6.1] 회원 유형 배지 — '부부'면 분홍, 그 외(일반)는 회색."""
+    if str(mt or "").strip() == "부부":
+        return ("<span style='font-size:10px;color:#be185d;background:#fce7f3;"
+                "border:1px solid #f9a8d4;border-radius:6px;padding:1px 6px;font-weight:700'>부부</span>")
+    return ("<span style='font-size:10px;color:#64748b;background:#f1f5f9;"
+            "border:1px solid #cbd5e1;border-radius:6px;padding:1px 6px'>일반</span>")
+
 def gender_html(g):
     c = {"남":"#2563eb","여":"#db2777"}.get(g,"#374151")
     return f'<span style="color:{c};font-weight:700;{RS_FS}">{g}</span>'
@@ -5475,6 +5483,10 @@ def dialog_detail(row):
         (info_row("♻️ 재입회", row.get("rejoin_date",""), "#0d9488")
          if str(row.get("rejoin_date","") or "").strip() else "") +
         info_row("리그",      row.get("league",""),   "#7c3aed") +
+        (info_row("회원유형", "💑 부부회원", "#be185d") +
+         info_row("배우자",   row.get("spouse_name","") or "—", "#be185d")
+         if str(row.get("member_type","") or "").strip() == "부부"
+         else info_row("회원유형", "일반회원")) +
         info_row("입회신청서", row.get("application","")),
         unsafe_allow_html=True)
 
@@ -6808,6 +6820,7 @@ def render_roster_page():
         ("구분",      0.55),
         ("리그",      0.65),
         ("등급",      0.55),
+        ("유형",      0.50),
         ("성명",      0.82),
         ("카페ID",    0.85),
         ("생년월일",   0.92),
@@ -6944,6 +6957,7 @@ def render_roster_page():
                     f"<span style='font-size:11px;color:#cbd5e1;font-weight:700'>#{idx+1}</span>"
                     f"{badge(_cat)}"
                     f"<span style='font-size:16px;font-weight:800;color:#0f172a;letter-spacing:-0.3px'>{_name}</span>"
+                    f"{member_type_badge(row.get('member_type',''))}"
                     f"{gender_html(str(row.get('gender','')))}"
                     f"{_grade_html}"
                     + (f"<span style='font-size:10px;color:#0f766e;background:#ccfbf1;"
@@ -7050,6 +7064,10 @@ def render_roster_page():
             gd_val = str(row.get('grade','') or '').strip()
             rc[ci].markdown(
                 f"<div style='padding:5px 0'>{grade_badge(gd_val)}</div>",
+                unsafe_allow_html=True); ci += 1
+            # 유형 (부부/일반)
+            rc[ci].markdown(
+                f"<div style='padding:5px 0'>{member_type_badge(row.get('member_type',''))}</div>",
                 unsafe_allow_html=True); ci += 1
             # 성명
             rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
