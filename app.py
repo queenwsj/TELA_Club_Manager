@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.5.2
+TELA CLUB Random Match Generator v7.6.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4151,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.5.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4179,6 +4179,8 @@ RS_COLUMNS = [
     "league",
     "grade",        # 회원 등급 1~5 (1=최상위, 5=입문)
     "rejoin_date",  # 재입회일 (탈퇴 후 재가입; 비어있으면 일반 회원·탈퇴일/휴면 이력은 그대로 보존)
+    "member_type",  # [v7.6.0] 회원 유형: ''/'일반' = 일반회원, '부부' = 부부회원
+    "spouse_name",  # [v7.6.0] 부부회원의 배우자 이름 (리스트 미표시, 등록/수정 다이얼로그에서만 입력)
 ]
 AUDIT_COLUMNS = ["timestamp", "action", "member_id", "member_name", "detail", "editor"]  # [v6.4.1] editor(수정자) 맨 끝 추가
 TRASH_DAYS    = 90   # 휴지통 보관 기간 (일)
@@ -5652,6 +5654,24 @@ def dialog_form(df, existing=None):
         email = st.text_input("이메일",
             value=existing["email"] if existing else "", placeholder="example@email.com")
 
+    # 행3.5: [v7.6.0] 회원 유형(일반/부부) / 배우자 이름 — 목록에는 표시하지 않음
+    c_mt, c_sp = st.columns([1, 1.4])
+    with c_mt:
+        _MT_OPTS = ["일반회원", "부부회원"]
+        _ex_mt = str(existing.get("member_type", "") or "").strip() if existing else ""
+        _mt_idx = 1 if _ex_mt == "부부" else 0
+        member_type_sel = st.selectbox(
+            "회원 유형", _MT_OPTS, index=_mt_idx,
+            help="부부회원이면 오른쪽에 배우자 이름을 입력하세요. (회원 목록에는 표시되지 않습니다)")
+    with c_sp:
+        spouse_name_in = st.text_input(
+            "배우자 이름",
+            value=(existing.get("spouse_name", "") if existing else ""),
+            placeholder="부부회원만 입력",
+            disabled=(member_type_sel != "부부회원"))
+    member_type_val = "부부" if member_type_sel == "부부회원" else "일반"
+    spouse_name_val = spouse_name_in.strip() if member_type_sel == "부부회원" else ""
+
     # 행4: 휴면기간 (누적 관리) — 폭 전체 사용 (행 단위 입력이라 넓게)
     # ─────────────────────────────────────────────────────────
     # 휴면 기간 세션 초기화: 이 다이얼로그가 처음 열릴 때만 기존 값 로드
@@ -5997,6 +6017,9 @@ def dialog_form(df, existing=None):
                 "league":         "" if league_sel == "—" else league_sel,
                 "grade":          "" if grade_sel == "—" else grade_sel,
                 "rejoin_date":    rj_str,
+                # [v7.6.0] 부부회원 유형·배우자 이름 (목록 미표시)
+                "member_type":    member_type_val,
+                "spouse_name":    spouse_name_val,
             }
             if existing:
                 # [v6.4.3] 저장될 값(row_data) ↔ 기존 값(existing)을 '편집 가능한 모든 항목'에
@@ -6022,6 +6045,7 @@ def dialog_form(df, existing=None):
                     ("이메일", "email"), ("신청서", "application"),
                     ("지역", "region"), ("메모", "memo"), ("등급", "grade"),
                     ("리그", "league"),
+                    ("회원유형", "member_type"), ("배우자", "spouse_name"),
                 ]:
                     _diff(_lbl, _fld)
                 # [v6.4.2] 실제 변경이 없으면(_chgs 비어있음) 감사 로그를 남기지 않는다.
