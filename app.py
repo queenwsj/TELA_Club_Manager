@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.3.5
+TELA CLUB Random Match Generator v7.3.7
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -86,8 +86,11 @@ import secrets as _secrets
 
 
 
+@st.cache_resource(show_spinner=False)
 def _get_supabase():
-    """Supabase 클라이언트 생성"""
+    """Supabase 클라이언트 (단일 인스턴스 재사용).
+    [v7.3.7] @st.cache_resource 캐싱 — 매 호출마다 create_client() 하던 오버헤드 제거.
+    Supabase 클라이언트는 stateless HTTP(REST) 기반이라 세션 간 공유해도 안전하다."""
     return create_client(
         st.secrets["supabase"]["url"],
         st.secrets["supabase"]["service_role"],
@@ -4181,7 +4184,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.3.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.3.7"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4814,6 +4817,26 @@ def _supabase_member_upsert(row: dict):
     sb.table("members").upsert(clean).execute()
 
 
+def _supabase_members_upsert_many(rows: list):
+    """[v7.3.7] 여러 회원을 한 번의 upsert로 저장 — 일괄 변경 시 N회 라운드트립을 1회로.
+    단건 _supabase_member_upsert와 동일한 컬럼 정제(None→""·strip·id int) 후 리스트로 upsert."""
+    if not rows:
+        return
+    sb = _get_supabase()
+    cleaned = []
+    for row in rows:
+        clean = {}
+        for col in RS_COLUMNS:
+            val = row.get(col, "")
+            if val is None:
+                val = ""
+            clean[col] = str(val).strip()
+        if clean.get("id"):
+            clean["id"] = int(float(clean["id"]))
+        cleaned.append(clean)
+    sb.table("members").upsert(cleaned).execute()
+
+
 def _supabase_member_update_field(member_id: int, field: str, value):
     """Supabase members 특정 필드 1개 업데이트."""
     sb = _get_supabase()
@@ -4852,6 +4875,25 @@ def save_row(df, row, is_new=False, action_detail="", do_log=True):
             str(row.get("name", "") or ""),
             action_detail,
         )
+
+
+def save_rows_bulk(rows: list, action_detail: str = "", do_log: bool = True):
+    """[v7.3.7] 여러 회원을 한 번에 저장 (일괄 카테고리/등급/리그 변경용).
+    단건 save_row를 N번 호출하던 것을 1회 batch upsert로 대체 — DB 라운드트립 N→1.
+      ① 각 행 updated_at 자동 기록  ② 1회 batch upsert  ③ 캐시 1회 무효화
+      ④ 감사 로그는 회원별로 기록(비동기라 비블로킹, 추적 단위 유지)."""
+    rows = [dict(r) for r in rows]
+    if not rows:
+        return
+    _now = kst_now_str("%Y-%m-%d %H:%M:%S")
+    for r in rows:
+        r["updated_at"] = _now
+    _supabase_members_upsert_many(rows)
+    _clear_member_cache()
+    if do_log:
+        for r in rows:
+            log_audit("수정", r.get("id", ""),
+                      str(r.get("name", "") or ""), action_detail)
 
 @st.cache_data(ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
 def _load_records_cached() -> list:
@@ -6613,11 +6655,13 @@ def render_roster_page():
             if st.button("✅ 적용", key="bulk_cat_apply", use_container_width=True):
                 if new_cat != _PH_CAT and st.session_state.admin_authed:
                     with st.spinner(f"{sel_count}명 카테고리 변경 중…"):
+                        _bulk_rows = []
                         for _, r in df[df["id"].isin(sel_ids)].iterrows():
                             row_d = r.to_dict()
                             row_d["category"] = new_cat
-                            save_row(df, row_d, is_new=False,
-                                     action_detail=f"벌크 카테고리 변경 → {new_cat}")
+                            _bulk_rows.append(row_d)
+                        save_rows_bulk(_bulk_rows,
+                                       action_detail=f"벌크 카테고리 변경 → {new_cat}")
                     # 체크박스 세션 초기화
                     for sid in list(sel_ids):
                         k = f"chk_{sid}"
@@ -6641,11 +6685,13 @@ def render_roster_page():
             if st.button("✅ 적용", key="bulk_grade_apply", use_container_width=True):
                 if new_grade_bulk != _PH_GRADE and st.session_state.admin_authed:
                     with st.spinner(f"{sel_count}명 등급 변경 중…"):
+                        _bulk_rows = []
                         for _, r in df[df["id"].isin(sel_ids)].iterrows():
                             row_d = r.to_dict()
                             row_d["grade"] = new_grade_bulk
-                            save_row(df, row_d, is_new=False,
-                                     action_detail=f"벌크 등급 변경 → {new_grade_bulk}등급")
+                            _bulk_rows.append(row_d)
+                        save_rows_bulk(_bulk_rows,
+                                       action_detail=f"벌크 등급 변경 → {new_grade_bulk}등급")
                     for sid in list(sel_ids):
                         k = f"chk_{sid}"
                         if k in st.session_state:
@@ -6666,11 +6712,13 @@ def render_roster_page():
             if st.button("✅ 리그적용", key="bulk_league_apply", use_container_width=True):
                 if new_league_bulk != _PH_LEAGUE and st.session_state.admin_authed:
                     with st.spinner(f"{sel_count}명 리그 변경 중…"):
+                        _bulk_rows = []
                         for _, r in df[df["id"].isin(sel_ids)].iterrows():
                             row_d = r.to_dict()
                             row_d["league"] = new_league_bulk
-                            save_row(df, row_d, is_new=False,
-                                     action_detail=f"벌크 리그 변경 → {new_league_bulk}")
+                            _bulk_rows.append(row_d)
+                        save_rows_bulk(_bulk_rows,
+                                       action_detail=f"벌크 리그 변경 → {new_league_bulk}")
                     for sid in list(sel_ids):
                         k = f"chk_{sid}"
                         if k in st.session_state:
@@ -7187,8 +7235,8 @@ else:
                 st.error(f"아이디 또는 비밀번호가 틀렸습니다. (잠금까지 {_left}회 남음)")
             else:
                 st.error("아이디 또는 비밀번호가 틀렸습니다.")
-        st.caption(f"회원은 **카페ID**로 로그인합니다. 최초 비밀번호는 `{DEFAULT_MEMBER_PW}` 이며, "
-                   "로그인 후 비밀번호를 변경해야 합니다.")
+        st.caption("회원은 **카페ID**로 로그인합니다. 최초 비밀번호는 "
+                   "운영진(카카오톡·네이버 카페 공지)에게 확인하세요. 로그인 후 변경해야 합니다.")
 
 # ── [v6.1 수정1] 전체 열람: 로그인 필수 (등록 회원만) ────────
 if not _u:
@@ -7196,7 +7244,7 @@ if not _u:
     st.markdown("## 🔐 로그인이 필요합니다")
     st.info("테라클럽 앱은 **등록된 회원만** 이용할 수 있습니다. "
             "사이드바에서 **카페ID**와 비밀번호로 로그인해주세요.\n\n"
-            f"- 최초 비밀번호: `{DEFAULT_MEMBER_PW}` (로그인 후 변경 필수)\n"
+            "- 최초 비밀번호는 운영진(카카오톡·네이버 카페 공지)에게 확인하세요. (로그인 후 변경 필수)\n"
             "- 카페ID가 회원명부에 등록돼 있어야 로그인할 수 있습니다. (문의: 운영진)")
     st.stop()
 
