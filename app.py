@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.4.2
+TELA CLUB Random Match Generator v7.5.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4151,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.4.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.5.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4421,6 +4421,19 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 }
 [data-testid="stHorizontalBlock"]:has([class*="st-key-lgctrl_sa_"]) button,
 [data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) button{
+    white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
+}
+/* [v7.4.3 추가2] 대진생성 게스트 관리: 추가폼·목록 행 한 줄 유지(모바일) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-add_guest_btn"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-del_guest_"]){
+    flex-wrap:nowrap !important; gap:6px !important; align-items:center !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-add_guest_btn"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-del_guest_"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-add_guest_btn"]) button,
+[data-testid="stHorizontalBlock"]:has([class*="st-key-del_guest_"]) button{
     white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
 }
 /* [v7.4.2 수정2] 모바일에서 페이지 제목이 한 줄에 들어오도록 글자 크기 상한·일관화 */
@@ -7266,7 +7279,8 @@ _is_staff = is_sub_admin()
 #   내부 page 키를 그대로 유지해 모든 `if page == ...` 분기를 건드리지 않는다.
 _nav_sections = [
     ("기록", [("🏆 통합기록실", "🏆 클럽 기록"),
-              ("👤 개인기록실", "🧍 개인 기록")]),
+              ("👤 개인기록실", "🧍 개인 기록"),
+              ("🔮 매치업예상", "🔮 매치업 예상")]),
     ("경기", [("📊 스코어보드", "📊 경기 결과")]),
 ]
 if _is_staff:
@@ -7285,7 +7299,7 @@ _visible_pages = [k for _sec, _items in _nav_sections for k, _l in _items]
 #   기존엔 _all_pages(역할 의존)로 검사 → 권한 판정이 rerun 중 한 번이라도
 #   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
 #   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
-_ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "📊 스코어보드",
+_ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "🔮 매치업예상", "📊 스코어보드",
                     "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부",
                     "🧾 로그"]
 if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
@@ -9784,7 +9798,7 @@ function showMsg() {{
             st.caption("회원명부·Supabase 미반영 · 직접 삭제 전까지 유지됩니다.")
 
             # 추가 폼
-            _gc1, _gc2, _gc3, _gc4 = st.columns([2, 2, 1, 1])
+            _gc1, _gc2, _gc3, _gc4 = st.columns([2, 2, 1, 1], vertical_alignment="center")
             _g_lg   = _gc1.selectbox("리그", active_leagues, key="guest_lg",
                                      label_visibility="collapsed")
             _g_name = _gc2.text_input("이름", key="guest_name", placeholder="이름 입력",
@@ -9812,14 +9826,15 @@ function showMsg() {{
                 for _gm in list(_all_guests):
                     _lc_g = LEAGUE_COLORS[active_leagues.index(_gm["league"])] \
                             if _gm["league"] in active_leagues else "#555"
-                    _gr = st.columns([2, 2, 1, 1])
+                    _gr = st.columns([2, 2, 1, 1], vertical_alignment="center")
                     _gr[0].markdown(
                         f'<span style="color:{_lc_g};font-weight:700;">{_gm["league"]}</span>',
                         unsafe_allow_html=True
                     )
                     _gr[1].write(_gm["name"])
                     _gr[2].write("남" if _gm["gender"] == "M" else "여")
-                    if _gr[3].button("🗑", key=f"del_guest_{_gm['league']}_{_gm['name']}"):
+                    if _gr[3].button("🗑", key=f"del_guest_{_gm['league']}_{_gm['name']}",
+                                     use_container_width=True):
                         guest_remove(_gm["name"], _gm["league"])
                         st.rerun()
             else:
@@ -10328,72 +10343,6 @@ elif page == "🏆 통합기록실":
         else:
             st.success(f"🎉 최근 {_inact_months}개월간 모든 회원이 1회 이상 참여했습니다.")
 
-    # ── [기능4] 라이벌 매치업 예상 ────────────────────────────
-    st.markdown("---")
-    with st.expander("🔮 매치업 예상 (두 팀 전적 비교)", expanded=False):
-        st.caption("두 팀의 선수를 선택하면 과거 통산 전적을 기반으로 예상 승률을 보여줍니다. "
-                   "두 팀이 실제로 맞붙은 기록이 있으면 직접 전적도 표시됩니다.")
-        _mu_players = personal_get_all_players()
-        if len(_mu_players) < 2:
-            st.info("매치업 예상을 하려면 기록된 선수가 2명 이상 필요합니다.")
-        else:
-            _mu_c1, _mu_c2 = st.columns(2)
-            with _mu_c1:
-                st.markdown("**🔵 A팀**")
-                _team_a = st.multiselect("A팀 선수", _mu_players, key="mu_team_a",
-                                          max_selections=2, label_visibility="collapsed")
-            with _mu_c2:
-                st.markdown("**🔴 B팀**")
-                _team_b = st.multiselect("B팀 선수", _mu_players, key="mu_team_b",
-                                          max_selections=2, label_visibility="collapsed")
-
-            _overlap = set(_team_a) & set(_team_b)
-            if _team_a and _team_b and _overlap:
-                st.warning(f"⚠️ 양 팀에 같은 선수({', '.join(_overlap)})가 있습니다. 다르게 선택해주세요.")
-            elif _team_a and _team_b:
-                _pred = predict_matchup(_team_a, _team_b)
-                _ae, _be = _pred["a_expected"], _pred["b_expected"]
-                # 예상 승률 바
-                st.markdown("##### 📊 예상 승률")
-                st.markdown(
-                    f'<div style="display:flex;height:38px;border-radius:10px;overflow:hidden;'
-                    f'font-weight:900;color:#fff;font-size:0.95rem;margin:6px 0 4px;">'
-                    f'<div style="width:{_ae:.0f}%;background:#2563eb;display:flex;align-items:center;'
-                    f'justify-content:center;min-width:48px;">{_ae:.0f}%</div>'
-                    f'<div style="width:{_be:.0f}%;background:#dc2626;display:flex;align-items:center;'
-                    f'justify-content:center;min-width:48px;">{_be:.0f}%</div>'
-                    f'</div>', unsafe_allow_html=True)
-                _a_names = " · ".join(_team_a)
-                _b_names = " · ".join(_team_b)
-                st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;'
-                    f'color:#374151;margin-bottom:10px;">'
-                    f'<span style="color:#2563eb;font-weight:700;">🔵 {_a_names}</span>'
-                    f'<span style="color:#dc2626;font-weight:700;">{_b_names} 🔴</span>'
-                    f'</div>', unsafe_allow_html=True)
-                st.caption(f"팀 통산 평균 승률 — A팀 {_pred['a_rate']:.1f}% vs B팀 {_pred['b_rate']:.1f}% "
-                           f"(예상 승률은 두 팀 평균 승률 비율로 환산한 참고값입니다)")
-
-                # 직접 전적
-                if _pred["h2h"]:
-                    _h = _pred["h2h"]
-                    st.markdown("##### ⚔️ 직접 맞대결 전적")
-                    st.markdown(
-                        _stat_card_row(
-                            _stat_card("A팀 승", _h["a_wins"], value_color="#2563eb",
-                                       bg="#eff6ff", border="#93c5fd", label_color="#3b82f6")
-                            + _stat_card("무", _h["draws"], value_color="#9ca3af",
-                                         bg="#fafafa", border="#d1d5db", label_color="#9ca3af")
-                            + _stat_card("B팀 승", _h["b_wins"], value_color="#dc2626",
-                                         bg="#fef2f2", border="#fca5a5", label_color="#dc2626")
-                            + _stat_card("총 경기", _h["games"], value_color="#7c3aed",
-                                         bg="#fdf4ff", border="#d8b4fe", label_color="#7c3aed")
-                        ), unsafe_allow_html=True)
-                else:
-                    st.info("두 팀이 실제로 맞붙은 기록은 아직 없습니다. (예상 승률은 통산 전적 기반 추정)")
-            else:
-                st.caption("양 팀에 선수를 선택하면 예상 결과가 표시됩니다.")
-
     # ── [v6.0.0 F4] 기간 비교 분석 ────────────────────────────
     with st.expander("📊 기간 비교 분석 (참여·성적·리그 균형)", expanded=False):
         st.caption("두 기간을 골라 참여 인원·경기 수·승/무/패·리그별 참여 분포를 비교합니다. "
@@ -10486,6 +10435,78 @@ elif page == "🏆 통합기록실":
     else:
         st.info("아직 기록된 선수가 없습니다.")
 
+
+# ========================================================================
+# 14-A2. 페이지: 매치업 예상 (v7.5.0 단독 메뉴) — 4칸 선택(A팀 2 · B팀 2)
+# ========================================================================
+elif page == "🔮 매치업예상":
+    st.markdown("## 🔮 매치업 예상")
+    st.caption("두 팀의 선수를 칸마다 한 명씩 선택하면 과거 통산 전적을 기반으로 예상 승률을 보여줍니다. "
+               "두 팀이 실제로 맞붙은 기록이 있으면 직접 전적도 함께 표시됩니다. (복식은 팀당 2명, 단식은 1명)")
+    _mu_players = personal_get_all_players()
+    if len(_mu_players) < 2:
+        st.info("매치업 예상을 하려면 기록된 선수가 2명 이상 필요합니다. 경기 결과를 저장하면 자동 집계됩니다.")
+    else:
+        _opts = ["—"] + _mu_players
+
+        st.markdown('<div style="color:#2563eb;font-weight:800;font-size:1.02rem;'
+                    'margin:10px 0 4px;">🔵 A팀</div>', unsafe_allow_html=True)
+        _ac1, _ac2 = st.columns(2)
+        _a1 = _ac1.selectbox("A팀 선수1", _opts, key="mu_a1", label_visibility="collapsed")
+        _a2 = _ac2.selectbox("A팀 선수2", _opts, key="mu_a2", label_visibility="collapsed")
+
+        st.markdown('<div style="color:#dc2626;font-weight:800;font-size:1.02rem;'
+                    'margin:14px 0 4px;">🔴 B팀</div>', unsafe_allow_html=True)
+        _bc1, _bc2 = st.columns(2)
+        _b1 = _bc1.selectbox("B팀 선수1", _opts, key="mu_b1", label_visibility="collapsed")
+        _b2 = _bc2.selectbox("B팀 선수2", _opts, key="mu_b2", label_visibility="collapsed")
+
+        _team_a = [p for p in (_a1, _a2) if p and p != "—"]
+        _team_b = [p for p in (_b1, _b2) if p and p != "—"]
+        _all_sel = _team_a + _team_b
+        _dups = sorted({p for p in _all_sel if _all_sel.count(p) > 1})
+
+        st.markdown("---")
+        if not _team_a or not _team_b:
+            st.info("양 팀에 선수를 1명 이상 선택하면 예상 결과가 표시됩니다.")
+        elif _dups:
+            st.warning(f"⚠️ 같은 선수({', '.join(_dups)})가 여러 칸에 선택됐습니다. 다르게 선택해주세요.")
+        else:
+            _pred = predict_matchup(_team_a, _team_b)
+            _ae, _be = _pred["a_expected"], _pred["b_expected"]
+            st.markdown("##### 📊 예상 승률")
+            st.markdown(
+                f'<div style="display:flex;height:40px;border-radius:10px;overflow:hidden;'
+                f'font-weight:900;color:#fff;font-size:0.95rem;margin:6px 0 4px;">'
+                f'<div style="width:{_ae:.0f}%;background:#2563eb;display:flex;align-items:center;'
+                f'justify-content:center;min-width:48px;">{_ae:.0f}%</div>'
+                f'<div style="width:{_be:.0f}%;background:#dc2626;display:flex;align-items:center;'
+                f'justify-content:center;min-width:48px;">{_be:.0f}%</div>'
+                f'</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;'
+                f'color:#374151;margin-bottom:10px;">'
+                f'<span style="color:#2563eb;font-weight:700;">🔵 {" · ".join(_team_a)}</span>'
+                f'<span style="color:#dc2626;font-weight:700;">{" · ".join(_team_b)} 🔴</span>'
+                f'</div>', unsafe_allow_html=True)
+            st.caption(f"팀 통산 평균 승률 — A팀 {_pred['a_rate']:.1f}% vs B팀 {_pred['b_rate']:.1f}% "
+                       f"(예상 승률은 두 팀 평균 승률 비율로 환산한 참고값입니다)")
+            if _pred["h2h"]:
+                _h = _pred["h2h"]
+                st.markdown("##### ⚔️ 직접 맞대결 전적")
+                st.markdown(
+                    _stat_card_row(
+                        _stat_card("A팀 승", _h["a_wins"], value_color="#2563eb",
+                                   bg="#eff6ff", border="#93c5fd", label_color="#3b82f6")
+                        + _stat_card("무", _h["draws"], value_color="#9ca3af",
+                                     bg="#fafafa", border="#d1d5db", label_color="#9ca3af")
+                        + _stat_card("B팀 승", _h["b_wins"], value_color="#dc2626",
+                                     bg="#fef2f2", border="#fca5a5", label_color="#dc2626")
+                        + _stat_card("총 경기", _h["games"], value_color="#7c3aed",
+                                     bg="#fdf4ff", border="#d8b4fe", label_color="#7c3aed")
+                    ), unsafe_allow_html=True)
+            else:
+                st.info("두 팀이 실제로 맞붙은 기록은 아직 없습니다. (예상 승률은 통산 전적 기반 추정)")
 
 # ========================================================================
 # 14-B. 페이지: 개인기록실 (v5.9 신규)
@@ -11424,14 +11445,14 @@ elif page == "🎯 이벤트 팀편성":
         st.session_state["ev_sel_members"] = list(_member_options)
         st.session_state["_ev_opts_hash"]  = _opts_hash
 
-    _ev_b1, _ev_b2, _ev_b3 = st.columns([1, 1, 5])
+    _ev_b1, _ev_b2 = st.columns(2)
     with _ev_b1:
-        if st.button("☑️ 전체 선택", key="ev_sel_all", use_container_width=True):
+        if st.button("✅ 전체선택", key="ev_sel_all", use_container_width=True):
             st.session_state["ev_sel_members"] = list(_member_options)
             st.session_state["_ev_ms_ver"] += 1   # 위젯 강제 재생성
             st.rerun()
     with _ev_b2:
-        if st.button("☐ 전체 해제", key="ev_sel_none", use_container_width=True):
+        if st.button("⬜ 전체해제", key="ev_sel_none", use_container_width=True):
             st.session_state["ev_sel_members"] = []
             st.session_state["_ev_ms_ver"] += 1   # 위젯 강제 재생성
             st.rerun()
