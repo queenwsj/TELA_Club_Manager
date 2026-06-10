@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.3.3
+TELA CLUB Random Match Generator v7.3.5
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -139,34 +139,12 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 SHELF_PATH   = os.path.join(SAVE_DIR, "scoreboard")
 USER_PATH    = os.path.join(SAVE_DIR, "users")
 GUEST_PATH   = os.path.join(SAVE_DIR, "guests")   # 게스트 영구 저장 (회원명부 미반영)
-SESSION_PATH = os.path.join(SAVE_DIR, "sessions") # 세션 토큰 저장 (로그인 유지)
-SESSION_EXPIRE_DAYS = 30   # [v7.2.2] 세션 토큰(자동 로그인) 만료 기간 — 정의 누락으로 인한 로그인 직후 NameError 크래시 해결
-RECORDS_PATH = os.path.join(SAVE_DIR, "records")  # 누적 기록실 (월간/연간)
+SESSION_EXPIRE_DAYS = 30   # 세션 토큰(자동 로그인) 만료 기간
+# [v7.3.5] 세션 토큰 저장은 shelve(SESSION_PATH) → Supabase 'sessions' 테이블로 이전(영속·동시안전).
 EXCLUDE_PATH = os.path.join(SAVE_DIR, "exclude")  # 기록실 제외 선수 목록 (코치 등)
-SCHEDULES_SHEET_NAME = "schedules"                # 점수판·대진표 Supabase 테이블명
-GUESTS_SHEET_NAME  = "guests"   # 게스트 목록 탭
-EXCLUDE_SHEET_NAME = "exclude"  # 기록 제외 선수 탭
-USERS_SHEET_NAME   = "users"    # 계정 탭
-
-GUESTS_COLS  = ["name", "gender", "league", "code"]
-EXCLUDE_COLS = ["player_name"]
-USERS_COLS   = ["user_id", "pw_hash", "role", "name"]
-
-# [v6.3.1] 영구 로그 탭
-ERR_LOG_SHEET    = "error_logs"
-ERR_LOG_COLS     = ["timestamp", "page", "operation", "user", "message", "traceback"]
-SCORE_AUDIT_SHEET = "score_audit"
-SCORE_AUDIT_COLS  = ["timestamp", "date_key", "match_idx", "matchup", "editor", "from", "to"]
-# [v6.8.2] 로그인 이력 별도 탭  /  [v6.9.0] result(성공·실패·차단) 컬럼 추가
-LOGIN_LOG_SHEET   = "login_log"
-LOGIN_LOG_COLS    = ["timestamp", "login_id", "name", "role", "result"]
-# [v6.9.0] 로그인 실패 횟수·잠금 상태 (계정 차단용)
-LOGIN_LOCK_SHEET  = "login_lock"
-LOGIN_LOCK_COLS   = ["login_id", "fail_count", "locked", "updated"]
+# [v7.3.4] 구글시트 시절 테이블명·컬럼 상수(*_SHEET_NAME · *_SHEET · *_COLS · RECORDS_PATH 등)는
+#   Supabase 전환 후 전부 미사용(정의만 존재)이라 삭제. 테이블·컬럼 구조는 각 _supabase_* 함수가 직접 정의함.
 MAX_LOGIN_FAILS   = 5   # 연속 실패 N회 시 계정 잠금
-# [v6.9.0] 메뉴 열람 이력
-VIEW_LOG_SHEET    = "view_log"
-VIEW_LOG_COLS     = ["timestamp", "login_id", "name", "role", "page"]
 
 
 # ── 탭별 워크시트 헬퍼 ───────────────────────────────────────
@@ -433,46 +411,68 @@ def _settings_restore_all():
 
 
 def _session_save(user: dict) -> str:
-    """토큰 생성 후 shelve에 저장, 토큰 반환"""
+    """토큰 생성 후 Supabase sessions 테이블에 저장, 토큰 반환.
+    [v7.3.5] shelve→Supabase 이전. shelve는 컨테이너 재시작 시 초기화되고
+    동시 쓰기에 취약해, 자동 로그인 유지를 Supabase(영속·동시안전)로 옮김.
+    저장 실패해도 로그인 자체는 성공 상태이므로 토큰은 반환한다(자동로그인만 미적용)."""
     from datetime import datetime, timedelta
-    token = _secrets.token_urlsafe(32)
+    token  = _secrets.token_urlsafe(32)
     expire = (datetime.now() + timedelta(days=SESSION_EXPIRE_DAYS)).isoformat()
-    with shelve.open(SESSION_PATH) as db:
-        db[token] = {"user": user, "expire": expire}
+    try:
+        _get_supabase().table("sessions").upsert(
+            {"token": token, "user_json": json.dumps(user, ensure_ascii=False),
+             "expire": expire}
+        ).execute()
+    except Exception:
+        pass
     return token
 
 def _session_load(token: str) -> Optional[dict]:
-    """토큰으로 사용자 정보 복원. 만료/미존재 시 None"""
+    """토큰으로 사용자 정보 복원. 만료/미존재/오류 시 None.
+    [v7.3.5] Supabase sessions 조회. 조회 실패 시 자동로그인만 안 되고 수동 로그인은 정상."""
     if not token:
         return None
     from datetime import datetime
-    with shelve.open(SESSION_PATH) as db:
-        rec = db.get(token)
-    if not rec:
+    try:
+        res = _get_supabase().table("sessions").select(
+            "user_json, expire").eq("token", token).limit(1).execute()
+        rows = res.data or []
+    except Exception:
         return None
+    if not rows:
+        return None
+    rec = rows[0]
     try:
         if datetime.fromisoformat(rec["expire"]) < datetime.now():
+            _session_delete(token)   # 만료 토큰 정리
             return None
     except Exception:
         return None
-    return rec.get("user")
+    try:
+        return json.loads(rec["user_json"])
+    except Exception:
+        return None
 
 def _session_delete(token: str):
-    with shelve.open(SESSION_PATH) as db:
-        if token in db:
-            del db[token]
+    """[v7.3.5] 로그아웃·재로그인 시 토큰 삭제 (best-effort)."""
+    if not token:
+        return
+    try:
+        _get_supabase().table("sessions").delete().eq("token", token).execute()
+    except Exception:
+        pass
 
 def _session_cleanup():
-    """만료 토큰 정리 (10% 확률로 실행)"""
+    """만료 토큰 정리 (10% 확률로 실행). [v7.3.5] Supabase에서 expire 지난 행 삭제 (best-effort)."""
     import random as _r
     if _r.random() > 0.1:
         return
     from datetime import datetime
-    with shelve.open(SESSION_PATH) as db:
-        expired = [k for k, v in list(db.items())
-                   if datetime.fromisoformat(v.get("expire","2000-01-01")) < datetime.now()]
-        for k in expired:
-            del db[k]
+    try:
+        now_iso = datetime.now().isoformat()
+        _get_supabase().table("sessions").delete().lt("expire", now_iso).execute()
+    except Exception:
+        pass
 
 def guest_load() -> list:
     """게스트 목록 로드. Supabase 우선, 실패 시 로컬 폴백."""
@@ -656,7 +656,7 @@ def user_set_role(user_id: str, role: str) -> bool:
 
 
 # ── [v6.1] 회원(명부 cafe_id) 로그인 · 기본 비밀번호 · 강제 변경 ──────────
-DEFAULT_MEMBER_PW = "tela1234!"   # 회원 최초 비밀번호 (로그인 후 변경 필수)
+DEFAULT_MEMBER_PW = st.secrets.get("DEFAULT_MEMBER_PW", "tela1234!")   # [v7.3.4] Secrets 우선, 미설정 시 tela1234! (로그인 후 변경 필수)
 
 
 def _roster_cafe_map() -> dict:
@@ -1348,8 +1348,9 @@ def _restore_from_supabase():
 # 04-A. 리그 기본값 · 색상 · 접두사
 # ========================================================================
 # 구조: key | value (JSON 문자열)
-# [제거] ADMIN_PASSWORD: 어디서도 사용되지 않음.
-# 관리자 비밀번호는 RS_ADMIN_PASSWORD(섹션 R)로 별도 관리.
+# [v7.3.4 주석 정정] Secrets 키 "ADMIN_PASSWORD"는 사용 중이다:
+#   ① 최초 관리자 계정 생성(ensure_admin)  ② 회원명부 수정 인증용 RS_ADMIN_PASSWORD(섹션 R).
+#   기본값 없음 — 미설정 시 관련 기능은 건너뛴다(보안). (별도의 Python 상수 ADMIN_PASSWORD는 없음)
 
 # 리그 이름 풀 (최대 5개)
 LEAGUE_NAMES = ["A리그", "B리그", "C리그", "D리그", "E리그"]
@@ -2519,11 +2520,8 @@ def deserialize_schedule(schedule):
 # ============================================================
 # Supabase "records" 워크시트 구조:
 # date_key | year_month | year | player_key | display_name | league | wins | losses | pf | pa | draws
-# ※ draws는 기존 시트 컬럼(wins/losses/pf/pa) 뒤에 append로 추가됨
-
-RECORDS_SHEET_NAME = "records"
-RECORDS_COLUMNS = ["date_key","year_month","year","player_key","display_name","league",
-                   "wins","losses","pf","pa","draws"]
+# ※ draws는 wins/losses/pf/pa 뒤에 append로 추가됨
+# [v7.3.4] RECORDS_SHEET_NAME·RECORDS_COLUMNS 상수는 미사용이라 삭제 (records 테이블 구조는 records_commit가 직접 정의).
 
 
 def _records_sheet_load_all() -> list:
@@ -3657,9 +3655,15 @@ def personal_monthly_trend(player_name: str, year: str) -> list:
 # ── [기능3] 개인 기록 카드 이미지(PNG) 생성 ──────────────────
 
 def _find_korean_font(size: int, bold: bool = False):
-    """한글 렌더 가능한 폰트를 여러 경로에서 탐색. 못 찾으면 None."""
+    """한글 렌더 가능한 폰트를 여러 경로에서 탐색. 못 찾으면 None.
+    [v7.3.5] 저장소에 동봉한 폰트(app.py와 같은 폴더)를 최우선 탐색 → Streamlit Cloud의
+    시스템 폰트 경로가 바뀌어도 대진표/카드 PNG가 깨지지 않음. 동봉 폰트가 없으면 기존
+    시스템 경로로 폴백하므로 회귀 없음. (NanumGothicBold.ttf 또는 NanumGothic.ttf를 함께 업로드 권장)"""
     from PIL import ImageFont
-    candidates = [
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _bundled = (["NanumGothicBold.ttf", "NanumGothic.ttf"] if bold
+                else ["NanumGothic.ttf", "NanumGothicBold.ttf"])
+    candidates = [os.path.join(_here, _f) for _f in _bundled] + [
         "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if bold
             else "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold
@@ -4177,7 +4181,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.3.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.3.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -5322,7 +5326,7 @@ def dialog_delete(target):
             soft_delete_row(target["id"], target["name"])
         st.session_state.open_dialog   = None
         st.session_state.edit_target   = None
-        st.cache_data.clear()
+        _clear_member_cache()
         st.rerun()
     if cn.button("취소", use_container_width=True):
         st.session_state.open_dialog   = None
@@ -5489,7 +5493,7 @@ def dialog_confirm_delete(target):
                 hard_delete_row(target["id"], target["name"])
             st.session_state.open_dialog = None
             st.session_state.edit_target = None
-            st.cache_data.clear()
+            _clear_member_cache()
             st.rerun()
     with cn:
         if st.button("✕ 취소", use_container_width=True, key="confirm_del_no"):
@@ -5972,7 +5976,7 @@ def dialog_form(df, existing=None):
             _cleanup_dormant_session()
             st.session_state.open_dialog    = None
             st.session_state.edit_target    = None
-            st.cache_data.clear()
+            _clear_member_cache()
             st.rerun()
 
 # ─────────────────────────────────────────────────────────
@@ -6473,7 +6477,7 @@ def render_roster_page():
                     del_dt = datetime.strptime(str(trow["deleted_at"])[:19], "%Y-%m-%d %H:%M:%S")
                     if (today_dt - del_dt).days >= TRASH_DAYS:
                         hard_delete_row(trow["id"], trow["name"])
-                        st.cache_data.clear()
+                        _clear_member_cache()
                 except Exception:
                     pass
             # 재로드 후 표시
@@ -6502,7 +6506,7 @@ def render_roster_page():
                     rcol1, rcol2 = st.columns(2)
                     if rcol1.button("↩️ 복구", key=f"restore_{trow['id']}", use_container_width=True):
                         restore_row(trow["id"], trow["name"])
-                        st.cache_data.clear()
+                        _clear_member_cache()
                         st.rerun()
                     if rcol2.button("💀 영구삭제", key=f"hardel_{trow['id']}", use_container_width=True):
                         # [v7.1.0] 영구삭제 확인 다이얼로그 경유
@@ -6620,7 +6624,7 @@ def render_roster_page():
                         if k in st.session_state:
                             del st.session_state[k]
                     st.session_state.bulk_selected = set()
-                    st.cache_data.clear()
+                    _clear_member_cache()
                     st.rerun()
                 elif not st.session_state.admin_authed:
                     st.warning("관리자 인증이 필요합니다.")
@@ -6647,7 +6651,7 @@ def render_roster_page():
                         if k in st.session_state:
                             del st.session_state[k]
                     st.session_state.bulk_selected = set()
-                    st.cache_data.clear()
+                    _clear_member_cache()
                     st.rerun()
                 elif not st.session_state.admin_authed:
                     st.warning("관리자 인증이 필요합니다.")
@@ -6672,7 +6676,7 @@ def render_roster_page():
                         if k in st.session_state:
                             del st.session_state[k]
                     st.session_state.bulk_selected = set()
-                    st.cache_data.clear()
+                    _clear_member_cache()
                     st.rerun()
                 elif not st.session_state.admin_authed:
                     st.warning("관리자 인증이 필요합니다.")
@@ -9524,7 +9528,7 @@ function showMsg() {{
                             _ex_scores2 = _existing2.get("scores", {})
                             try:
                                 records_commit(rp_key_run, _adj2_matches, _ex_scores2)
-                                st.cache_data.clear()
+                                _clear_schedule_cache()
                             except Exception:
                                 pass
 
@@ -9571,7 +9575,7 @@ function showMsg() {{
 
             _ref_col, _ = st.columns([1, 4])
             if _ref_col.button("🔄 최신 데이터 로드", key="lg_refresh_btn"):
-                st.cache_data.clear()
+                _clear_member_cache()
                 st.rerun()
 
             try:
@@ -9893,7 +9897,7 @@ elif page == "🏆 통합기록실":
                                     _ok += 1
                             except Exception:
                                 _fail += 1
-                    st.cache_data.clear()
+                    _clear_schedule_cache()
                     if _fail:
                         st.warning(f"✅ {_ok}개 완료, ⚠️ {_fail}개 오류")
                     else:
@@ -9910,7 +9914,7 @@ elif page == "🏆 통합기록실":
                          help="records 시트를 초기화하고 헤더를 새로 작성한 뒤 전체 재집계합니다."):
                 with st.spinner("기록실 완전 재구축 중… (잠시 기다려주세요)"):
                     _rb_ok, _rb_fail, _rb_err = records_full_rebuild()
-                st.cache_data.clear()
+                _clear_schedule_cache()
                 if _rb_err:
                     st.error(f"❌ 재구축 실패: {_rb_err}")
                 elif _rb_fail:
@@ -9963,7 +9967,7 @@ elif page == "🏆 통합기록실":
                                 with _shv.open(SHELF_PATH) as _db:
                                     _db[_dk] = _val
                                 _restored += 1
-                        st.cache_data.clear()
+                        _clear_schedule_cache()
                         st.success(f"✅ {_restored}개 경기 데이터를 Supabase에서 복원했습니다.")
                     except Exception as _e:
                         st.error(f"복원 중 오류: {_e}")
@@ -10034,7 +10038,7 @@ elif page == "🏆 통합기록실":
             _ft = "yearly"; _fv = _sel_val; _lbl = f"{_sel_val} 연간"
     with _c3:
         if st.button("🔄 새로고침", key="rec_refresh", use_container_width=True):
-            st.cache_data.clear()
+            _clear_schedule_cache()
             st.rerun()
 
     with st.spinner("기록 불러오는 중…"):
@@ -10502,7 +10506,7 @@ elif page == "👤 개인기록실":
         )
     with _pr_col2:
         if st.button("🔄 새로고침", key="pr_refresh", use_container_width=True):
-            st.cache_data.clear()
+            _clear_schedule_cache()
             st.rerun()
 
     # 자동완성 힌트: 입력 중인 이름과 매칭되는 선수 목록 표시
@@ -11168,7 +11172,7 @@ elif page == "🗂️ 대진표보관함":
                                     # [v6.5] 대진표 삭제 감사 로그
                                     log_audit("대진표삭제", "", _sel_key,
                                               f"보관함에서 대진표 삭제 (키:{_sel_key})")
-                                    st.cache_data.clear()
+                                    _clear_schedule_cache()
                                     st.success(f"✅ '{_arch_label(_sel_key)}' 삭제 완료.")
                                     st.rerun()
 

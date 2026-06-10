@@ -5,6 +5,25 @@
 > - 카테고리: `### ✨ 신규` · `### 🐛 버그 수정` · `### 🔧 개선·변경` · `### ♻️ 리팩토링` · `### 📑 구조`
 > - 최신 버전이 파일 상단에 위치
 
+## v7.3.5 (2026-06-09) — 세션 저장소 Supabase 이전 · 한글 폰트 저장소 동봉 지원
+
+### 🔧 개선·변경
+- **세션(자동 로그인) 저장소 shelve → Supabase 이전:** 로그인 유지용 세션 토큰을 로컬 `shelve`(SESSION_PATH) 대신 Supabase `sessions` 테이블에 저장하도록 변경. 기존 shelve는 Streamlit Cloud 컨테이너 재시작 시 초기화돼 자동 로그인이 풀리고, 동시 쓰기에 취약(스레드 비안전)했던 문제를 해소. `_session_save`/`_session_load`/`_session_delete`/`_session_cleanup`을 Supabase 기준으로 재작성했고, 모든 함수를 방어적으로 처리(Supabase 일시 장애 시에도 수동 로그인은 정상 동작, 자동 로그인만 일시 미적용 — 앱이 크래시하지 않음). `sessions` 테이블은 RLS 활성(서비스 키만 접근).
+- **한글 폰트 경로 견고화:** 대진표·개인 카드 PNG 생성용 폰트(`_find_korean_font`)가 시스템 절대경로(`/usr/share/fonts/...`)만 보던 것을, **저장소에 동봉한 폰트(app.py와 같은 폴더의 `NanumGothicBold.ttf`/`NanumGothic.ttf`)를 최우선 탐색**하도록 변경. Streamlit Cloud의 시스템 폰트 경로가 바뀌어도 PNG가 깨지지 않음. 동봉 폰트가 없으면 기존 시스템 경로로 폴백하므로 회귀 없음.
+
+### 📑 구조
+- 미사용이 된 `SESSION_PATH` 상수 제거(세션 저장이 Supabase로 이전됨).
+
+---
+
+## v7.3.4 (2026-06-09)
+
+### 🔧 개선·변경
+- ** 캐시 클리어 타겟화 — 전역 st.cache_data.clear() 16곳을 작업 성격에 맞게 교체했습니다. 회원 작업 9곳 → _clear_member_cache(), 기록·대진 작업 7곳 → _clear_schedule_cache(). 이제 회원 한 명 수정해도 기록실·개인기록·대진표 캐시가 같이 날아가지 않습니다. save_row() 내부 클리어와 호출부 전역 clear가 겹치던 문제(리뷰 #9)도 함께 해소됐습니다.
+- ** DEFAULT_MEMBER_PW Secrets화 — st.secrets.get("DEFAULT_MEMBER_PW", "tela1234!")로 변경. Secrets에 값을 넣으면 그걸 쓰고, 안 넣으면 기존과 동일 동작이라 부작용 없이 평문 노출만 줄였습니다.
+- ** dead 상수 22개 제거 + 주석 정정 — 미사용 확인된 *_SHEET_NAME·*_SHEET·*_COLS·RECORDS_PATH·RECORDS_COLUMNS를 삭제(사용 중인 EXCLUDE_PATH·MAX_LOGIN_FAILS는 보존). 모순된 ADMIN_PASSWORD 주석도 정정했습니다.
+
+---
 
 ## v7.3.3 (2026-06-09) — 회원 정보에서 리그 직접 등록·수정 기능 추가
 
