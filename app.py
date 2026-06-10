@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.4.0
+TELA CLUB Random Match Generator v7.4.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -850,6 +850,38 @@ def _mobile_collapse_now():
         </script>
     """
     _components.html("<!-- collapse-nonce:" + str(_nonce) + " -->" + _js, height=0)
+
+
+def _scroll_to_top_now():
+    """[v7.4.1] 페이지 전환 시 화면을 최상단으로 스크롤한다.
+    스크롤 위치를 유지한 채 다른 메뉴로 이동하면 새 페이지가 중간/하단부터 보이던
+    문제 해결. 메인 스크롤 컨테이너(버전별 셀렉터 후보)와 window를 모두 0으로 이동.
+    매 호출 고유 nonce로 컴포넌트 재실행을 보장한다."""
+    import streamlit.components.v1 as _components
+    _n = st.session_state.get("_scroll_nonce", 0) + 1
+    st.session_state["_scroll_nonce"] = _n
+    _js = """
+        <script>
+        (function(){
+          try {
+            var doc = window.parent.document;
+            var sels = ['section.main','[data-testid="stMain"]',
+                        '[data-testid="stAppViewContainer"]','.main'];
+            function top(){
+              for (var i=0;i<sels.length;i++){
+                var el = doc.querySelector(sels[i]);
+                if (el) { try { el.scrollTo(0,0); } catch(e){ el.scrollTop=0; } }
+              }
+              try { window.parent.scrollTo(0,0); } catch(e){}
+            }
+            top();
+            setTimeout(top, 60);
+            setTimeout(top, 200);
+          } catch(e) {}
+        })();
+        </script>
+    """
+    _components.html("<!-- scroll-nonce:" + str(_n) + " -->" + _js, height=0)
 
 
 # ========================================================================
@@ -4119,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.4.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.4.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4367,6 +4399,29 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stHorizontalBlock"]:has([class*="st-key-refresh_btn_top"]) button{
     padding-left:6px !important; padding-right:6px !important;
     font-size:13px !important; white-space:nowrap !important;
+}
+/* [v7.4.1 수정5] 이벤트 참가회원 전체선택/해제 한 줄 유지(모바일) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-ev_sel_all"]){
+    flex-wrap:nowrap !important; gap:6px !important; align-items:center !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-ev_sel_all"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-ev_sel_all"]) button{
+    white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
+}
+/* [v7.4.1 수정3] 리그설정: 전체선택/해제 행·회원별 행 한 줄 유지(모바일) */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-lgctrl_sa_"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]){
+    flex-wrap:nowrap !important; gap:6px !important; align-items:center !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-lgctrl_sa_"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-lgctrl_sa_"]) button,
+[data-testid="stHorizontalBlock"]:has([class*="st-key-lgsave_"]) button{
+    white-space:nowrap !important; padding-left:8px !important; padding-right:8px !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -7298,6 +7353,13 @@ with st.sidebar.expander("🔍 회원 빠른검색", expanded=False):
 if st.session_state.pop("_collapse_sidebar_mobile", False):
     _mobile_collapse_now()
 
+# [v7.4.1 수정1] 페이지가 실제로 바뀌었을 때만 화면 최상단으로 스크롤.
+#   (스크롤 내린 상태로 다른 메뉴 진입 시 하단부터 보이던 문제 해결.
+#    페이지 내 일반 rerun에는 스크롤하지 않아 점수 저장 등 조작 위치를 흩뜨리지 않음.)
+if st.session_state.get("_last_page_for_scroll") != page:
+    st.session_state["_last_page_for_scroll"] = page
+    _scroll_to_top_now()
+
 # [v6.9.0] 메뉴 열람 이력 기록 (페이지가 실제로 바뀐 경우에만)
 log_page_view(_u, page)
 
@@ -9551,13 +9613,6 @@ function showMsg() {{
         with st.expander("🏷️ 회원 리그 설정 (Supabase 직접 연동)", expanded=False):
             st.caption("체크박스로 회원을 선택하고 이동 대상 리그를 선택 후 일괄 저장하세요.")
 
-            # [v5.9.10] 회원명부처럼 모바일 보기 토글 (PC는 표, 모바일은 세로 카드)
-            _lg_mobile = st.toggle(
-                "📱 모바일 보기 (휴대폰 권장)",
-                key="lg_mobile_cards",
-                help="켜면 한 회원을 세로 카드(이름 → 이동 대상 → 저장)로 표시합니다.",
-            )
-
             _ref_col, _ = st.columns([1, 4])
             if _ref_col.button("🔄 최신 데이터 로드", key="lg_refresh_btn"):
                 _clear_member_cache()
@@ -9602,28 +9657,18 @@ function showMsg() {{
                         _other_lgs = [lg for lg in active_leagues if lg != _lg_val] + (["미배정"] if _lg_val != "" else [])
                         _target_options = _other_lgs if _other_lgs else active_leagues
 
-                        _ctrl1, _ctrl2, _ctrl3, _ctrl4 = st.columns([1, 1, 2, 1])
-                        _sa_key = f"selall_{_tab_label}"
-                        _sd_key = f"seldeall_{_tab_label}"
-
-                        # 전체선택/해제
-                        if _ctrl1.button("✅ 전체선택", key=f"sa_{_tab_label}"):
+                        # [v7.4.1 수정3] 전체선택/해제는 한 줄(2칸), 이동대상+일괄저장은 그 아래 한 줄(2칸)
+                        _cs1, _cs2 = st.columns(2)
+                        if _cs1.button("✅ 전체선택", key=f"lgctrl_sa_{_tab_label}",
+                                       use_container_width=True):
                             for _, _r in _tab_df.iterrows():
                                 st.session_state[f"lgchk_{_r['id']}"] = True
                             st.rerun()
-                        if _ctrl2.button("⬜ 전체해제", key=f"sd_{_tab_label}"):
+                        if _cs2.button("⬜ 전체해제", key=f"lgctrl_sd_{_tab_label}",
+                                       use_container_width=True):
                             for _, _r in _tab_df.iterrows():
                                 st.session_state[f"lgchk_{_r['id']}"] = False
                             st.rerun()
-
-                        # 이동 대상 리그 selectbox (상시)
-                        _target_sel = _ctrl3.selectbox(
-                            "이동 대상 리그",
-                            _target_options,
-                            key=f"bulk_target_{_tab_label}",
-                            label_visibility="collapsed"
-                        )
-                        _target_val = "" if _target_sel == "미배정" else _target_sel
 
                         # 선택된 회원 수
                         _checked_ids = [
@@ -9635,11 +9680,21 @@ function showMsg() {{
                             if st.session_state.get(f"lgchk_{_r['id']}", False)
                         ]
 
+                        _ct1, _ct2 = st.columns([2, 1.2], vertical_alignment="center")
+                        _target_sel = _ct1.selectbox(
+                            "이동 대상 리그",
+                            _target_options,
+                            key=f"bulk_target_{_tab_label}",
+                            label_visibility="collapsed"
+                        )
+                        _target_val = "" if _target_sel == "미배정" else _target_sel
+
                         # 일괄 저장 버튼 (선택 수 표시)
-                        _btn_label = f"💾 저장 ({len(_checked_ids)}명 선택)" if _checked_ids else "💾 저장 (선택 없음)"
-                        if _ctrl4.button(_btn_label, key=f"bulk_save_{_tab_label}",
-                                         type="primary" if _checked_ids else "secondary",
-                                         disabled=len(_checked_ids) == 0):
+                        _btn_label = f"💾 {len(_checked_ids)}명 저장" if _checked_ids else "💾 일괄저장"
+                        if _ct2.button(_btn_label, key=f"bulk_save_{_tab_label}",
+                                       type="primary" if _checked_ids else "secondary",
+                                       disabled=len(_checked_ids) == 0,
+                                       use_container_width=True):
                             _ok_cnt = 0
                             with st.spinner(f"{len(_checked_ids)}명 저장 중…"):
                                 for _mid in _checked_ids:
@@ -9654,18 +9709,16 @@ function showMsg() {{
                         st.markdown("<div style='border-bottom:1px solid #e2e8f0;margin:4px 0 8px'></div>",
                                     unsafe_allow_html=True)
 
-                        # ── 회원 목록 ─────────────────────────────
-                        # PC(표) 헤더: 모바일 보기일 땐 숨김
-                        if not _lg_mobile:
-                            st.markdown(
-                                "<div style='display:flex;gap:0.3rem;align-items:center;"
-                                "font-size:11px;font-weight:700;color:#6b7280;"
-                                "border-bottom:2px solid #e2e8f0;padding:4px 0;margin-top:4px'>"
-                                "<span style='flex:0 0 9%'>☑</span>"
-                                "<span style='flex:1 1 0'>이름 (성별)</span>"
-                                "<span style='flex:1 1 0'>이동 대상</span>"
-                                "<span style='flex:0 0 18%;text-align:center'>저장</span>"
-                                "</div>", unsafe_allow_html=True)
+                        # ── 회원 목록 (모바일·PC 공통: 한 줄) ─────────
+                        st.markdown(
+                            "<div style='display:flex;gap:0.3rem;align-items:center;"
+                            "font-size:11px;font-weight:700;color:#6b7280;"
+                            "border-bottom:2px solid #e2e8f0;padding:4px 0;margin-top:4px'>"
+                            "<span style='flex:0 0 9%'>☑</span>"
+                            "<span style='flex:1 1 0'>이름 (성별)</span>"
+                            "<span style='flex:1 1 0'>이동 대상</span>"
+                            "<span style='flex:0 0 18%;text-align:center'>저장</span>"
+                            "</div>", unsafe_allow_html=True)
 
                         for _, _row in _tab_df.iterrows():
                             _g   = "남" if str(_row.get("gender","")).strip() in ("남","M") else "여"
@@ -9695,50 +9748,26 @@ function showMsg() {{
                             )
                             _ind_opts = _target_options
 
-                            if _lg_mobile:
-                                # ── [v5.9.10] 모바일 세로 카드 (가로 컬럼 미사용) ──
-                                st.markdown(
-                                    f"<div style='border:1px solid #e5e7eb;border-radius:12px;"
-                                    f"padding:10px 12px 4px;margin:8px 0 0;background:#fff;"
-                                    f"box-shadow:0 1px 6px rgba(15,23,42,0.05)'>"
-                                    f"<span style='font-size:14.5px;font-weight:800;color:#0f172a'>{_row['name']}</span>"
-                                    f"<span style='color:#6b7280;font-size:12px'> ({_g})</span>"
-                                    f"{_status_badge}</div>",
-                                    unsafe_allow_html=True)
-                                st.checkbox("일괄 선택에 포함", key=_chk_key)
-                                _ind_sel = st.selectbox(
-                                    "이동 대상", _ind_opts, key=f"lgind_{_rid}")
-                                _ind_val = "" if _ind_sel == "미배정" else _ind_sel
-                                if st.button(f"💾 {_row['name']} 저장", key=f"lgsave_{_rid}",
+                            # [v7.4.1 수정3] 모바일·PC 공통 한 줄: 체크 · 이름 · 이동대상 · 저장
+                            #   (세로 카드/표 분기 제거 → 토글 무관하게 항상 한 줄, 수직 중앙 정렬로 PC 정렬 보정)
+                            _rc = st.columns([0.55, 2.5, 2.2, 1.2], vertical_alignment="center")
+                            _rc[0].checkbox("", key=_chk_key, label_visibility="collapsed")
+                            _rc[1].markdown(
+                                f"<div style='font-size:12.5px;font-weight:600;color:#1a2e4a;"
+                                f"line-height:1.2'>{_row['name']} "
+                                f"<span style='color:#6b7280;font-weight:400'>({_g})</span>"
+                                f"{_status_badge}</div>", unsafe_allow_html=True)
+                            _ind_sel = _rc[2].selectbox(
+                                "이동 대상", _ind_opts, key=f"lgind_{_rid}",
+                                label_visibility="collapsed")
+                            _ind_val = "" if _ind_sel == "미배정" else _ind_sel
+                            if _rc[3].button("저장", key=f"lgsave_{_rid}",
                                              use_container_width=True):
-                                    with st.spinner("저장 중…"):
-                                        _ok = save_league_to_sheet(_rid, _ind_val)
-                                    if _ok:
-                                        st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
-                                        st.rerun()
-                                st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-                            else:
-                                # ── PC 표 형태 (가로 4컬럼) ──
-                                _name_html = (
-                                    f"<div style='font-size:12.5px;font-weight:600;color:#1a2e4a;"
-                                    f"line-height:1.25;padding-top:6px'>"
-                                    f"{_row['name']} <span style='color:#6b7280;font-weight:400'>({_g})</span>"
-                                    f"{_status_badge}</div>"
-                                )
-                                _rc = st.columns([0.55, 2.6, 2.1, 1.1])
-                                _rc[0].checkbox("", key=_chk_key, label_visibility="collapsed")
-                                _rc[1].markdown(_name_html, unsafe_allow_html=True)
-                                _ind_sel = _rc[2].selectbox(
-                                    "개별리그", _ind_opts, key=f"lgind_{_rid}",
-                                    label_visibility="collapsed")
-                                _ind_val = "" if _ind_sel == "미배정" else _ind_sel
-                                if _rc[3].button("저장", key=f"lgsave_{_rid}",
-                                                 use_container_width=True):
-                                    with st.spinner("저장 중…"):
-                                        _ok = save_league_to_sheet(_rid, _ind_val)
-                                    if _ok:
-                                        st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
-                                        st.rerun()
+                                with st.spinner("저장 중…"):
+                                    _ok = save_league_to_sheet(_rid, _ind_val)
+                                if _ok:
+                                    st.success(f"✅ '{_row['name']}' → {_ind_sel} 저장")
+                                    st.rerun()
             else:
                 st.info("Supabase에 회원 데이터가 없습니다.")
 
