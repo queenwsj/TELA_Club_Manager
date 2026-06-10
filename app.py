@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.5.1
+TELA CLUB Random Match Generator v7.5.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4151,7 +4151,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.5.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.5.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4454,6 +4454,17 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stHorizontalBlock"]:has([class*="st-key-mu_a1"]) [data-testid="stColumn"],
 [data-testid="stHorizontalBlock"]:has([class*="st-key-mu_b1"]) [data-testid="stColumn"]{
     min-width:0 !important;
+}
+/* [v7.5.2 수정2] 회원관리 검색 행(검색창·검색·백업·등록) 모바일 한 줄 유지 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-roster_search_input"]){
+    flex-wrap:nowrap !important; gap:5px !important; align-items:center !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-roster_search_input"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-roster_search_input"]) button{
+    white-space:nowrap !important; padding-left:6px !important; padding-right:6px !important;
+    font-size:0.8rem !important;
 }
 /* [v7.4.2 수정2] 모바일에서 페이지 제목이 한 줄에 들어오도록 글자 크기 상한·일관화 */
 @media (max-width: 640px){
@@ -6067,6 +6078,12 @@ def render_roster_page():
     _is_admin   = is_admin()
     _app_user   = get_app_user()
 
+    # [v7.5.2 수정1] 운영진(관리자·부관리자)은 로그인으로 이미 신원 확인됨 →
+    #   회원 수정/삭제 시 관리자 비밀번호 재입력(2차 인증)을 생략한다.
+    #   (회원 관리 화면 자체가 is_sub_admin()으로 이미 운영진만 진입 가능)
+    if is_sub_admin():
+        st.session_state["admin_authed"] = True
+
     st.markdown("""
     <div class="app-header">
       <span style="font-size:36px">👥</span>
@@ -6260,34 +6277,6 @@ def render_roster_page():
                 else:
                     ucols[3].caption("주계정")
 
-            st.markdown("---")
-            st.markdown("**신규 계정 추가**")
-            nc1, nc2, nc3, nc4, nc5 = st.columns([2, 2, 2, 1, 1])
-            new_uid   = nc1.text_input("아이디", key="new_uid", label_visibility="collapsed", placeholder="아이디")
-            new_upw   = nc2.text_input("비밀번호", key="new_upw", label_visibility="collapsed", placeholder="비밀번호")
-            new_uname = nc3.text_input("이름", key="new_uname", label_visibility="collapsed", placeholder="이름")
-            new_urole = nc4.selectbox("권한", ["부관리자", "관리자"], key="new_urole", label_visibility="collapsed")
-            if nc5.button("➕ 추가", key="add_user_btn"):
-                import re as _re_uid
-                _uid_val = new_uid.strip()
-                if _uid_val and new_upw.strip() and new_uname.strip():
-                    # 수정3: ID는 영문+숫자만 허용
-                    if not _re_uid.match(r'^[A-Za-z0-9]+$', _uid_val):
-                        st.error("아이디는 영문과 숫자만 사용할 수 있습니다. (한글·특수문자 불가)")
-                    else:
-                        if new_urole == "관리자":
-                            role_val = "admin"
-                        else:
-                            role_val = "sub_admin"
-                        ok = user_add(_uid_val, new_upw.strip(), role_val, new_uname.strip())
-                        if ok:
-                            st.success(f"계정 '{_uid_val}' 추가 완료")
-                            st.rerun()
-                        else:
-                            st.error(f"이미 존재하는 아이디입니다: {_uid_val}")
-                else:
-                    st.warning("아이디, 비밀번호, 이름을 모두 입력해주세요.")
-
     # ─────────────────────────────────────────────────────────
     #  데이터 로드
     # ─────────────────────────────────────────────────────────
@@ -6366,7 +6355,12 @@ def render_roster_page():
         dialog_delete(et)
     
     elif od in ("pw_edit", "pw_delete") and et:
-        dialog_pw(et)
+        if st.session_state.admin_authed:
+            # [v7.5.2 수정1] 이미 운영진 인증됨 → 비번 생략하고 바로 진행
+            st.session_state.open_dialog = "edit" if od == "pw_edit" else "delete_confirm"
+            st.rerun()
+        else:
+            dialog_pw(et)
     
     # ─────────────────────────────────────────────────────────
     #  통계 카드
@@ -6410,7 +6404,7 @@ def render_roster_page():
     # ─────────────────────────────────────────────────────────
     #  툴바
     # ─────────────────────────────────────────────────────────
-    c_s, c_sb, c_dl, c_add = st.columns([4, 0.8, 1.0, 1.2])
+    c_s, c_sb, c_dl, c_add = st.columns([3, 1, 1, 1.3])
     with c_s:
         def _on_search_enter():
             # 엔터 입력 시 호출 — 위젯 값으로 검색 실행
@@ -6422,7 +6416,7 @@ def render_roster_page():
             on_change=_on_search_enter)
         st.session_state.search_q = search_q
     with c_sb:
-        if st.button("🔍 검색", use_container_width=True):
+        if st.button("🔍 검색", key="roster_search_btn", use_container_width=True):
             st.session_state.search_active = search_q.strip()
             st.rerun()
     with c_dl:
@@ -6434,17 +6428,18 @@ def render_roster_page():
             data=csv_data,
             file_name=f"tela_club_backup_{today_str}.csv",
             mime="text/csv",
+            key="roster_backup_btn",
             use_container_width=True,
             help="현재 명부 전체를 CSV로 다운로드 (엑셀 호환)"
         )
     with c_add:
         if _is_admin:
-            if st.button("＋ 회원 등록", type="primary", use_container_width=True):
+            if st.button("＋ 등록", key="roster_add_btn", type="primary", use_container_width=True):
                 st.session_state.open_dialog  = "add"
                 st.session_state.edit_target  = None
                 st.rerun()
         else:
-            st.caption("등록: 관리자만 가능")
+            st.caption("등록: 관리자만")
 
     if not search_q.strip():
         st.session_state.search_active = ""
@@ -6454,30 +6449,25 @@ def render_roster_page():
     if st.session_state.filter_cat not in FILTER_OPTIONS:
         st.session_state.filter_cat = "전체"
 
-    # 카테고리 + 리그 필터를 한 줄에
-    f_col1, f_sep, f_col2 = st.columns([3, 0.1, 2])
-    with f_col1:
-        filter_cat = st.radio("필터", FILTER_OPTIONS,
-            index=FILTER_OPTIONS.index(st.session_state.filter_cat),
-            horizontal=True, label_visibility="collapsed",
-            key="filter_radio")
-    with f_sep:
-        st.markdown("<div style='border-left:2px solid #e2e8f0;height:36px;margin-top:4px'></div>",
-                    unsafe_allow_html=True)
-    with f_col2:
-        LEAGUE_FILTER_OPTIONS = ["전체 리그"] + LEAGUE_NAMES[:3]
-        if "filter_league" not in st.session_state:
-            st.session_state["filter_league"] = "전체 리그"
-        filter_league = st.radio("리그 필터", LEAGUE_FILTER_OPTIONS,
-            index=LEAGUE_FILTER_OPTIONS.index(
-                st.session_state["filter_league"]
-                if st.session_state["filter_league"] in LEAGUE_FILTER_OPTIONS
-                else "전체 리그"
-            ),
-            horizontal=True, label_visibility="collapsed",
-            key="filter_league_radio"
-        )
-        st.session_state["filter_league"] = filter_league
+    # [v7.5.2 수정2] 구분·리그·등급 필터를 각 항목별 한 줄로(총 3줄)
+    filter_cat = st.radio("필터", FILTER_OPTIONS,
+        index=FILTER_OPTIONS.index(st.session_state.filter_cat),
+        horizontal=True, label_visibility="collapsed",
+        key="filter_radio")
+
+    LEAGUE_FILTER_OPTIONS = ["전체 리그"] + LEAGUE_NAMES[:3]
+    if "filter_league" not in st.session_state:
+        st.session_state["filter_league"] = "전체 리그"
+    filter_league = st.radio("리그 필터", LEAGUE_FILTER_OPTIONS,
+        index=LEAGUE_FILTER_OPTIONS.index(
+            st.session_state["filter_league"]
+            if st.session_state["filter_league"] in LEAGUE_FILTER_OPTIONS
+            else "전체 리그"
+        ),
+        horizontal=True, label_visibility="collapsed",
+        key="filter_league_radio"
+    )
+    st.session_state["filter_league"] = filter_league
 
     # ── 등급 필터 (v6.2.1) ──
     GRADE_FILTER_OPTIONS = ["전체 등급", "1", "2", "3", "4", "5"]
@@ -7399,6 +7389,10 @@ if st.session_state.pop("_collapse_sidebar_mobile", False):
 if st.session_state.get("_last_page_for_scroll") != page:
     st.session_state["_last_page_for_scroll"] = page
     _scroll_to_top_now()
+    # [v7.5.2 수정2] 페이지 전환 시 회원 검색어 초기화 (위젯 생성 전이라 안전)
+    st.session_state["search_q"] = ""
+    st.session_state["search_active"] = ""
+    st.session_state.pop("roster_search_input", None)
 
 # [v6.9.0] 메뉴 열람 이력 기록 (페이지가 실제로 바뀐 경우에만)
 log_page_view(_u, page)
