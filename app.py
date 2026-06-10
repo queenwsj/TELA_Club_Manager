@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.3.7
+TELA CLUB Random Match Generator v7.4.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -96,9 +96,18 @@ def _get_supabase():
         st.secrets["supabase"]["service_role"],
     )
 
-def _supabase_prune_log(table: str, days: int = 30):
-    """[v7] 로그 테이블에서 N일 이전 행 삭제 (best-effort, 비재귀)."""
+_LOG_PRUNE_LAST: dict = {}   # [v7.4.0] 테이블별 마지막 prune 시각 (throttle)
+
+def _supabase_prune_log(table: str, days: int = 30, ttl_sec: int = 3600):
+    """[v7] 로그 테이블에서 N일 이전 행 삭제 (best-effort, 비재귀).
+    [v7.4.0] throttle: 테이블당 ttl_sec(기본 1시간)에 1회만 실제 DELETE 실행 —
+    로그 insert마다 매번 delete하던 요청 수를 크게 줄임(로그 보존엔 영향 없음)."""
     try:
+        import time as _t
+        _now = _t.time()
+        if _now - _LOG_PRUNE_LAST.get(table, 0) < ttl_sec:
+            return
+        _LOG_PRUNE_LAST[table] = _now
         from datetime import datetime, timezone, timedelta
         cutoff = (datetime.now(timezone.utc) + timedelta(hours=9)
                   - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
@@ -121,9 +130,17 @@ def _clear_member_cache():
         pass
 
 def _clear_schedule_cache():
-    """[v7.1.0] 스코어보드/기록 캐시만 초기화."""
-    for _fn in [records_load_cached, records_rows_from_shelf_cached,
-                _personal_raw_matches_cached]:
+    """[v7.4.0] 스코어보드/기록/개인기록/참여통계 관련 캐시 전체 초기화.
+    점수 저장·기록 재구축 후, 개인기록·참여추이·라이벌 통계가 TTL 동안 옛값으로
+    남던 문제 해결(Streamlit은 의존 캐시를 자동 무효화하지 않으므로 명시적으로 모두 클리어)."""
+    for _fn in [
+        records_load_cached, records_rows_from_shelf_cached, _personal_raw_matches_cached,
+        records_available_periods, personal_available_periods, personal_monthly_leagues,
+        personal_pair_stats, personal_pair_stats_all, personal_rival_stats,
+        personal_get_all_players, participation_monthly_trend, participation_league_activity,
+        participation_inactive_members, player_career_winrate, personal_summary,
+        personal_monthly_trend, personal_partner_vs_rival, personal_rival_recent,
+    ]:
         try:
             _fn.clear()
         except Exception:
@@ -1241,88 +1258,6 @@ def _supabase_sched_delete(date_key: str):
         except Exception:
             pass
         raise
-
-# ── Supabase schedules 테이블 헬퍼 ────────────────────────────────
-
-    def _get_col(name, default=""):
-        try:
-            idx = headers.index(name)
-        except ValueError:
-            idx = -1
-        def _getter(row, _i=idx, _d=default):
-            return row[_i] if _i >= 0 and _i < len(row) else _d
-        return _getter
-
-    _dk   = _get_col("date_key")
-    _ifr  = _get_col("is_fully_random", "0")
-    _ilk  = _get_col("is_locked", "0")
-    _midx = _get_col("match_idx", "0")
-    _rnd  = _get_col("round")
-    _lg   = _get_col("league")
-    _t1   = _get_col("team1")
-    _t2   = _get_col("team2")
-    _tp   = _get_col("type")
-    _ep   = _get_col("exclude_players")
-    _s1   = _get_col("score1")
-    _s2   = _get_col("score2")
-    _idup = _get_col("is_dup", "0")
-
-    data_rows = [row for row in all_vals[1:] if len(row) > 0 and _dk(row) == date_key]
-    if not data_rows:
-        return None
-    try:
-        data_rows = sorted(data_rows, key=lambda r: int(_midx(r) or 0))
-    except Exception:
-        pass
-    rows = []
-    for row in data_rows:
-        rows.append({
-            "date_key":        _dk(row),
-            "is_fully_random": _ifr(row),
-            "is_locked":       _ilk(row),
-            "match_idx":       _midx(row),
-            "round":           _rnd(row),
-            "league":          _lg(row),
-            "team1":           _t1(row),
-            "team2":           _t2(row),
-            "type":            _tp(row),
-            "exclude_players": _ep(row),
-            "score1":          _s1(row),
-            "score2":          _s2(row),
-            "is_dup":          _idup(row),
-        })
-    schedule = []
-    scores   = {}
-    is_fully_random = False
-    is_locked       = False
-    for r in rows:
-        t1 = tuple(r["team1"].split("|")) if r.get("team1") else ()
-        t2 = tuple(r["team2"].split("|")) if r.get("team2") else ()
-        ep = [p for p in r.get("exclude_players","").split(",") if p]
-        schedule.append({
-            "round":           str(r.get("round","")),
-            "league":          str(r.get("league","")),
-            "team1":           t1,
-            "team2":           t2,
-            "type":            str(r.get("type","")),
-            "exclude_players": ep,
-        })
-        s1 = r.get("score1","")
-        s2 = r.get("score2","")
-        if s1 != "" and s2 != "":
-            try:
-                scores[str(r["match_idx"])] = {
-                    "score1": int(s1), "score2": int(s2),
-                    "is_dup": str(r.get("is_dup","0")) == "1",
-                }
-            except (ValueError, TypeError):
-                pass
-        if str(r.get("is_fully_random","0")) == "1":
-            is_fully_random = True
-        if str(r.get("is_locked","0")) == "1":
-            is_locked = True
-    return {"schedule": schedule, "scores": scores,
-            "is_fully_random": is_fully_random, "is_locked": is_locked}
 
 
 def _restore_from_supabase():
@@ -4184,7 +4119,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.3.7"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.4.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4465,7 +4400,9 @@ if st.session_state.admin_authed and st.session_state.auth_time:
 # ========================================================================
 # 09-C. 회원명부 Supabase 연결 · CRUD
 # ========================================================================
-@st.cache_resource(ttl=3600)
+# [v7.4.0] @st.cache_resource 제거 — 이 함수는 '현재 로그인 사용자' 기준 수정자 이름을
+#   반환하므로 전역(세션 공유) 캐시하면 안 됨. 먼저 접속한 관리자 이름이 다른 관리자의
+#   변경 로그에 잘못 기록되던 버그 수정. (함수 자체가 가벼운 조회라 캐시 불필요)
 def _editor_display_name() -> str:
     """[v6.4.2] 로그의 '수정자' 표시용 실제 이름.
     1) 로그인 ID(cafe_id)를 회원명부에서 조회해 실제 이름 우선 사용
