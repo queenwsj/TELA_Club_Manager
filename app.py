@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.6
+TELA CLUB Random Match Generator v7.6.7
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4192,7 +4192,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.6"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.7"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4532,6 +4532,13 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stHorizontalBlock"]:has([class*="st-key-ev_result_csv"]) button{
     white-space:nowrap !important; font-size:0.78rem !important;
     padding-left:6px !important; padding-right:6px !important;
+}
+/* [v7.6.7 수정2] 클럽기록 새로고침 버튼·월간/연간 라디오 컴팩트화 */
+.st-key-rec_refresh button{
+    font-size:0.8rem !important; padding-left:4px !important; padding-right:4px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-rec_page_mode"]) label p{
+    font-size:0.8rem !important;
 }
 /* [v7.5.2 수정2] 회원관리 검색 행(검색창·검색·백업·등록) 모바일 한 줄 유지 */
 [data-testid="stHorizontalBlock"]:has([class*="st-key-roster_search_input"]){
@@ -5718,7 +5725,7 @@ def dialog_form(df, existing=None):
     st.markdown(f"#### {title}")
 
     # 행1: 성명 / 성별 / 생년월일  [v7.6.6 등록 순서 개편]
-    c1, c2, c3 = st.columns([1.3, 0.8, 1.3])
+    c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         name = st.text_input("성명 *",
             value=existing["name"] if existing else "", placeholder="홍길동")
@@ -5751,7 +5758,7 @@ def dialog_form(df, existing=None):
             help="회원 소속 리그(A·B·C). 비우려면 '—' 선택. 일괄 변경은 회원 목록 상단에서도 가능합니다.")
 
     # 행3: 카페ID / 연락처 / 이메일  (연락 항목)
-    c7, c8, c9 = st.columns([1, 1, 1.3])
+    c7, c8, c9 = st.columns([1, 1, 1])
     with c7:
         cafe_id = st.text_input("카페ID",
             value=existing["cafe_id"] if existing else "", placeholder="cafe_id")
@@ -5762,8 +5769,8 @@ def dialog_form(df, existing=None):
         email = st.text_input("이메일",
             value=existing["email"] if existing else "", placeholder="example@email.com")
 
-    # 행4: 거주지 / 입회일
-    c10, c11 = st.columns([1.4, 1])
+    # 행4: 거주지 / 입회일 (3칸 그리드 정렬)
+    c10, c11, _c12 = st.columns([1, 1, 1])
     with c10:
         region = st.text_input("거주지",
             value=existing["region"] if existing else "", placeholder="서울 강남구")
@@ -8482,26 +8489,30 @@ if page == "📊 스코어보드":
 
                 else:
                     if _can_edit:
-                        # 입력 모드: [점수1] [💾] [✖] [점수2] — 한 줄 4컬럼
-                        _ic1, _ic2, _ic3, _ic4 = st.columns([4, 2, 2, 4])
-                        s1_new = _ic1.number_input(
-                            f"팀1_{idx}", min_value=0, max_value=9,
-                            value=s1_saved, step=1, key=f"s1_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        s2_new = _ic4.number_input(
-                            f"팀2_{idx}", min_value=0, max_value=9,
-                            value=s2_saved, step=1, key=f"s2_{idx}",
-                            label_visibility="collapsed"
-                        )
-                        if _ic2.button("💾", key=f"save_{idx}", type="primary",
-                                       use_container_width=True, help="저장"):
+                        # 입력 모드: [점수1] [💾] [✖] [점수2]
+                        # [v7.6.7 수정8] st.form 으로 감싸 +/- 클릭마다 전체 재실행되던 것을 제거.
+                        #   폼 안에서는 숫자 증감이 즉시 재실행을 일으키지 않고,
+                        #   💾(저장)·✖(취소) 제출 시에만 1회 재실행된다.
+                        with st.form(key=f"score_form_{idx}", border=False):
+                            _ic1, _ic2, _ic3, _ic4 = st.columns([4, 2, 2, 4])
+                            _ic1.number_input(
+                                f"팀1_{idx}", min_value=0, max_value=9,
+                                value=s1_saved, step=1, key=f"s1_{idx}",
+                                label_visibility="collapsed")
+                            _ic4.number_input(
+                                f"팀2_{idx}", min_value=0, max_value=9,
+                                value=s2_saved, step=1, key=f"s2_{idx}",
+                                label_visibility="collapsed")
+                            _save_clicked = _ic2.form_submit_button(
+                                "💾", type="primary", use_container_width=True)
+                            _cancel_clicked = _ic3.form_submit_button(
+                                "✖", use_container_width=True)
+                        if _save_clicked:
                             _save_score(idx,
-                                        st.session_state.get(f"s1_{idx}", s1_new),
-                                        st.session_state.get(f"s2_{idx}", s2_new))
+                                        st.session_state.get(f"s1_{idx}", s1_saved),
+                                        st.session_state.get(f"s2_{idx}", s2_saved))
                             st.rerun()
-                        if _ic3.button("✖", key=f"cancel_{idx}",
-                                       use_container_width=True, help="취소"):
+                        if _cancel_clicked:
                             if bool(sc):
                                 _cancel_edit(idx, s1_saved, s2_saved)
                             else:
@@ -10276,7 +10287,7 @@ elif page == "🏆 통합기록실":
         if st.button("✅ 안내 닫기", key="dismiss_draws_notice"):
             st.session_state["_draws_reagg_dismissed"] = True
             st.rerun()
-    _c1, _c2, _c3 = st.columns([3, 3, 2])
+    _c1, _c2, _c3 = st.columns([1.5, 4.5, 1.4])
     # [v5.9.9] 데이터가 있는 기간을 우선 노출 → 빈 현재월이 기본 선택돼
     #          '월간이 안 보인다'고 오해되던 문제 해결
     _avail = records_available_periods()
@@ -10308,7 +10319,7 @@ elif page == "🏆 통합기록실":
                                      label_visibility="collapsed")
             _ft = "yearly"; _fv = _sel_val; _lbl = f"{_sel_val} 연간"
     with _c3:
-        if st.button("🔄 새로고침", key="rec_refresh", use_container_width=True):
+        if st.button("🔄", key="rec_refresh", use_container_width=True, help="새로고침"):
             _clear_schedule_cache()
             st.rerun()
 
