@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.3
+TELA CLUB Random Match Generator v7.7.4
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4307,7 +4307,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.4"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -8043,12 +8043,14 @@ if page == "🏠 메인":
 # [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·경기결과·회원관리)는 보이되 콘텐츠 열람은 차단.
 #   온라인(네이버카페·카카오톡 오픈채팅) 공지 열람만 가능하도록 안내한다.
 # [v6.5.1] 경기 결과(스코어보드)도 제한 대상에 포함.
-_DORMANT_BLOCKED_PAGES = {"🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "👥 회원명부"}
+# [v7.7.4] 이벤트기록·매치업예상도 클럽 경기 데이터 기반이라 휴면 제한 대상에 포함.
+_DORMANT_BLOCKED_PAGES = {"🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "👥 회원명부",
+                          "🎉 이벤트기록", "🔮 매치업예상"}
 if page in _DORMANT_BLOCKED_PAGES and _current_member_is_dormant():
     st.info(
         "💤 **휴면회원 열람 제한**\n\n"
         "휴면회원은 온라인(네이버카페, 카카오톡 오픈채팅) 공지 열람만 가능하며, "
-        "클럽기록·개인기록·경기 결과·회원명부 열람은 제한됩니다.\n\n"
+        "클럽기록·개인기록·경기결과·이벤트기록·매치업예상·회원명부 열람은 제한됩니다.\n\n"
         "복귀 후 정회원으로 전환되면 이용 가능합니다."
     )
     st.stop()
