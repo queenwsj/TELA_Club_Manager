@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.4
+TELA CLUB Random Match Generator v7.7.5
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -98,7 +98,7 @@ def _get_supabase():
 
 _LOG_PRUNE_LAST: dict = {}   # [v7.4.0] 테이블별 마지막 prune 시각 (throttle)
 
-def _supabase_prune_log(table: str, days: int = 30, ttl_sec: int = 3600):
+def _supabase_prune_log(table: str, days: int = 60, ttl_sec: int = 3600):
     """[v7] 로그 테이블에서 N일 이전 행 삭제 (best-effort, 비재귀).
     [v7.4.0] throttle: 테이블당 ttl_sec(기본 1시간)에 1회만 실제 DELETE 실행 —
     로그 insert마다 매번 delete하던 요청 수를 크게 줄임(로그 보존엔 영향 없음)."""
@@ -196,7 +196,7 @@ def _score_audit_to_sheet(timestamp, date_key, match_idx, matchup, editor, frm, 
                 "editor": str(editor or ""), "from_val": str(frm or ""), "to_val": str(to or "")}
         def _do_score_audit():
             _get_supabase().table("score_audit").insert(_row).execute()
-            _supabase_prune_log("score_audit", days=30)
+            _supabase_prune_log("score_audit", days=60)
         _log_bg(_do_score_audit)  # [v7.2] 비동기
     except Exception:
         pass
@@ -1017,6 +1017,41 @@ def _ensure_cookie_login_boot():
     # 쿠키가 아직 안 들어왔으면 1회만 rerun → 컴포넌트 왕복 후 get_app_user()가 복원
     if not _all or COOKIE_NAME not in _all:
         st.rerun()
+
+
+def _sync_token_localstorage():
+    """[v7.7.5] 즐겨찾기(맨 URL) 진입 시에도 로그인 유지 — 쿠키 대신 localStorage 사용.
+    쿠키(extra_streamlit_components)는 set 직후 rerun되면 브라우저에 실제 기록되기 전이라
+    저장이 누락되는 타이밍 문제가 있었다. 대신:
+      ① 로그인 후 URL의 ?t=토큰을 localStorage에 저장
+      ② 토큰 없는 맨 URL(즐겨찾기) 진입 시, 저장된 토큰으로 ?t=를 붙여 리로드
+         → 기존 query_params 복원 경로(get_app_user)가 그대로 동작
+      ③ 로그아웃 시(_ls_clear_token 플래그) localStorage 토큰 삭제
+    (기존 스크롤 컴포넌트처럼 window.parent 동일 출처 접근을 사용한다)"""
+    import streamlit.components.v1 as _components
+    _clear = "1" if st.session_state.pop("_ls_clear_token", False) else "0"
+    _nonce = st.session_state.get("_ls_nonce", 0) + 1
+    st.session_state["_ls_nonce"] = _nonce
+    _js = """
+    <script>
+    (function(){
+      try {
+        var w = window.parent;
+        var KEY = 'telaclub_token';
+        var url = new URL(w.location.href);
+        if ('__CLEAR__' === '1') { w.localStorage.removeItem(KEY); return; }
+        var t = url.searchParams.get('t');
+        if (t) {
+          w.localStorage.setItem(KEY, t);
+        } else {
+          var saved = w.localStorage.getItem(KEY);
+          if (saved) { url.searchParams.set('t', saved); w.location.replace(url.toString()); }
+        }
+      } catch(e) {}
+    })();
+    </script>
+    """.replace("__CLEAR__", _clear)
+    _components.html("<!-- ls-nonce:" + str(_nonce) + " -->" + _js, height=0)
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
@@ -4307,7 +4342,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.4"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4754,7 +4789,7 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
                 "detail":      str(detail      or ""),
                 "editor":      str(_editor     or ""),
             }).execute()
-            _supabase_prune_log("audit_log", days=30)
+            _supabase_prune_log("audit_log", days=60)
         _log_bg(_do_audit)  # [v7.2] 비동기
     except Exception:
         pass
@@ -4776,7 +4811,7 @@ def log_login(user: dict):
                 "role":      str(_role_ko or ""),
                 "result":    "성공",
             }).execute()
-            _supabase_prune_log("login_log", days=30)
+            _supabase_prune_log("login_log", days=60)
         _log_bg(_do_login_log)  # [v7.2] 비동기
     except Exception:
         pass
@@ -4820,7 +4855,7 @@ def log_login_fail(login_id: str, locked: bool = False):
                 "role":      str(_role or ""),
                 "result":    _r,
             }).execute()
-            _supabase_prune_log("login_log", days=30)
+            _supabase_prune_log("login_log", days=60)
         _log_bg(_do_fail_log)  # [v7.2] 비동기
     except Exception:
         pass
@@ -4924,7 +4959,7 @@ def log_page_view(user: dict, page: str):
                 "role":      str(_role_ko or ""),
                 "page":      str(_pg     or ""),
             }).execute()
-            _supabase_prune_log("view_log", days=30)
+            _supabase_prune_log("view_log", days=60)
         _log_bg(_do_log_view)  # [v7.2] 메인 스레드 블로킹 없음
     except Exception:
         pass
@@ -6069,6 +6104,25 @@ def dialog_form(df, existing=None):
                 st.caption(f"💡 계정이 없으면 카페ID `{_cid_now}` 로 자동 생성됩니다 "
                            f"(최초 비밀번호 `{DEFAULT_MEMBER_PW}`, 로그인 후 변경 필수).")
 
+    # ─── [v7.7.5 수정2] 일반회원 로그인 비밀번호 초기화 (운영진 전용) ───
+    #   계정 관리 목록에는 운영진만 노출하므로, 일반회원 비번 초기화는 여기서 처리.
+    #   대상: 카페ID가 일반회원(member) 계정이거나 계정이 없는 경우. (운영진 계정은 제외)
+    if is_sub_admin() and existing:
+        _cid_r = str(cafe_id or "").strip().lower()
+        _udata_r = user_load_all()
+        _acct_role_r = _udata_r.get(_cid_r, {}).get("role", "member")
+        if _cid_r and _acct_role_r == "member":
+            if st.button(f"🔑 로그인 비밀번호 초기화 (기본값 `{DEFAULT_MEMBER_PW}` 로)",
+                         key=f"pwreset_{target_id}", use_container_width=True):
+                if _cid_r in _udata_r:
+                    user_change_pw(_cid_r, DEFAULT_MEMBER_PW)
+                    log_audit("비번초기화", _cid_r, existing.get("name", ""),
+                              "로그인 비밀번호 기본값 초기화")
+                    st.success(f"'{_cid_r}' 비밀번호를 기본값(`{DEFAULT_MEMBER_PW}`)으로 초기화했습니다. "
+                               "회원이 로그인 후 변경하게 됩니다.")
+                else:
+                    st.info(f"이 회원은 별도 비밀번호가 없어 이미 기본값(`{DEFAULT_MEMBER_PW}`)으로 "
+                            "로그인합니다. 초기화가 필요 없습니다.")
 
     # 행5: 입회신청서 / 메모   [v7.7.0 수정6] 제출여부를 체크박스로 (체크=제출, 미체크=미제출)
     c11,c12 = st.columns([1,2])
@@ -6525,7 +6579,12 @@ def render_roster_page():
 
             st.markdown("---")
             all_users = user_load_all()
-            st.markdown(f"**등록 계정 ({len(all_users)}개)**")
+            # [v7.7.5 수정2] 계정 관리 목록은 운영진(관리자·부관리자)만 표시.
+            #   일반회원 로그인 비밀번호 초기화는 회원명부에서 처리하므로 목록에 노출 불필요.
+            _staff_users = {uid: ui for uid, ui in all_users.items()
+                            if ui.get("role") in ("admin", "sub_admin")}
+            st.markdown(f"**등록 계정 ({len(_staff_users)}개)** · 운영진만 표시")
+            st.caption("일반회원 비밀번호 초기화는 **회원명부**에서 할 수 있습니다.")
 
             # 계정 목록
             # [v7.3.0 수정1] 모바일 한 줄 정렬 — ID·이름·권한을 한 셀로 합쳐 컴팩트화.
@@ -6534,7 +6593,7 @@ def render_roster_page():
             _ROLE_SHORT = {"admin": "관리",   "sub_admin": "부관리",   "member": "회원"}
             _ROLE_CLR   = {"admin": "#b45309", "sub_admin": "#0f766e", "member": "#64748b"}
             _admin_id = st.secrets.get("ADMIN_ID", "admin")
-            for uid, uinfo in list(all_users.items()):
+            for uid, uinfo in list(_staff_users.items()):
                 _rrole = uinfo.get("role", "")
                 ucols = st.columns([2.7, 1.7, 0.9, 0.8])
                 ucols[0].markdown(
@@ -7446,7 +7505,8 @@ if "app_user" not in st.session_state:
     st.session_state["app_user"] = None
 
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
-_ensure_cookie_login_boot()   # [v7.7.3] 즐겨찾기 진입 시 쿠키 자동로그인 복원 안정화
+with st.sidebar:                 # [v7.7.5] 즐겨찾기 진입 시 로그인 유지 (localStorage 토큰 동기화)
+    _sync_token_localstorage()
 _u = get_app_user()
 # [v6.5] 탈퇴(또는 삭제)된 회원이 기존 세션/쿠키/토큰으로 남아 있으면 강제 로그아웃
 if _u and _u.get("role") == "member" and _is_withdrawn_member(_u.get("id", "")):
@@ -7459,6 +7519,7 @@ if _u and _u.get("role") == "member" and _is_withdrawn_member(_u.get("id", "")):
         pass
     st.session_state["app_user"] = None
     _cookie_clear_user()
+    st.session_state["_ls_clear_token"] = True   # [v7.7.5] localStorage 토큰 삭제
     _u = None
     st.warning("탈퇴 처리된 계정입니다. 더 이상 로그인할 수 없습니다. (문의: 운영진)")
 if _u:
@@ -7479,6 +7540,7 @@ if _u:
             pass
         st.session_state["app_user"] = None
         _cookie_clear_user()
+        st.session_state["_ls_clear_token"] = True   # [v7.7.5] localStorage 토큰 삭제
         st.session_state["current_page"] = "🏠 메인"   # [v7.0.0] 로그아웃 후 메인 착지
         st.session_state.pop("_pw_screen_collapsed", None)   # [v7.0.2] 재로그인 시 비번화면 접기 재동작
         st.session_state.pop("_last_logged_page", None)
