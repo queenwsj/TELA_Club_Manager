@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.2
+TELA CLUB Random Match Generator v7.7.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -986,6 +986,37 @@ def is_sub_admin() -> bool:
     """부관리자 이상 여부 (관리자 포함)."""
     u = get_app_user()
     return bool(u and u.get("role") in ("admin", "sub_admin"))
+
+
+def _ensure_cookie_login_boot():
+    """[v7.7.3] 즐겨찾기(맨 URL)로 진입 시 쿠키 자동로그인이 풀리던 문제 해결.
+    stx.CookieManager는 첫 스크립트 실행에서 쿠키를 아직 못 읽어 None을 반환한다
+    (프론트엔드 컴포넌트가 서버로 쿠키를 전달하기 전). 그래서 새로고침(URL에 ?t=토큰 유지)은
+    유지되지만, ?t= 없는 맨 URL(즐겨찾기) 진입 시엔 쿠키 복원이 첫 실행에 실패해 로그인 화면이 떴다.
+    → 세션·토큰이 모두 없을 때 쿠키 컴포넌트가 값을 전달하도록 1회 rerun 기회를 준다."""
+    if not COOKIES_AVAILABLE:
+        return
+    if st.session_state.get("app_user"):
+        return
+    try:
+        if st.query_params.get("t", ""):   # 토큰 있으면 그쪽으로 복원되므로 불필요
+            return
+    except Exception:
+        pass
+    if st.session_state.get("_cookie_boot_done"):
+        return
+    cm = _get_cookie_manager()
+    if cm is None:
+        return
+    # 컴포넌트 렌더 유도 (첫 실행엔 빈 값일 수 있음)
+    try:
+        _all = cm.get_all()
+    except Exception:
+        _all = None
+    st.session_state["_cookie_boot_done"] = True
+    # 쿠키가 아직 안 들어왔으면 1회만 rerun → 컴포넌트 왕복 후 get_app_user()가 복원
+    if not _all or COOKIE_NAME not in _all:
+        st.rerun()
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
@@ -4276,7 +4307,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4402,6 +4433,9 @@ section[data-testid="stMain"] .stMainBlockContainer,
 }
 /* 다이얼로그 */
 div[data-testid="stDialog"] > div { max-width: 95vw !important; width: 95vw !important; }
+
+/* [v7.7.3] <style>만 든 빈 마크다운 블록(로딩 문구 주입 등)이 만드는 세로 여백 제거 */
+div[data-testid="stMarkdown"]:has(> style:only-child) { display: none !important; }
 
 /* ── 다이얼로그 공통 버튼 스타일 (전역 1회 선언, dialog 내부 중복 제거) ── */
 /* 저장 (파랑) */
@@ -7412,6 +7446,7 @@ if "app_user" not in st.session_state:
     st.session_state["app_user"] = None
 
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
+_ensure_cookie_login_boot()   # [v7.7.3] 즐겨찾기 진입 시 쿠키 자동로그인 복원 안정화
 _u = get_app_user()
 # [v6.5] 탈퇴(또는 삭제)된 회원이 기존 세션/쿠키/토큰으로 남아 있으면 강제 로그아웃
 if _u and _u.get("role") == "member" and _is_withdrawn_member(_u.get("id", "")):
@@ -7655,14 +7690,16 @@ with st.sidebar.expander("🔍 회원 빠른검색", expanded=False):
 # [v6.7] 모바일(좁은 화면)에서 메뉴 버튼을 누르면 사이드바를 자동으로 접는다.
 #   PC(넓은 화면)는 접지 않음. Streamlit 사이드바 접기 컨트롤을 JS로 눌러 처리.
 if st.session_state.pop("_collapse_sidebar_mobile", False):
-    _mobile_collapse_now()
+    with st.sidebar:                 # [v7.7.3] 빈 iframe을 메인 대신 사이드바에 렌더(상단 여백 제거)
+        _mobile_collapse_now()
 
 # [v7.4.1 수정1] 페이지가 실제로 바뀌었을 때만 화면 최상단으로 스크롤.
 #   (스크롤 내린 상태로 다른 메뉴 진입 시 하단부터 보이던 문제 해결.
 #    페이지 내 일반 rerun에는 스크롤하지 않아 점수 저장 등 조작 위치를 흩뜨리지 않음.)
 if st.session_state.get("_last_page_for_scroll") != page:
     st.session_state["_last_page_for_scroll"] = page
-    _scroll_to_top_now()
+    with st.sidebar:                 # [v7.7.3] 빈 iframe을 메인 대신 사이드바에 렌더(상단 여백 제거)
+        _scroll_to_top_now()
     # [v7.5.2 수정2] 페이지 전환 시 회원 검색어 초기화 (위젯 생성 전이라 안전)
     st.session_state["search_q"] = ""
     st.session_state["search_active"] = ""
@@ -7736,10 +7773,17 @@ if page == "🏠 메인":
     if KAKAO_OPENCHAT_URL:
         _links.append(("💬 카카오톡 오픈채팅", KAKAO_OPENCHAT_URL))
     if _links:
-        _lc = st.columns(len(_links))
-        for _col, (_lbl, _url) in zip(_lc, _links):
-            _col.link_button(_lbl, _url, use_container_width=True)
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        # [v7.7.3] st.columns는 모바일에서 세로로 쌓여서, HTML flex로 항상 가로 한 줄 유지
+        _link_btns = "".join(
+            f"<a href='{_url}' target='_blank' rel='noopener' "
+            f"style='flex:1;text-align:center;padding:9px 6px;border:1px solid #cbd5e1;"
+            f"border-radius:8px;background:#fff;color:#0f172a;text-decoration:none;"
+            f"font-size:0.82rem;font-weight:600;white-space:nowrap;overflow:hidden;"
+            f"text-overflow:ellipsis'>{_lbl}</a>"
+            for (_lbl, _url) in _links)
+        st.markdown(
+            f"<div style='display:flex;gap:8px;margin-bottom:6px'>{_link_btns}</div>",
+            unsafe_allow_html=True)
 
     # 위젯 공통 데이터 1회 로드 (실패해도 무시)
     try:
@@ -7874,12 +7918,60 @@ if page == "🏠 메인":
             f"<div style='font-size:0.82rem;color:#64748b;font-weight:700;margin-bottom:8px'>"
             f"🎂 이달의 생일</div>{_bday_items}</div>",
             unsafe_allow_html=True)
-        _wc[1].markdown(
+        with _wc[1]:
+            st.markdown(
+                f"<div style='border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;"
+                f"background:#fff;height:100%'>"
+                f"<div style='font-size:0.82rem;color:#64748b;font-weight:700;margin-bottom:8px'>"
+                f"🆕 이번 달 신규·복귀</div>{_join_items}</div>",
+                unsafe_allow_html=True)
+            # [v7.7.3 수정4] 신규·복귀 전체 내역 더보기(모달)
+            if _new:
+                @st.dialog("🆕 이번 달 신규·복귀 전체")
+                def _join_full_dialog():
+                    for n in _new:
+                        _ic = "♻️" if n["kind"] == "복귀" else "🆕"
+                        st.markdown(f"{_ic} **{n['name']}** · {n['kind']} · {n['date']}")
+                if st.button(f"더보기 ({len(_new)}명)", key="home_join_more",
+                             use_container_width=True):
+                    _join_full_dialog()
+
+        # ── 위젯 3-B: 이번 달 입회 기념일 (1주년 이상) [v7.7.3 수정5] ──
+        #   회원관리의 '이번 달 입회기념'과 동일 로직(get_this_month_birthdays) 재사용.
+        #   신규·복귀(올해 가입)와 구분해 1주년 이상만 표기.
+        _anniv = []
+        if _has_cat:
+            for _a in get_this_month_birthdays(_hdf):
+                if str(_a.get("category", "") or "").strip() == "탈퇴":
+                    continue
+                if int(_a.get("years", 0) or 0) >= 1:
+                    _anniv.append(_a)
+            _anniv.sort(key=lambda x: int(x.get("years", 0) or 0), reverse=True)
+        _anniv_items = "".join(
+            f"<div style='font-size:0.82rem;color:#334155;margin:3px 0'>🎉 <b>{a['name']}</b> "
+            f"<span style='color:#0d9488;font-weight:700;font-size:0.78rem'>{int(a['years'])}주년</span></div>"
+            for a in _anniv[:6])
+        if not _anniv_items:
+            _anniv_items = "<div style='font-size:0.8rem;color:#94a3b8'>이번 달 입회 기념일(1주년 이상)이 없습니다</div>"
+        if len(_anniv) > 6:
+            _anniv_items += f"<div style='font-size:0.74rem;color:#94a3b8;margin-top:4px'>외 {len(_anniv)-6}명</div>"
+        st.markdown(
             f"<div style='border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;"
-            f"background:#fff;height:100%'>"
+            f"background:#fff;margin-top:10px'>"
             f"<div style='font-size:0.82rem;color:#64748b;font-weight:700;margin-bottom:8px'>"
-            f"🆕 이번 달 신규·복귀</div>{_join_items}</div>",
+            f"🎉 이번 달 입회 기념일</div>{_anniv_items}</div>",
             unsafe_allow_html=True)
+        if _anniv:
+            @st.dialog("🎉 이번 달 입회 기념일 전체")
+            def _anniv_full_dialog():
+                for a in _anniv:
+                    st.markdown(
+                        f"🎉 **{a['name']}** · {int(a['years'])}주년 "
+                        f"<span style='color:#94a3b8;font-size:0.8rem'>(입회 {a['join_date'][:10]})</span>",
+                        unsafe_allow_html=True)
+            if st.button(f"기념일 전체보기 ({len(_anniv)}명)", key="home_anniv_more",
+                         use_container_width=True):
+                _anniv_full_dialog()
     except Exception:
         pass
 
@@ -8235,7 +8327,8 @@ if page == "📊 스코어보드":
         st.stop()
 
     # ── 이벤트 대진표: 이벤트명 + 점수 설정 (v7.6.4) ──
-    if "[이벤트]" in str(selected_key):
+    #   [v7.7.3] 이벤트 기록 설정은 부관리자 이상만 노출 (일반회원은 보이지 않음)
+    if "[이벤트]" in str(selected_key) and is_sub_admin():
         _ev_meta = _event_meta_load(selected_key) or {}
         _evm_name_key = f"evmeta_name_{selected_key}"
         _evm_win_key  = f"evmeta_win_{selected_key}"
