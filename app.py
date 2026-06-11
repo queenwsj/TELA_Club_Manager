@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.7
+TELA CLUB Random Match Generator v7.7.8
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -49,6 +49,12 @@ try:
     COOKIES_AVAILABLE = True
 except ImportError:
     COOKIES_AVAILABLE = False
+try:
+    # [v7.7.8] 클라이언트 공인 IP 조회용 (Streamlit Cloud 서버 헤더는 사설 IP만 노출)
+    from streamlit_javascript import st_javascript
+    IP_FETCH_AVAILABLE = True
+except Exception:
+    IP_FETCH_AVAILABLE = False
 from dataclasses import dataclass, field
 from itertools import zip_longest
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
@@ -4342,7 +4348,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.7"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.8"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4794,11 +4800,35 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     except Exception:
         pass
 
+def _fetch_public_ip_once():
+    """[v7.7.8] 클라이언트 공인 IP를 브라우저에서 직접 조회해 세션에 캐시.
+    Streamlit Community Cloud는 서버 헤더(X-Forwarded-For 등)에 사설 IP(192.168.*, 10.*)만
+    노출하므로 실제 공인 IP를 얻으려면 브라우저에서 외부 IP 에코 서비스를 호출해야 한다.
+    streamlit-javascript 미설치 시 동작하지 않음(헤더 폴백). 메인 스레드 전용."""
+    if not IP_FETCH_AVAILABLE:
+        return
+    if st.session_state.get("_client_public_ip"):
+        return
+    try:
+        _v = st_javascript(
+            "await fetch('https://api64.ipify.org?format=json')"
+            ".then(r=>r.json()).then(d=>d.ip).catch(e=>'')")
+        if isinstance(_v, str):
+            _v = _v.strip()
+            if _v and _v not in ("0", "None") and ("." in _v or ":" in _v):
+                st.session_state["_client_public_ip"] = _v
+    except Exception:
+        pass
+
+
 def _client_ip() -> str:
-    """[v7.7.6→v7.7.7] 클라이언트 IP 추정. 프록시 계층 구성이 환경마다 달라
-    여러 헤더를 우선순위로 시도한다(Cloudflare 계열 → X-Real-IP → X-Forwarded-For 첫 홉).
-    ⚠️ 메인 스레드에서만 호출 가능(백그라운드 스레드엔 ScriptRunContext가 없음).
-    어떤 헤더가 실제 IP인지 모를 때는 사이드바 로그 > 로그인 이력 > '헤더 진단'으로 확인."""
+    """[v7.7.8] 클라이언트 IP. 우선순위:
+    ① 브라우저에서 조회한 공인 IP(_client_public_ip, streamlit-javascript)
+    ② 서버 헤더(Cloudflare 계열 → X-Real-Ip → X-Forwarded-For 첫 홉) — 사설 IP일 수 있음.
+    ⚠️ 메인 스레드에서만 호출 가능(백그라운드 스레드엔 ScriptRunContext가 없음)."""
+    _pub = st.session_state.get("_client_public_ip")
+    if _pub:
+        return str(_pub)
     try:
         h = st.context.headers
     except Exception:
@@ -7535,6 +7565,7 @@ if "app_user" not in st.session_state:
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
 with st.sidebar:                 # [v7.7.5] 즐겨찾기 진입 시 로그인 유지 (localStorage 토큰 동기화)
     _sync_token_localstorage()
+    _fetch_public_ip_once()      # [v7.7.8] 클라이언트 공인 IP 조회(세션당 1회, 헤더는 사설 IP만 줌)
 _u = get_app_user()
 # [v6.5] 탈퇴(또는 삭제)된 회원이 기존 세션/쿠키/토큰으로 남아 있으면 강제 로그아웃
 if _u and _u.get("role") == "member" and _is_withdrawn_member(_u.get("id", "")):
@@ -8244,9 +8275,14 @@ if page == "🧾 로그":
         # [v7.7.7] IP가 엉뚱하게 찍힐 때: 실제 어떤 헤더에 내 IP가 있는지 진단 (관리자 전용)
         if is_admin():
             with st.expander("🔍 접속 헤더 진단 (IP 헤더 확인용)", expanded=False):
-                st.caption("아래에서 **본인 실제 IP**가 들어있는 헤더 이름을 확인해 알려주시면 "
-                           "해당 헤더를 우선 사용하도록 맞출 수 있습니다. "
-                           "(휴대폰이라면 데이터/와이파이 IP가 보여야 정상)")
+                st.caption("Streamlit Cloud 서버 헤더는 사설 IP(192.168.*·10.*)만 노출합니다. "
+                           "실제 공인 IP는 브라우저에서 직접 조회합니다(streamlit-javascript 필요).")
+                _pub_ip = st.session_state.get("_client_public_ip")
+                if IP_FETCH_AVAILABLE:
+                    st.write(f"브라우저 조회 공인 IP: **{_pub_ip or '(조회 중/실패)'}**")
+                else:
+                    st.warning("`streamlit-javascript` 미설치 — requirements.txt에 추가하면 "
+                               "공인 IP가 기록됩니다. (현재는 서버 헤더의 사설 IP로 폴백)")
                 st.write(f"현재 `_client_ip()` 결과: **{_client_ip() or '(빈 값)'}**")
                 try:
                     _hdrs = dict(st.context.headers)
