@@ -4,3 +4,4 @@ openpyxl
 xlsxwriter
 extra-streamlit-components>=0.1.71
 supabase>=2.0.0
+streamlit-javascript
