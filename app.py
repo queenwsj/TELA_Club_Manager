@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.1
+TELA CLUB Random Match Generator v7.6.4
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -2599,10 +2599,50 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
     return session_stats
 
 
+def _event_meta_load(date_key: str):
+    """[v7.6.4] events 테이블에서 이벤트명·점수설정 1건 조회 (없으면 None)."""
+    try:
+        res = _get_supabase().table("events").select("*").eq("date_key", date_key).limit(1).execute()
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def _event_meta_load_all() -> list:
+    """[v7.6.4] events 테이블 전체 로드."""
+    try:
+        res = _get_supabase().table("events").select("*").execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def _event_meta_save(date_key: str, event_name: str, win_pts: int = 3, loss_pts: int = 1) -> bool:
+    """[v7.6.4] 이벤트명·점수설정 upsert (date_key 기준)."""
+    try:
+        _get_supabase().table("events").upsert({
+            "date_key":   str(date_key),
+            "event_name": str(event_name or "").strip(),
+            "win_pts":    int(win_pts),
+            "loss_pts":   int(loss_pts),
+            "created_at": kst_now_str(),
+        }, on_conflict="date_key").execute()
+        return True
+    except Exception as _e:
+        _BG_ERRORS.append(f"events 저장 실패 (key={date_key}): {_e}")
+        return False
+
+
 def records_commit(date_key: str, schedule: list, scores: dict):
-    """[v7 Supabase] records 테이블에 세션 점수 반영 (upsert)."""
+    """[v7 Supabase] records 테이블에 세션 점수 반영 (upsert).
+    [v7.6.4] 이벤트([이벤트] 키)도 집계하되 event_name을 태깅한다.
+             정규 통합기록·트렌드·매치업은 기존 [이벤트] 필터로 계속 분리된다.
+    """
+    _event_name = ""
     if "[이벤트]" in str(date_key):
-        return
+        _meta = _event_meta_load(date_key)
+        _event_name = str((_meta or {}).get("event_name", "") or "").strip()
     try:
         sb = _get_supabase()
         # ① 기존 동일 date_key 행 삭제
@@ -2625,6 +2665,7 @@ def records_commit(date_key: str, schedule: list, scores: dict):
                 "draws":        int(pdata.get("draws",0)),
                 "pf":           int(pdata.get("pf",0)),
                 "pa":           int(pdata.get("pa",0)),
+                "event_name":   _event_name,
             })
         if rows:
             sb.table("records").insert(rows).execute()
@@ -4151,7 +4192,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.4"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -5134,6 +5175,30 @@ def member_type_badge(mt):
     return ("<span style='font-size:10px;color:#64748b;background:#f1f5f9;"
             "border:1px solid #cbd5e1;border-radius:6px;padding:1px 6px'>일반</span>")
 
+
+def _year_cascade_select(items, *, key_prefix, item_label="선택", year_label="연도",
+                         container=None, to_year=None, item_fmt=None,
+                         label_visibility="visible"):
+    """[v7.6.3] 연도 → 해당 연도 항목 2단 드롭다운.
+    데이터가 많이 쌓여도 먼저 연도를 고정한 뒤 그 연도 항목만 고르도록 한다.
+    items: 문자열 목록(date_key 'YYYY-MM-DD(요일)_n' 또는 기간 'YYYY-MM').
+    반환: 선택된 항목 문자열(없으면 None).
+    """
+    c = container if container is not None else st
+    items = [x for x in items if str(x).strip()]
+    if not items:
+        return None
+    _ty = to_year or (lambda s: str(s)[:4])
+    years = sorted({_ty(x) for x in items}, reverse=True)
+    sel_year = c.selectbox(year_label, years, key=f"{key_prefix}_yr",
+                           label_visibility=label_visibility)
+    flt = [x for x in items if _ty(x) == sel_year]
+    sel = c.selectbox(item_label, flt, key=f"{key_prefix}_it",
+                      label_visibility=label_visibility,
+                      format_func=item_fmt or (lambda x: x))
+    return sel
+
+
 def gender_html(g):
     c = {"남":"#2563eb","여":"#db2777"}.get(g,"#374151")
     return f'<span style="color:{c};font-weight:700;{RS_FS}">{g}</span>'
@@ -5666,23 +5731,28 @@ def dialog_form(df, existing=None):
         email = st.text_input("이메일",
             value=existing["email"] if existing else "", placeholder="example@email.com")
 
-    # 행3.5: [v7.6.0] 회원 유형(일반/부부) / 배우자 이름 — 목록에는 표시하지 않음
+    # 행3.5: [v7.6.0] 회원 유형(일반/부부) / 배우자 이름
+    #   [v7.7.0 수정5] 신규 등록에서도 배우자 이름이 저장되도록 위젯에 key + 세션 사전 시드.
+    #     (disabled 토글로 위젯이 초기화되며 신규 등록 시 값이 사라지던 문제 해결)
+    _cp_id  = existing["id"] if existing else "new"
+    _mt_key = f"member_type_sel_{_cp_id}"
+    _sp_key = f"spouse_name_in_{_cp_id}"
+    if _mt_key not in st.session_state:
+        st.session_state[_mt_key] = "부부회원" if (existing and str(existing.get("member_type", "") or "").strip() == "부부") else "일반회원"
+    if _sp_key not in st.session_state:
+        st.session_state[_sp_key] = (existing.get("spouse_name", "") if existing else "")
     c_mt, c_sp = st.columns([1, 1.4])
     with c_mt:
-        _MT_OPTS = ["일반회원", "부부회원"]
-        _ex_mt = str(existing.get("member_type", "") or "").strip() if existing else ""
-        _mt_idx = 1 if _ex_mt == "부부" else 0
         member_type_sel = st.selectbox(
-            "회원 유형", _MT_OPTS, index=_mt_idx,
-            help="부부회원이면 오른쪽에 배우자 이름을 입력하세요. (회원 목록에는 표시되지 않습니다)")
+            "회원 유형", ["일반회원", "부부회원"], key=_mt_key,
+            help="부부회원이면 오른쪽에 배우자 이름을 입력하세요.")
     with c_sp:
         spouse_name_in = st.text_input(
-            "배우자 이름",
-            value=(existing.get("spouse_name", "") if existing else ""),
+            "배우자 이름", key=_sp_key,
             placeholder="부부회원만 입력",
-            disabled=(member_type_sel != "부부회원"))
-    member_type_val = "부부" if member_type_sel == "부부회원" else "일반"
-    spouse_name_val = spouse_name_in.strip() if member_type_sel == "부부회원" else ""
+            disabled=(st.session_state[_mt_key] != "부부회원"))
+    member_type_val = "부부" if st.session_state[_mt_key] == "부부회원" else "일반"
+    spouse_name_val = (st.session_state[_sp_key] or "").strip() if st.session_state[_mt_key] == "부부회원" else ""
 
     # 행4: 휴면기간 (누적 관리) — 폭 전체 사용 (행 단위 입력이라 넓게)
     # ─────────────────────────────────────────────────────────
@@ -5763,35 +5833,39 @@ def dialog_form(df, existing=None):
     st.button("➕ 휴면 기간 추가", use_container_width=True, key="add_dormant_btn",
               on_click=_add_dormant_row)
 
-    # ─── 탈퇴일 (휴면 아래) ───
+    # ─── 탈퇴일 / 재입회일 (한 줄) ───  [v7.7.0 수정4]
     ld_str_existing = ""
     if existing and existing.get("leave_date"):
         ld_str_existing = str(existing["leave_date"]).strip()
     ld_key = f"leave_date_input_{target_id}"
     if ld_key not in st.session_state:
         st.session_state[ld_key] = ld_str_existing
-    st.text_input(
-        "탈퇴일 (입력 시 구분 자동→탈퇴)",
-        key=ld_key,
-        placeholder="YYYY-MM-DD 또는 20260101 (비우면 탈퇴 해제)",
-        on_change=_normalize_date_input, args=(ld_key,)
-    )
-    leave_date_str = st.session_state[ld_key]
 
-    # ─── 재입회일 (탈퇴 후 재가입 — v6.2) ───
-    #   입력하면 탈퇴일·휴면 이력은 그대로 두고 활동 회원으로 복귀 처리한다.
     rj_str_existing = ""
     if existing and existing.get("rejoin_date"):
         rj_str_existing = str(existing["rejoin_date"]).strip()
     rj_key = f"rejoin_date_input_{target_id}"
     if rj_key not in st.session_state:
         st.session_state[rj_key] = rj_str_existing
-    st.text_input(
-        "♻️ 재입회일 (탈퇴 후 재가입 시 입력 — 입회일·탈퇴일·휴면 이력은 그대로 보존)",
-        key=rj_key,
-        placeholder="YYYY-MM-DD 또는 20260101 (비우면 일반 회원)",
-        on_change=_normalize_date_input, args=(rj_key,)
-    )
+
+    c_ld, c_rj = st.columns(2)
+    with c_ld:
+        st.text_input(
+            "🚪 탈퇴일",
+            key=ld_key,
+            placeholder="YYYY-MM-DD (비우면 탈퇴 해제)",
+            help="입력 시 구분이 자동으로 '탈퇴'가 됩니다.",
+            on_change=_normalize_date_input, args=(ld_key,)
+        )
+    with c_rj:
+        st.text_input(
+            "♻️ 재입회일",
+            key=rj_key,
+            placeholder="YYYY-MM-DD (비우면 일반)",
+            help="탈퇴 후 재가입 시 입력 — 입회일·탈퇴일·휴면 이력은 그대로 보존됩니다.",
+            on_change=_normalize_date_input, args=(rj_key,)
+        )
+    leave_date_str  = st.session_state[ld_key]
     rejoin_date_str = st.session_state[rj_key]
 
     # ─── 부관리자 권한 (v6.2.1 — 관리자 전용, 기존 회원만) ───
@@ -5818,15 +5892,14 @@ def dialog_form(df, existing=None):
                            f"(최초 비밀번호 `{DEFAULT_MEMBER_PW}`, 로그인 후 변경 필수).")
 
 
-    # 행5: 입회신청서 / 메모
+    # 행5: 입회신청서 / 메모   [v7.7.0 수정6] 제출여부를 체크박스로 (체크=제출, 미체크=미제출)
     c11,c12 = st.columns([1,2])
     with c11:
-        app_opts = ["—","Yes","No"]
-        app_idx  = 0
-        if existing:
-            av = existing.get("application","")
-            if av in app_opts: app_idx = app_opts.index(av)
-        application = st.selectbox("입회신청서", app_opts, index=app_idx)
+        _app_default = bool(existing and str(existing.get("application","") or "").strip() == "Yes")
+        _app_checked = st.checkbox(
+            "입회신청서 제출", value=_app_default, key=f"app_chk_{target_id}",
+            help="체크 = 제출 / 미체크 = 미제출")
+        application = "Yes" if _app_checked else "No"
     with c12:
         memo = st.text_area("메모",
             value=existing["memo"] if existing else "",
@@ -5870,6 +5943,11 @@ def dialog_form(df, existing=None):
         # 부관리자 체크박스 (v6.2.1)
         if f"subadmin_chk_{target_id}" in st.session_state:
             del st.session_state[f"subadmin_chk_{target_id}"]
+        # [v7.7.0] 부부회원 위젯 (신규 등록 후 다음 등록에 값이 남지 않도록)
+        for _k in (f"member_type_sel_{target_id}", f"spouse_name_in_{target_id}",
+                   f"app_chk_{target_id}"):
+            if _k in st.session_state:
+                del st.session_state[_k]
 
     if cancel_clicked:
         _cleanup_dormant_session()
@@ -6931,6 +7009,10 @@ def render_roster_page():
                 f"<div>🆔 {_cafe}</div>",
                 f"<div>📅 {_join}</div>",
             ]
+            # [v7.7.0 수정2] 부부회원이면 배우자 이름을 카드 본문 첫 줄(이름 바로 아래·전체폭)에 표기
+            _sp_card = str(row.get('spouse_name','') or '').strip()
+            if str(row.get('member_type','') or '').strip() == "부부" and _sp_card:
+                _cells.insert(0, f"<div style='grid-column:1/-1'>💑 <span style='color:#be185d;font-weight:600'>배우자 {_sp_card}</span></div>")
             if _dorm_disp != "—":
                 _cells.append(f"<div>💤 <span style='color:#ca8a04'>{_dorm_disp}</span></div>")
             if _leave not in ("—", "", "nan"):
@@ -7069,8 +7151,11 @@ def render_roster_page():
             rc[ci].markdown(
                 f"<div style='padding:5px 0'>{member_type_badge(row.get('member_type',''))}</div>",
                 unsafe_allow_html=True); ci += 1
-            # 성명
-            rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
+            # 성명 (+ [v7.7.0 수정2] 부부회원이면 배우자 이름 우측 표기)
+            _sp_tbl = str(row.get('spouse_name','') or '').strip()
+            _sp_suffix = (f" <span style='font-size:10px;color:#be185d;font-weight:600'>💑{_sp_tbl}</span>"
+                          if str(row.get('member_type','') or '').strip() == "부부" and _sp_tbl else "")
+            rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')) + _sp_suffix,"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
             # 카페ID
             rc[ci].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True); ci += 1
             # 생년월일
@@ -7331,7 +7416,8 @@ _is_staff = is_sub_admin()
 _nav_sections = [
     ("기록", [("🏆 통합기록실", "🏆 클럽 기록"),
               ("👤 개인기록실", "🧍 개인 기록"),
-              ("🔮 매치업예상", "🔮 매치업 예상")]),
+              ("🔮 매치업예상", "🔮 매치업 예상"),
+              ("🎉 이벤트기록", "🎉 이벤트 기록")]),
     ("경기", [("📊 스코어보드", "📊 경기 결과")]),
 ]
 if _is_staff:
@@ -7350,7 +7436,7 @@ _visible_pages = [k for _sec, _items in _nav_sections for k, _l in _items]
 #   기존엔 _all_pages(역할 의존)로 검사 → 권한 판정이 rerun 중 한 번이라도
 #   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
 #   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
-_ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "🔮 매치업예상", "📊 스코어보드",
+_ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "🔮 매치업예상", "🎉 이벤트기록", "📊 스코어보드",
                     "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부",
                     "🧾 로그"]
 if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
@@ -7954,12 +8040,16 @@ if page == "📊 스코어보드":
         selected_key = f"{_date_with_weekday(sb_date)}_{sb_num}"
     else:
         if saved_keys:
-            # 이벤트 대진표 키가 있으면 기본 선택
-            _sb_default_idx = 0
+            # 이벤트 대진표 키가 있으면 기본 선택(연도·항목 사전 시드)
             if _ev_ready_key and _ev_ready_key in saved_keys:
-                _sb_default_idx = saved_keys.index(_ev_ready_key)
-            selected_key = st.selectbox("저장된 스코어보드 선택", saved_keys,
-                                        index=_sb_default_idx)
+                st.session_state.setdefault("sb_load_yr", str(_ev_ready_key)[:4])
+                st.session_state.setdefault("sb_load_it", _ev_ready_key)
+            # [v7.6.3] 연도 → 해당 연도 스코어보드 2단 선택
+            selected_key = _year_cascade_select(
+                saved_keys, key_prefix="sb_load",
+                year_label="연도", item_label="저장된 스코어보드 선택")
+            if not selected_key:
+                selected_key = f"{_date_with_weekday(today_str)}_001"
         else:
             st.info("저장된 데이터가 없습니다.")
             selected_key = f"{_date_with_weekday(today_str)}_001"
@@ -7998,13 +8088,50 @@ if page == "📊 스코어보드":
         st.info("👈 **📋 대진표생성**에서 같은 날짜+일련번호로 대진표를 생성하거나, 저장된 키를 선택해주세요.")
         st.stop()
 
-    # 이벤트 대진표 안내 (기록실 미반영)
+    # ── 이벤트 대진표: 이벤트명 + 점수 설정 (v7.6.4) ──
     if "[이벤트]" in str(selected_key):
-        st.markdown(
-            '<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:8px;'
-            'padding:8px 12px;margin-bottom:8px;font-size:0.85rem;color:#9a3412;font-weight:600;">'
-            '🎯 이벤트 대진표입니다. 점수를 입력·저장할 수 있지만 <b>기록실(월간/연간 집계)에는 반영되지 않습니다.</b>'
-            '</div>', unsafe_allow_html=True)
+        _ev_meta = _event_meta_load(selected_key) or {}
+        _evm_name_key = f"evmeta_name_{selected_key}"
+        _evm_win_key  = f"evmeta_win_{selected_key}"
+        _evm_loss_key = f"evmeta_loss_{selected_key}"
+        if _evm_name_key not in st.session_state:
+            st.session_state[_evm_name_key] = str(_ev_meta.get("event_name", "") or "")
+        if _evm_win_key not in st.session_state:
+            st.session_state[_evm_win_key] = int(_ev_meta.get("win_pts", 3) or 3)
+        if _evm_loss_key not in st.session_state:
+            st.session_state[_evm_loss_key] = int(_ev_meta.get("loss_pts", 1) or 1)
+
+        with st.container(border=True):
+            st.markdown("🎉 **이벤트 기록 설정** — 이벤트 이름과 승·패 점수를 정하면, 점수 저장 시 **이벤트 기록** 메뉴에 순위가 집계됩니다.")
+            _evc1, _evc2, _evc3, _evc4 = st.columns([2.4, 1, 1, 1])
+            with _evc1:
+                st.text_input("이벤트 이름", key=_evm_name_key,
+                              placeholder="예: 2026년 06월 월례회")
+            with _evc2:
+                st.number_input("승 점수", min_value=0, max_value=100, step=1, key=_evm_win_key)
+            with _evc3:
+                st.number_input("패 점수", min_value=0, max_value=100, step=1, key=_evm_loss_key)
+            with _evc4:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                if st.button("💾 설정 저장", key=f"evmeta_save_{selected_key}", use_container_width=True):
+                    _nm = str(st.session_state[_evm_name_key] or "").strip()
+                    if not _nm:
+                        st.warning("이벤트 이름을 입력해주세요.")
+                    else:
+                        _ok = _event_meta_save(selected_key, _nm,
+                                               int(st.session_state[_evm_win_key]),
+                                               int(st.session_state[_evm_loss_key]))
+                        if _ok:
+                            # 이미 입력된 점수가 있으면 즉시 재집계해 이벤트명·기록 반영
+                            _ev_sc = st.session_state.get("sb_scores", {})
+                            if _ev_sc:
+                                records_commit(selected_key, schedule, dict(_ev_sc))
+                            st.success(f"저장됨 · 승 {st.session_state[_evm_win_key]}점 / 패 {st.session_state[_evm_loss_key]}점")
+                            st.rerun()
+                        else:
+                            st.error("저장 실패 — 잠시 후 다시 시도해주세요.")
+            if not str(st.session_state[_evm_name_key] or "").strip():
+                st.caption("⚠️ 이벤트 이름을 저장해야 이벤트 기록 메뉴에 순위가 표시됩니다.")
 
     # ── 잠금 상태 ─────────────────────────────────────────────
     # [v6.6.1] 잠금은 세션 캐시(sb_is_locked) 대신 저장소에서 직접 읽어 항상 최신 반영.
@@ -8782,9 +8909,11 @@ elif page == "📋 대진표생성":
     _saved_keys = shelf_list_dates()
     if _saved_keys:
         st.sidebar.markdown("---")
-        _sel_key = st.sidebar.selectbox(
-            "📂 저장된 대진표", _saved_keys, key="sb_load_key_sidebar"
-        )
+        st.sidebar.markdown("**📂 저장된 대진표**")
+        # [v7.6.3] 연도 → 해당 연도 대진표 2단 선택
+        _sel_key = _year_cascade_select(
+            _saved_keys, key_prefix="sb_side_load",
+            container=st.sidebar, year_label="연도", item_label="대진표 선택")
         _lb1, _lb2 = st.sidebar.columns([1, 1])
 
         # 불러오기
@@ -10112,14 +10241,13 @@ elif page == "🏆 통합기록실":
         if _rec_mode == "월간":
             _cur_m = f"{_now.year}-{_now.month:02d}"
             # 데이터가 있는 월 + 현재월(없어도 확인용) 병합 → 내림차순
-            _months = list(dict.fromkeys(_avail["months"] + [_cur_m]))
-            _months = sorted(_months, reverse=True)
-            # 기본 선택: 데이터가 있는 가장 최근 월(없으면 현재월) — 세션 미설정 시 주입
-            _default_m = _avail["months"][0] if _avail["months"] else _cur_m
-            if "rec_pg_month" not in st.session_state and _default_m in _months:
-                st.session_state["rec_pg_month"] = _default_m
-            _sel_val = st.selectbox("월", _months, key="rec_pg_month",
-                                     label_visibility="collapsed")
+            _months = sorted(list(dict.fromkeys(_avail["months"] + [_cur_m])), reverse=True)
+            # [v7.6.3] 연도 → 해당 연도의 월 2단 선택
+            _sel_val = _year_cascade_select(
+                _months, key_prefix="rec_pg", year_label="연도", item_label="월",
+                item_fmt=lambda m: f"{m[5:7]}월")
+            if not _sel_val:
+                _sel_val = _cur_m
             _ft = "monthly"; _fv = _sel_val; _lbl = f"{_sel_val} 월간"
         else:
             _cur_y = str(_now.year)
@@ -10568,6 +10696,108 @@ elif page == "🔮 매치업예상":
                     ), unsafe_allow_html=True)
             else:
                 st.info("두 팀이 실제로 맞붙은 기록은 아직 없습니다. (예상 승률은 통산 전적 기반 추정)")
+
+# ========================================================================
+# 14-A2. 페이지: 이벤트 기록 (v7.6.4 — 1회성 이벤트 점수 순위)
+# ========================================================================
+elif page == "🎉 이벤트기록":
+    st.markdown("## 🎉 이벤트 기록")
+    st.caption("월례회 등 1회성 이벤트의 점수 순위입니다. (누적 아님 · 이벤트별 개별 집계) "
+               "이벤트 이름·점수는 경기 결과(스코어보드)에서 이벤트 대진표를 열어 설정합니다.")
+
+    _ev_metas    = _event_meta_load_all()
+    _meta_by_key = {m.get("date_key"): m for m in _ev_metas if m.get("date_key")}
+    _rec_rows    = _records_sheet_load_all()
+    _ev_rec_keys = sorted({str(r.get("date_key","")) for r in _rec_rows
+                           if "[이벤트]" in str(r.get("date_key",""))}, reverse=True)
+
+    if not _ev_rec_keys:
+        st.info("아직 집계된 이벤트 기록이 없습니다. 이벤트 대진표를 만든 뒤 경기 결과(스코어보드)에서 "
+                "이벤트 이름·점수를 저장하고 점수를 입력하면 여기에 순위가 표시됩니다.")
+    else:
+        def _ev_label(k):
+            _nm = str((_meta_by_key.get(k) or {}).get("event_name", "") or "").strip()
+            return _nm if _nm else f"(이름 없음) {k}"
+        _sel_ev = _year_cascade_select(_ev_rec_keys, key_prefix="evrec",
+                                       year_label="연도", item_label="이벤트 선택",
+                                       item_fmt=_ev_label)
+        if _sel_ev:
+            _meta     = _meta_by_key.get(_sel_ev, {}) or {}
+            _win_pts  = int(_meta.get("win_pts", 3) or 3)
+            _loss_pts = int(_meta.get("loss_pts", 1) or 1)
+            _ev_name  = str(_meta.get("event_name", "") or "").strip() or f"(이름 없음) {_sel_ev}"
+
+            _ranked = []
+            for r in _rec_rows:
+                if str(r.get("date_key","")) != _sel_ev:
+                    continue
+                _w = int(r.get("wins",0) or 0); _l = int(r.get("losses",0) or 0)
+                _pf = int(r.get("pf",0) or 0);  _pa = int(r.get("pa",0) or 0)
+                _ranked.append({
+                    "name":   str(r.get("display_name","") or r.get("player_key","")),
+                    "league": str(r.get("league","") or ""),
+                    "w": _w, "l": _l, "diff": _pf - _pa,
+                    "pts": _w*_win_pts + _l*_loss_pts,
+                })
+            _ranked.sort(key=lambda x: (-x["pts"], -x["diff"], -x["w"], x["name"]))
+
+            st.markdown(f"### 🎉 {_ev_name}")
+            st.caption(f"승 {_win_pts}점 · 패 {_loss_pts}점 · 참가 {len(_ranked)}명 · 동점 시 득실차 → 다승 순")
+
+            if not _ranked:
+                st.info("이 이벤트에 집계된 점수가 없습니다. 스코어보드에서 점수를 입력해주세요.")
+            else:
+                _medal = ["🥇", "🥈", "🥉"]
+                _grad  = ["linear-gradient(135deg,#fde68a,#f59e0b)",
+                          "linear-gradient(135deg,#eef2f7,#9ca3af)",
+                          "linear-gradient(135deg,#fed7aa,#ea580c)"]
+                _crown = ["👑", "", ""]
+                # ── 1·2·3위 왕카드 ──
+                _podium = _ranked[:3]
+                _pcols = st.columns(len(_podium))
+                for _i, (_pc, _p) in enumerate(zip(_pcols, _podium)):
+                    with _pc:
+                        st.markdown(
+                            f"<div style='background:{_grad[_i]};border-radius:14px;padding:14px 8px;"
+                            f"text-align:center;color:#1f2937;box-shadow:0 4px 10px rgba(0,0,0,.12);"
+                            f"border:1px solid rgba(255,255,255,.55)'>"
+                            f"<div style='font-size:13px;font-weight:800;opacity:.85'>{_medal[_i]} {_i+1}위</div>"
+                            f"<div style='font-size:19px;font-weight:900;margin:4px 0;letter-spacing:-.3px'>{_crown[_i]}{_p['name']}</div>"
+                            f"<div style='font-size:26px;font-weight:900;line-height:1'>{_p['pts']}"
+                            f"<span style='font-size:13px;font-weight:700'>점</span></div>"
+                            f"<div style='font-size:12px;font-weight:700;margin-top:5px;opacity:.9'>"
+                            f"{_p['w']}승 {_p['l']}패 · 득실 {'+' if _p['diff']>=0 else ''}{_p['diff']}</div>"
+                            f"</div>", unsafe_allow_html=True)
+
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+                # ── 전체 순위표 ──
+                _rows_html = []
+                for _idx, _p in enumerate(_ranked):
+                    _rk = _idx + 1
+                    _bg = "#fffbeb" if _rk <= 3 else ("#f8fafc" if _idx % 2 else "#ffffff")
+                    _rkdisp = _medal[_idx] if _idx < 3 else str(_rk)
+                    _lg = (f" <span style='font-size:10px;color:#7c3aed'>{_p['league']}</span>"
+                           if _p['league'] else "")
+                    _rows_html.append(
+                        f"<tr style='background:{_bg}'>"
+                        f"<td style='padding:7px 6px;text-align:center;font-weight:800'>{_rkdisp}</td>"
+                        f"<td style='padding:7px 6px;font-weight:700'>{_p['name']}{_lg}</td>"
+                        f"<td style='padding:7px 6px;text-align:center'>{_p['w']}</td>"
+                        f"<td style='padding:7px 6px;text-align:center'>{_p['l']}</td>"
+                        f"<td style='padding:7px 6px;text-align:center'>{'+' if _p['diff']>=0 else ''}{_p['diff']}</td>"
+                        f"<td style='padding:7px 6px;text-align:center;font-weight:900;color:#b45309'>{_p['pts']}</td>"
+                        f"</tr>")
+                st.markdown(
+                    "<table style='width:100%;border-collapse:collapse;font-size:13px;"
+                    "border:1px solid #e2e8f0;border-radius:8px;overflow:hidden'>"
+                    "<thead><tr style='background:#1e293b;color:#fff'>"
+                    "<th style='padding:8px 6px'>순위</th><th style='padding:8px 6px'>이름</th>"
+                    "<th style='padding:8px 6px'>승</th><th style='padding:8px 6px'>패</th>"
+                    "<th style='padding:8px 6px'>득실</th><th style='padding:8px 6px'>총점</th>"
+                    "</tr></thead><tbody>"
+                    + "".join(_rows_html) +
+                    "</tbody></table>", unsafe_allow_html=True)
 
 # ========================================================================
 # 14-B. 페이지: 개인기록실 (v5.9 신규)
