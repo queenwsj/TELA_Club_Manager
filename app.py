@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.5
+TELA CLUB Random Match Generator v7.6.6
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4192,7 +4192,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.6"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4512,6 +4512,26 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 [data-testid="stHorizontalBlock"]:has([class*="st-key-evrec_yr"]) [data-testid="stColumn"],
 [data-testid="stHorizontalBlock"]:has([class*="st-key-arch_yr"]) [data-testid="stColumn"]{
     min-width:0 !important;
+}
+/* [v7.6.6] 대진생성 사이드바: 날짜+번호, load+del 행 모바일에서도 가로 유지 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-rp_date"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-sb_load_btn"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-rp_date"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-sb_load_btn"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+/* [v7.6.6] 이벤트 편성 CSV·다시편성 버튼 행 모바일 가로 유지 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-ev_result_csv"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-ev_result_csv"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-ev_result_csv"]) button{
+    white-space:nowrap !important; font-size:0.78rem !important;
+    padding-left:6px !important; padding-right:6px !important;
 }
 /* [v7.5.2 수정2] 회원관리 검색 행(검색창·검색·백업·등록) 모바일 한 줄 유지 */
 [data-testid="stHorizontalBlock"]:has([class*="st-key-roster_search_input"]){
@@ -5193,7 +5213,8 @@ def member_type_badge(mt):
 
 def _year_cascade_select(items, *, key_prefix, item_label="선택", year_label="연도",
                          container=None, to_year=None, item_fmt=None,
-                         label_visibility="visible", horizontal=False, default_item=None):
+                         label_visibility="visible", horizontal=False, default_item=None,
+                         ratio=(1, 1.6)):
     """[v7.6.3] 연도 → 해당 연도 항목 2단 드롭다운.
     데이터가 많이 쌓여도 먼저 연도를 고정한 뒤 그 연도 항목만 고르도록 한다.
     items: 문자열 목록(date_key 'YYYY-MM-DD(요일)_n' 또는 기간 'YYYY-MM').
@@ -5212,7 +5233,7 @@ def _year_cascade_select(items, *, key_prefix, item_label="선택", year_label="
         st.session_state.setdefault(_yk, _ty(default_item))
         st.session_state.setdefault(_ik, default_item)
     if horizontal:
-        _cc1, _cc2 = c.columns([1, 1.6])
+        _cc1, _cc2 = c.columns(list(ratio))
     else:
         _cc1 = _cc2 = c
     sel_year = _cc1.selectbox(year_label, years, key=_yk,
@@ -5696,65 +5717,62 @@ def dialog_form(df, existing=None):
     title = "✏️ 회원 정보 수정" if existing else "➕ 새 회원 등록"
     st.markdown(f"#### {title}")
 
-    # 행1: 구분 / 성명 / 성별 / 등급
-    c1,c2,c3,c_grd = st.columns([1,1,1,1])
+    # 행1: 성명 / 성별 / 생년월일  [v7.6.6 등록 순서 개편]
+    c1, c2, c3 = st.columns([1.3, 0.8, 1.3])
     with c1:
-        cat = st.selectbox("구분 *", CATEGORIES,
-            index=CATEGORIES.index(existing["category"]) if existing else 6)
-    with c2:
         name = st.text_input("성명 *",
             value=existing["name"] if existing else "", placeholder="홍길동")
-    with c3:
+    with c2:
         gender = st.selectbox("성별 *", ["남","여"],
             index=0 if not existing else (0 if existing["gender"]=="남" else 1))
-    with c_grd:
+    with c3:
+        by_v = _birth_disp(existing.get("birth_year","")) if existing else ""
+        birth_year = st.text_input("생년월일", value=by_v,
+            placeholder="1990-05-03 또는 19900503")
+
+    # 행2: 구분 / 등급 / 리그  (분류 항목을 한 줄로)
+    c4, c5, c6 = st.columns([1, 1, 1])
+    with c4:
+        cat = st.selectbox("구분 *", CATEGORIES,
+            index=CATEGORIES.index(existing["category"]) if existing else 6)
+    with c5:
         _ex_grade = str(existing.get("grade","") or "").strip() if existing else ""
         _grd_idx  = GRADE_OPTIONS.index(_ex_grade) if _ex_grade in GRADE_OPTIONS else 0
         grade_sel = st.selectbox(
-            "등급 (1=최상위/5=입문)",
-            GRADE_OPTIONS,
-            index=_grd_idx,
+            "등급", GRADE_OPTIONS, index=_grd_idx,
             format_func=lambda x: GRADE_LABELS.get(x, x),
-            help="1~5등급: 1이 가장 높음. 이벤트 팀편성에 활용됩니다."
-        )
-
-    # 행2: 카페ID / 생년월일 / 연락처 / 거주지
-    c4,c5,c6,c6b = st.columns([1,1,1,1])
-    with c4:
-        cafe_id = st.text_input("카페ID",
-            value=existing["cafe_id"] if existing else "", placeholder="cafe_id")
-    with c5:
-        by_v = _birth_disp(existing.get("birth_year","")) if existing else ""
-        birth_year = st.text_input("생년월일", value=by_v,
-            placeholder="1990-05-03 또는 19900503 (비우면 생략)")
+            help="1~5등급: 1이 가장 높음. 이벤트 팀편성에 활용됩니다.")
     with c6:
-        phone = st.text_input("연락처",
-            value=existing["phone"] if existing else "", placeholder="010-0000-0000")
-    with c6b:
-        region = st.text_input("거주지",
-            value=existing["region"] if existing else "", placeholder="서울 강남구")
-
-    # 행3: 입회일 / 리그 / 이메일
-    #   [v7.3.3] 회원 정보에서 직접 리그(A·B·C) 등록·수정 가능하도록 추가.
-    #   회원 리그는 A·B·C만 사용(LEAGUE_NAMES[:3]). '—' 선택 시 미지정(빈 값).
-    c7, c_lg, c8 = st.columns([1, 1, 1.4])
-    with c7:
-        jd_val = None
-        if existing and existing.get("join_date"):
-            try: jd_val = datetime.strptime(str(existing["join_date"]),"%Y-%m-%d").date()
-            except ValueError: pass
-        join_date = st.date_input("입회일", value=jd_val or date.today())
-    with c_lg:
         _LEAGUE_OPTS = ["—"] + LEAGUE_NAMES[:3]   # 미지정 + A·B·C
         _ex_league = str(existing.get("league","") or "").strip() if existing else ""
         _lg_idx = _LEAGUE_OPTS.index(_ex_league) if _ex_league in _LEAGUE_OPTS else 0
         league_sel = st.selectbox(
             "리그", _LEAGUE_OPTS, index=_lg_idx,
-            help="회원 소속 리그(A·B·C). 비우려면 '—' 선택. 일괄 변경은 회원 목록 상단에서도 가능합니다."
-        )
+            help="회원 소속 리그(A·B·C). 비우려면 '—' 선택. 일괄 변경은 회원 목록 상단에서도 가능합니다.")
+
+    # 행3: 카페ID / 연락처 / 이메일  (연락 항목)
+    c7, c8, c9 = st.columns([1, 1, 1.3])
+    with c7:
+        cafe_id = st.text_input("카페ID",
+            value=existing["cafe_id"] if existing else "", placeholder="cafe_id")
     with c8:
+        phone = st.text_input("연락처",
+            value=existing["phone"] if existing else "", placeholder="010-0000-0000")
+    with c9:
         email = st.text_input("이메일",
             value=existing["email"] if existing else "", placeholder="example@email.com")
+
+    # 행4: 거주지 / 입회일
+    c10, c11 = st.columns([1.4, 1])
+    with c10:
+        region = st.text_input("거주지",
+            value=existing["region"] if existing else "", placeholder="서울 강남구")
+    with c11:
+        jd_val = None
+        if existing and existing.get("join_date"):
+            try: jd_val = datetime.strptime(str(existing["join_date"]),"%Y-%m-%d").date()
+            except ValueError: pass
+        join_date = st.date_input("입회일", value=jd_val or date.today())
 
     # 행3.5: [v7.6.0] 회원 유형(일반/부부) / 배우자 이름
     #   [v7.7.0 수정5] 신규 등록에서도 배우자 이름이 저장되도록 위젯에 key + 세션 사전 시드.
@@ -7181,7 +7199,7 @@ def render_roster_page():
             rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
             # 배우자 (성명과 카페ID 사이) — 부부회원만 표시
             _sp_tbl = str(row.get('spouse_name','') or '').strip()
-            _sp_cell = (f"💑{_sp_tbl}" if str(row.get('member_type','') or '').strip() == "부부" and _sp_tbl else "—")
+            _sp_cell = (f"{_sp_tbl}" if str(row.get('member_type','') or '').strip() == "부부" and _sp_tbl else "—")
             rc[ci].markdown(cell(_sp_cell, "#be185d" if _sp_cell != "—" else "#cbd5e1", "font-weight:600"), unsafe_allow_html=True); ci += 1
             # 카페ID
             rc[ci].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True); ci += 1
@@ -10275,7 +10293,7 @@ elif page == "🏆 통합기록실":
             _sel_val = _year_cascade_select(
                 _months, key_prefix="rec_pg", year_label="연도", item_label="월",
                 item_fmt=lambda m: f"{m[5:7]}월", horizontal=True,
-                default_item=_default_m, label_visibility="collapsed")
+                default_item=_default_m, label_visibility="collapsed", ratio=(1, 1))
             if not _sel_val:
                 _sel_val = _cur_m
             _ft = "monthly"; _fv = _sel_val; _lbl = f"{_sel_val} 월간"
@@ -10801,7 +10819,7 @@ elif page == "🎉 이벤트기록":
                     _prk = _p["rank"]
                     _md  = _medal_by_rank.get(_prk, "")
                     _gr  = _grad_by_rank.get(_prk, "linear-gradient(135deg,#e2e8f0,#cbd5e1)")
-                    _cr  = "👑" if _prk == 1 else ""
+                    _cr  = ""
                     _co  = "공동 " if _rank_counts.get(_prk, 0) > 1 else ""
                     _cards.append(
                         f"<div style='flex:1 1 0;min-width:0;background:{_gr};border-radius:14px;"
@@ -11923,44 +11941,40 @@ elif page == "🎯 이벤트 팀편성":
                     _ages.append(_cur_year_disp - int(_b) + 1)
             return (sum(_ages) / len(_ages)) if _ages else 0
 
-        _n_res    = len(_res)
-        _max_cols = min(_n_res, 4)
-        for _row_i in range((_n_res + _max_cols - 1) // _max_cols):
-            _cols_row = st.columns(_max_cols)
-            for _ci in range(_max_cols):
-                _ti = _row_i * _max_cols + _ci
-                if _ti >= _n_res: break
-                _t  = _res[_ti]
-                _tc = _tcolors[_ti % len(_tcolors)]
-                _avg_g = sum(p["_grade_num"] for p in _t) / len(_t) if _t else 0
-                _aage  = _avg_age(_t)
-                _mhtml = ""
-                for _pm in _t:
-                    _pg    = str(_pm.get("grade","")).strip()
-                    # [v5.9.8] 별표 제거 → 숫자등급만 표기
-                    _plbl  = f"{_pg}등급" if _pg.isdigit() else "미지정"
-                    _pgc   = GRADE_COLORS.get(_pg, "#9ca3af")
-                    _gico  = "🔵" if str(_pm.get("gender","")).strip() == "남" else "🔴"
-                    _page  = ""
-                    _pb = _pm.get("_birth")
-                    if _pb:
-                        _page = f" <span style='color:#9ca3af;font-size:10px'>{_cur_year_disp-int(_pb)+1}세</span>"
-                    _mhtml += (
-                        f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                        f"padding:5px 8px;margin:3px 0;background:#fff;border-radius:6px;"
-                        f"border-left:3px solid {_pgc};'>"
-                        f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>{_gico} {_pm['name']}{_page}</span>"
-                        f"<span style='font-size:11px;color:{_pgc};font-weight:700'>{_plbl}</span>"
-                        f"</div>"
-                    )
-                _cols_row[_ci].markdown(
-                    f"<div style='background:{_tc}0d;border:2px solid {_tc}44;"
-                    f"border-radius:12px;padding:14px;margin-bottom:8px;'>"
-                    f"<div style='font-weight:900;color:{_tc};font-size:16px;margin-bottom:4px'>"
-                    f"🏸 {_team_title(_ti)}</div>"
-                    f"<div style='font-size:11px;color:#9ca3af;margin-bottom:8px'>"
-                    f"{len(_t)}명 · 평균 {_avg_g:.1f}등급 · 평균 {_aage:.0f}세</div>{_mhtml}</div>",
-                    unsafe_allow_html=True)
+        # [v7.6.6 수정5] st.columns 대신 HTML flex → 모바일에서도 팀이 가로로 보이게
+        _team_cards_html = []
+        for _ti, _t in enumerate(_res):
+            _tc = _tcolors[_ti % len(_tcolors)]
+            _avg_g = sum(p["_grade_num"] for p in _t) / len(_t) if _t else 0
+            _aage  = _avg_age(_t)
+            _mhtml = ""
+            for _pm in _t:
+                _pg    = str(_pm.get("grade","")).strip()
+                _plbl  = f"{_pg}등급" if _pg.isdigit() else "미지정"
+                _pgc   = GRADE_COLORS.get(_pg, "#9ca3af")
+                _gico  = "🔵" if str(_pm.get("gender","")).strip() == "남" else "🔴"
+                _page  = ""
+                _pb = _pm.get("_birth")
+                if _pb:
+                    _page = f" <span style='color:#9ca3af;font-size:10px'>{_cur_year_disp-int(_pb)+1}세</span>"
+                _mhtml += (
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                    f"padding:5px 8px;margin:3px 0;background:#fff;border-radius:6px;"
+                    f"border-left:3px solid {_pgc};'>"
+                    f"<span style='font-weight:700;color:#1a2e4a;font-size:13px'>{_gico} {_pm['name']}{_page}</span>"
+                    f"<span style='font-size:11px;color:{_pgc};font-weight:700'>{_plbl}</span>"
+                    f"</div>"
+                )
+            _team_cards_html.append(
+                f"<div style='flex:1 1 160px;min-width:150px;background:{_tc}0d;"
+                f"border:2px solid {_tc}44;border-radius:12px;padding:12px;'>"
+                f"<div style='font-weight:900;color:{_tc};font-size:15px;margin-bottom:4px'>"
+                f"🏸 {_team_title(_ti)}</div>"
+                f"<div style='font-size:11px;color:#9ca3af;margin-bottom:8px'>"
+                f"{len(_t)}명 · 평균 {_avg_g:.1f}등급 · 평균 {_aage:.0f}세</div>{_mhtml}</div>")
+        st.markdown(
+            "<div style='display:flex;flex-wrap:wrap;gap:8px;align-items:stretch'>"
+            + "".join(_team_cards_html) + "</div>", unsafe_allow_html=True)
 
         # 요약 테이블
         st.markdown("#### 📋 팀별 요약")
@@ -11989,12 +12003,16 @@ elif page == "🎯 이벤트 팀편성":
                     "등급":_p.get("grade",""),"나이":_page,"성별":_p.get("gender",""),
                     "리그":_p.get("league",""),"카테고리":_p.get("category","")})
         _dlcsv = pd.DataFrame(_dlrows).to_csv(index=False, encoding="utf-8-sig")
-        st.download_button("⬇️ 팀편성 결과 CSV", data=_dlcsv.encode("utf-8-sig"),
-            file_name=f"team_result_{kst_today_str('%Y%m%d')}.csv", mime="text/csv")
-
-        if st.button("🔄 다시 편성 (랜덤 재배치)", key="re_team"):
-            st.session_state["_team_run"] = True
-            st.rerun()
+        # [v7.6.6 수정6] CSV · 다시편성 버튼 한 줄
+        _evr1, _evr2 = st.columns(2)
+        with _evr1:
+            st.download_button("⬇️ 팀편성 결과 CSV", data=_dlcsv.encode("utf-8-sig"),
+                file_name=f"team_result_{kst_today_str('%Y%m%d')}.csv", mime="text/csv",
+                key="ev_result_csv", use_container_width=True)
+        with _evr2:
+            if st.button("🔄 다시 편성 (랜덤 재배치)", key="re_team", use_container_width=True):
+                st.session_state["_team_run"] = True
+                st.rerun()
 
         # ── 대진표 생성 연동 ──────────────────────────────────
         st.markdown("---")
