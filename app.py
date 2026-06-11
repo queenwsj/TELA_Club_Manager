@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.4
+TELA CLUB Random Match Generator v7.6.5
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4192,7 +4192,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.4"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4496,6 +4496,21 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 }
 [data-testid="stHorizontalBlock"]:has([class*="st-key-mu_a1"]) [data-testid="stColumn"],
 [data-testid="stHorizontalBlock"]:has([class*="st-key-mu_b1"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+/* [v7.6.5] 연도+항목 2단 드롭다운을 모바일에서도 한 줄로 유지 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-rec_pg_yr"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-sb_load_yr"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-sb_side_load_yr"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-evrec_yr"]),
+[data-testid="stHorizontalBlock"]:has([class*="st-key-arch_yr"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-rec_pg_yr"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-sb_load_yr"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-sb_side_load_yr"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-evrec_yr"]) [data-testid="stColumn"],
+[data-testid="stHorizontalBlock"]:has([class*="st-key-arch_yr"]) [data-testid="stColumn"]{
     min-width:0 !important;
 }
 /* [v7.5.2 수정2] 회원관리 검색 행(검색창·검색·백업·등록) 모바일 한 줄 유지 */
@@ -5178,10 +5193,11 @@ def member_type_badge(mt):
 
 def _year_cascade_select(items, *, key_prefix, item_label="선택", year_label="연도",
                          container=None, to_year=None, item_fmt=None,
-                         label_visibility="visible"):
+                         label_visibility="visible", horizontal=False, default_item=None):
     """[v7.6.3] 연도 → 해당 연도 항목 2단 드롭다운.
     데이터가 많이 쌓여도 먼저 연도를 고정한 뒤 그 연도 항목만 고르도록 한다.
     items: 문자열 목록(date_key 'YYYY-MM-DD(요일)_n' 또는 기간 'YYYY-MM').
+    [v7.6.5] horizontal=True 면 연도·항목을 한 줄(좌우)로, default_item 이 있으면 그 항목을 기본 선택.
     반환: 선택된 항목 문자열(없으면 None).
     """
     c = container if container is not None else st
@@ -5190,12 +5206,21 @@ def _year_cascade_select(items, *, key_prefix, item_label="선택", year_label="
         return None
     _ty = to_year or (lambda s: str(s)[:4])
     years = sorted({_ty(x) for x in items}, reverse=True)
-    sel_year = c.selectbox(year_label, years, key=f"{key_prefix}_yr",
-                           label_visibility=label_visibility)
+    _yk = f"{key_prefix}_yr"; _ik = f"{key_prefix}_it"
+    # 기본 선택 사전 시드 (데이터가 있는 항목 우선 등)
+    if default_item is not None and default_item in items:
+        st.session_state.setdefault(_yk, _ty(default_item))
+        st.session_state.setdefault(_ik, default_item)
+    if horizontal:
+        _cc1, _cc2 = c.columns([1, 1.6])
+    else:
+        _cc1 = _cc2 = c
+    sel_year = _cc1.selectbox(year_label, years, key=_yk,
+                              label_visibility=label_visibility)
     flt = [x for x in items if _ty(x) == sel_year]
-    sel = c.selectbox(item_label, flt, key=f"{key_prefix}_it",
-                      label_visibility=label_visibility,
-                      format_func=item_fmt or (lambda x: x))
+    sel = _cc2.selectbox(item_label, flt, key=_ik,
+                         label_visibility=label_visibility,
+                         format_func=item_fmt or (lambda x: x))
     return sel
 
 
@@ -6898,14 +6923,15 @@ def render_roster_page():
         ("구분",      0.55),
         ("리그",      0.65),
         ("등급",      0.55),
-        ("유형",      0.50),
-        ("성명",      0.82),
-        ("카페ID",    0.85),
-        ("생년월일",   0.92),
-        ("성별",      0.38),
-        ("연락처",     0.95),
-        ("입회일",     0.75),
-        ("휴면기간",   1.00),
+        ("유형",      0.48),
+        ("성명",      0.80),
+        ("배우자",     0.78),
+        ("카페ID",    0.80),
+        ("생년월일",   0.86),
+        ("성별",      0.36),
+        ("연락처",     0.90),
+        ("입회일",     0.72),
+        ("휴면기간",   0.90),
     ]
     if _show_leave_col:
         _COL_SPEC.append(("탈퇴일", 0.72))
@@ -7151,11 +7177,12 @@ def render_roster_page():
             rc[ci].markdown(
                 f"<div style='padding:5px 0'>{member_type_badge(row.get('member_type',''))}</div>",
                 unsafe_allow_html=True); ci += 1
-            # 성명 (+ [v7.7.0 수정2] 부부회원이면 배우자 이름 우측 표기)
+            # 성명 (인라인 배우자 제거 — 별도 '배우자' 열로 분리) [v7.6.5 수정12]
+            rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')),"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
+            # 배우자 (성명과 카페ID 사이) — 부부회원만 표시
             _sp_tbl = str(row.get('spouse_name','') or '').strip()
-            _sp_suffix = (f" <span style='font-size:10px;color:#be185d;font-weight:600'>💑{_sp_tbl}</span>"
-                          if str(row.get('member_type','') or '').strip() == "부부" and _sp_tbl else "")
-            rc[ci].markdown(cell(str(row.get('name','')) + _staff_icon_for(row.get('cafe_id','')) + _sp_suffix,"#1a2e4a","font-weight:600"), unsafe_allow_html=True); ci += 1
+            _sp_cell = (f"💑{_sp_tbl}" if str(row.get('member_type','') or '').strip() == "부부" and _sp_tbl else "—")
+            rc[ci].markdown(cell(_sp_cell, "#be185d" if _sp_cell != "—" else "#cbd5e1", "font-weight:600"), unsafe_allow_html=True); ci += 1
             # 카페ID
             rc[ci].markdown(cell(row.get('cafe_id','') or '—',"#6b7280"), unsafe_allow_html=True); ci += 1
             # 생년월일
@@ -7416,9 +7443,9 @@ _is_staff = is_sub_admin()
 _nav_sections = [
     ("기록", [("🏆 통합기록실", "🏆 클럽 기록"),
               ("👤 개인기록실", "🧍 개인 기록"),
-              ("🔮 매치업예상", "🔮 매치업 예상"),
               ("🎉 이벤트기록", "🎉 이벤트 기록")]),
-    ("경기", [("📊 스코어보드", "📊 경기 결과")]),
+    ("경기", [("📊 스코어보드", "📊 경기 결과"),
+              ("🔮 매치업예상", "🔮 매치업 예상")]),
 ]
 if _is_staff:
     _nav_sections.append(("운영", [("📋 대진표생성", "🎾 대진 생성"),
@@ -8047,7 +8074,7 @@ if page == "📊 스코어보드":
             # [v7.6.3] 연도 → 해당 연도 스코어보드 2단 선택
             selected_key = _year_cascade_select(
                 saved_keys, key_prefix="sb_load",
-                year_label="연도", item_label="저장된 스코어보드 선택")
+                year_label="연도", item_label="스코어보드 선택", horizontal=True)
             if not selected_key:
                 selected_key = f"{_date_with_weekday(today_str)}_001"
         else:
@@ -8913,7 +8940,8 @@ elif page == "📋 대진표생성":
         # [v7.6.3] 연도 → 해당 연도 대진표 2단 선택
         _sel_key = _year_cascade_select(
             _saved_keys, key_prefix="sb_side_load",
-            container=st.sidebar, year_label="연도", item_label="대진표 선택")
+            container=st.sidebar, year_label="연도", item_label="대진표 선택",
+            horizontal=True, label_visibility="collapsed")
         _lb1, _lb2 = st.sidebar.columns([1, 1])
 
         # 불러오기
@@ -10242,10 +10270,12 @@ elif page == "🏆 통합기록실":
             _cur_m = f"{_now.year}-{_now.month:02d}"
             # 데이터가 있는 월 + 현재월(없어도 확인용) 병합 → 내림차순
             _months = sorted(list(dict.fromkeys(_avail["months"] + [_cur_m])), reverse=True)
-            # [v7.6.3] 연도 → 해당 연도의 월 2단 선택
+            _default_m = _avail["months"][0] if _avail["months"] else _cur_m
+            # [v7.6.5] 연도+월 한 줄(가로) · 데이터 있는 월 기본 선택(수정14)
             _sel_val = _year_cascade_select(
                 _months, key_prefix="rec_pg", year_label="연도", item_label="월",
-                item_fmt=lambda m: f"{m[5:7]}월")
+                item_fmt=lambda m: f"{m[5:7]}월", horizontal=True,
+                default_item=_default_m, label_visibility="collapsed")
             if not _sel_val:
                 _sel_val = _cur_m
             _ft = "monthly"; _fv = _sel_val; _lbl = f"{_sel_val} 월간"
@@ -10720,7 +10750,7 @@ elif page == "🎉 이벤트기록":
             return _nm if _nm else f"(이름 없음) {k}"
         _sel_ev = _year_cascade_select(_ev_rec_keys, key_prefix="evrec",
                                        year_label="연도", item_label="이벤트 선택",
-                                       item_fmt=_ev_label)
+                                       item_fmt=_ev_label, horizontal=True)
         if _sel_ev:
             _meta     = _meta_by_key.get(_sel_ev, {}) or {}
             _win_pts  = int(_meta.get("win_pts", 3) or 3)
@@ -10747,42 +10777,60 @@ elif page == "🎉 이벤트기록":
             if not _ranked:
                 st.info("이 이벤트에 집계된 점수가 없습니다. 스코어보드에서 점수를 입력해주세요.")
             else:
-                _medal = ["🥇", "🥈", "🥉"]
-                _grad  = ["linear-gradient(135deg,#fde68a,#f59e0b)",
-                          "linear-gradient(135deg,#eef2f7,#9ca3af)",
-                          "linear-gradient(135deg,#fed7aa,#ea580c)"]
-                _crown = ["👑", "", ""]
-                # ── 1·2·3위 왕카드 ──
-                _podium = _ranked[:3]
-                _pcols = st.columns(len(_podium))
-                for _i, (_pc, _p) in enumerate(zip(_pcols, _podium)):
-                    with _pc:
-                        st.markdown(
-                            f"<div style='background:{_grad[_i]};border-radius:14px;padding:14px 8px;"
-                            f"text-align:center;color:#1f2937;box-shadow:0 4px 10px rgba(0,0,0,.12);"
-                            f"border:1px solid rgba(255,255,255,.55)'>"
-                            f"<div style='font-size:13px;font-weight:800;opacity:.85'>{_medal[_i]} {_i+1}위</div>"
-                            f"<div style='font-size:19px;font-weight:900;margin:4px 0;letter-spacing:-.3px'>{_crown[_i]}{_p['name']}</div>"
-                            f"<div style='font-size:26px;font-weight:900;line-height:1'>{_p['pts']}"
-                            f"<span style='font-size:13px;font-weight:700'>점</span></div>"
-                            f"<div style='font-size:12px;font-weight:700;margin-top:5px;opacity:.9'>"
-                            f"{_p['w']}승 {_p['l']}패 · 득실 {'+' if _p['diff']>=0 else ''}{_p['diff']}</div>"
-                            f"</div>", unsafe_allow_html=True)
+                # [v7.6.5 수정10] 공동 순위 — (총점·득실·승) 모두 같으면 공동, 다음 순위는 건너뜀
+                _prev = None; _rk = 0
+                for _i2, _p in enumerate(_ranked):
+                    _k2 = (_p["pts"], _p["diff"], _p["w"])
+                    if _k2 != _prev:
+                        _rk = _i2 + 1
+                        _prev = _k2
+                    _p["rank"] = _rk
+                _rank_counts = {}
+                for _p in _ranked:
+                    _rank_counts[_p["rank"]] = _rank_counts.get(_p["rank"], 0) + 1
 
-                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+                _medal_by_rank = {1: "🥇", 2: "🥈", 3: "🥉"}
+                _grad_by_rank  = {1: "linear-gradient(135deg,#fde68a,#f59e0b)",
+                                  2: "linear-gradient(135deg,#eef2f7,#9ca3af)",
+                                  3: "linear-gradient(135deg,#fed7aa,#ea580c)"}
 
-                # ── 전체 순위표 ──
+                # ── 1·2·3위 왕카드 (가로 한 줄 · 모바일에서도 유지) [수정9] ──
+                _podium = [p for p in _ranked if p["rank"] <= 3][:6]
+                _cards = []
+                for _p in _podium:
+                    _prk = _p["rank"]
+                    _md  = _medal_by_rank.get(_prk, "")
+                    _gr  = _grad_by_rank.get(_prk, "linear-gradient(135deg,#e2e8f0,#cbd5e1)")
+                    _cr  = "👑" if _prk == 1 else ""
+                    _co  = "공동 " if _rank_counts.get(_prk, 0) > 1 else ""
+                    _cards.append(
+                        f"<div style='flex:1 1 0;min-width:0;background:{_gr};border-radius:14px;"
+                        f"padding:12px 6px;text-align:center;color:#1f2937;box-shadow:0 4px 10px rgba(0,0,0,.12);"
+                        f"border:1px solid rgba(255,255,255,.55)'>"
+                        f"<div style='font-size:12px;font-weight:800;opacity:.85'>{_md} {_co}{_prk}위</div>"
+                        f"<div style='font-size:16px;font-weight:900;margin:3px 0;letter-spacing:-.3px;"
+                        f"white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>{_cr}{_p['name']}</div>"
+                        f"<div style='font-size:23px;font-weight:900;line-height:1'>{_p['pts']}"
+                        f"<span style='font-size:12px;font-weight:700'>점</span></div>"
+                        f"<div style='font-size:11px;font-weight:700;margin-top:4px;opacity:.9'>"
+                        f"{_p['w']}승 {_p['l']}패 · {'+' if _p['diff']>=0 else ''}{_p['diff']}</div>"
+                        f"</div>")
+                st.markdown(
+                    "<div style='display:flex;flex-wrap:nowrap;gap:8px;align-items:stretch;margin-bottom:12px'>"
+                    + "".join(_cards) + "</div>", unsafe_allow_html=True)
+
+                # ── 전체 순위표 (팀 라벨 없이 이름만) [수정9] ──
                 _rows_html = []
-                for _idx, _p in enumerate(_ranked):
-                    _rk = _idx + 1
-                    _bg = "#fffbeb" if _rk <= 3 else ("#f8fafc" if _idx % 2 else "#ffffff")
-                    _rkdisp = _medal[_idx] if _idx < 3 else str(_rk)
-                    _lg = (f" <span style='font-size:10px;color:#7c3aed'>{_p['league']}</span>"
-                           if _p['league'] else "")
+                for _p in _ranked:
+                    _prk = _p["rank"]
+                    _bg  = "#fffbeb" if _prk <= 3 else "#ffffff"
+                    _rkcell = _medal_by_rank.get(_prk, str(_prk)) if _prk <= 3 else str(_prk)
+                    if _rank_counts.get(_prk, 0) > 1:
+                        _rkcell = f"<div style='font-size:9px;color:#64748b'>공동</div>{_rkcell}"
                     _rows_html.append(
                         f"<tr style='background:{_bg}'>"
-                        f"<td style='padding:7px 6px;text-align:center;font-weight:800'>{_rkdisp}</td>"
-                        f"<td style='padding:7px 6px;font-weight:700'>{_p['name']}{_lg}</td>"
+                        f"<td style='padding:7px 6px;text-align:center;font-weight:800'>{_rkcell}</td>"
+                        f"<td style='padding:7px 6px;font-weight:700'>{_p['name']}</td>"
                         f"<td style='padding:7px 6px;text-align:center'>{_p['w']}</td>"
                         f"<td style='padding:7px 6px;text-align:center'>{_p['l']}</td>"
                         f"<td style='padding:7px 6px;text-align:center'>{'+' if _p['diff']>=0 else ''}{_p['diff']}</td>"
@@ -11426,18 +11474,26 @@ elif page == "🗂️ 대진표보관함":
     if not _arch_keys:
         st.info("📭 저장된 대진표가 없습니다. 대진표를 생성하면 여기에 보관됩니다.")
     else:
+        # [v7.6.5 수정15] 이벤트 대진표는 스코어보드에서 입력한 이벤트 이름을 함께 표시
+        _arch_ev_meta = {m.get("date_key"): m for m in _event_meta_load_all() if m.get("date_key")}
         def _arch_label(k):
             base = str(k)[:10]
             suffix = str(k)[10:]
-            return _date_with_weekday(base) + (suffix if suffix else "")
+            lbl = _date_with_weekday(base) + (suffix if suffix else "")
+            if "[이벤트]" in str(k):
+                _nm = str((_arch_ev_meta.get(k) or {}).get("event_name", "") or "").strip()
+                if _nm:
+                    lbl += f" · 🎉{_nm}"
+            return lbl
 
         _arch_tab1, _arch_tab2 = st.tabs(["📅 날짜별 조회", "🔍 회원 이름 검색"])
 
         # ── 날짜별 조회 ──────────────────────────────────────
         with _arch_tab1:
-            _sel_key = st.selectbox(
-                "대진표 선택", _arch_keys,
-                format_func=_arch_label, key="arch_date_sel")
+            # [v7.6.5 수정4] 연도 → 대진표 2단(가로) 선택
+            _sel_key = _year_cascade_select(
+                _arch_keys, key_prefix="arch", year_label="연도",
+                item_label="대진표 선택", item_fmt=_arch_label, horizontal=True)
             if _sel_key:
                 _loaded = shelf_load(_sel_key)
                 if not _loaded or not _loaded.get("schedule"):
