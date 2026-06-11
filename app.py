@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.0
+TELA CLUB Random Match Generator v7.7.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -123,11 +123,14 @@ def _log_bg(fn, *args, **kwargs):
 
 def _clear_member_cache():
     """[v7.1.0] 회원 데이터 캐시만 초기화 — 불필요한 records/schedules 캐시는 유지.
-    st.cache_data.clear() 전역 초기화 대신 사용해 페이지 전환 속도 개선."""
-    try:
-        _load_records_cached.clear()
-    except Exception:
-        pass
+    st.cache_data.clear() 전역 초기화 대신 사용해 페이지 전환 속도 개선.
+    [v7.7.1] _member_grade_map도 회원 데이터 기반이라 함께 무효화 —
+    등급 수정 직후 매치업 예상이 TTL(180초) 동안 옛 등급을 보던 문제 해결."""
+    for _fn in (_load_records_cached, _member_grade_map):
+        try:
+            _fn.clear()
+        except Exception:
+            pass
 
 def _clear_schedule_cache():
     """[v7.4.0] 스코어보드/기록/개인기록/참여통계 관련 캐시 전체 초기화.
@@ -2511,7 +2514,7 @@ def deserialize_schedule(schedule):
 # ============================================================
 # 섹션 12-B: 누적 기록실 (Supabase 저장)
 # ============================================================
-# Supabase "records" 워크시트 구조:
+# Supabase "records" 테이블 구조:
 # date_key | year_month | year | player_key | display_name | league | wins | losses | pf | pa | draws
 # ※ draws는 wins/losses/pf/pa 뒤에 append로 추가됨
 # [v7.3.4] RECORDS_SHEET_NAME·RECORDS_COLUMNS 상수는 미사용이라 삭제 (records 테이블 구조는 records_commit가 직접 정의).
@@ -2819,7 +2822,7 @@ def exclude_list_remove(name: str):
 
 @st.cache_data(ttl=300, show_spinner="🎾 기록 데이터를 불러오는 중…")
 def records_load_cached() -> list:
-    """records 시트 캐시 로드 (TTL 300초). [v7.0.3] 120→300초로 상향."""
+    """records 테이블 캐시 로드 (TTL 300초). [v7.0.3] 120→300초로 상향."""
     return _records_sheet_load_all()
 
 
@@ -4253,7 +4256,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -8088,7 +8091,7 @@ if page == "🧾 로그":
     # ── 6) 오류 로그 (error_logs) ────────────────────────────
     else:
         st.markdown("### 🗂️ 오류 로그 (error_logs)")
-        # 이번 세션 오류 (_app_errors) — 아직 시트에 영구 기록되기 전 임시 항목 포함
+        # 이번 세션 오류 (_app_errors) — 아직 Supabase에 영구 기록되기 전 임시 항목 포함
         _sys_errs = st.session_state.get("_app_errors", [])
         if _sys_errs:
             st.error(f"⚠️ 이번 세션 오류 {len(_sys_errs)}건")
@@ -8133,7 +8136,7 @@ if page == "📊 스코어보드":
     # 스코어보드 열람은 누구나 가능, 점수 입력은 부관리자 이상 (_can_edit로 제어)
     # [v6.3] 백그라운드 스레드 오류를 세션 로그로 흡수
     while _BG_ERRORS:
-        _app_log_error(_BG_ERRORS.pop(0))   # 세션+시트 영구 기록
+        _app_log_error(_BG_ERRORS.pop(0))   # 세션+Supabase 영구 기록
     # Supabase 동기화 오류 표시 (관리자만, 비우지 않고 '계정 관리'에서도 조회 가능)
     if is_admin():
         _errs = st.session_state.get("_app_errors", [])
@@ -10255,14 +10258,14 @@ elif page == "🏆 통합기록실":
                         st.success(f"✅ {_ok}개 날짜 재집계 완료! 제외 선수({', '.join(exclude_list_load())})가 모든 기록에서 제거되었습니다.")
                     st.rerun()
 
-            # ── 완전 재구축 (시트 손상 복구용) ──
+            # ── 완전 재구축 (데이터 손상 복구용) ──
             st.markdown("---")
             st.caption("🛠️ **데이터가 이상하게 표시될 때** (무/패/득점 등이 뒤섞임): "
-                       "아래 버튼으로 records 시트를 완전히 비우고 헤더부터 새로 만든 뒤 모든 날짜를 다시 계산합니다. "
+                       "아래 버튼으로 records 테이블을 초기화한 뒤 모든 날짜를 다시 계산합니다. "
                        "컬럼 밀림으로 손상된 데이터를 근본적으로 정정합니다.")
             if st.button("🛠️ 기록실 완전 재구축 (관리자)", type="secondary",
                          key="full_rebuild_btn",
-                         help="records 시트를 초기화하고 헤더를 새로 작성한 뒤 전체 재집계합니다."):
+                         help="records 테이블을 초기화한 뒤 전체 재집계합니다."):
                 with st.spinner("기록실 완전 재구축 중… (잠시 기다려주세요)"):
                     _rb_ok, _rb_fail, _rb_err = records_full_rebuild()
                 _clear_schedule_cache()
@@ -10342,7 +10345,7 @@ elif page == "🏆 통합기록실":
                     ), unsafe_allow_html=True)
                 if not _ok_match:
                     st.info("로컬과 Supabase 개수가 다릅니다. 위 **강제 복원**으로 맞출 수 있습니다 "
-                            "(Supabase가 원본이므로 로컬에만 있는 항목은 다음 저장 시 시트에도 반영됩니다).")
+                            "(Supabase가 원본이므로 로컬 캐시에만 있는 항목은 다음 저장 시 Supabase에도 반영됩니다).")
 
 
     _now = kst_today()
