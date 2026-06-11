@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.5
+TELA CLUB Random Match Generator v7.7.6
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4342,7 +4342,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.6"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4794,6 +4794,23 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
     except Exception:
         pass
 
+def _client_ip() -> str:
+    """[v7.7.6] 클라이언트 IP 추정. Streamlit Community Cloud는 프록시 뒤이므로
+    st.context.headers의 X-Forwarded-For 첫 값을 사용(없으면 X-Real-IP).
+    ⚠️ 메인 스레드에서만 호출 가능(백그라운드 스레드엔 ScriptRunContext가 없음).
+    프록시 체인 특성상 정확도 100%는 아니다."""
+    try:
+        h = st.context.headers
+    except Exception:
+        return ""
+    try:
+        xff = h.get("X-Forwarded-For") or h.get("x-forwarded-for") or ""
+        if xff:
+            return xff.split(",")[0].strip()
+        return (h.get("X-Real-IP") or h.get("x-real-ip") or "").strip()
+    except Exception:
+        return ""
+
 def log_login(user: dict):
     """[v7 Supabase] 로그인 성공 기록을 login_log 테이블에 삽입."""
     try:
@@ -4803,6 +4820,7 @@ def log_login(user: dict):
         _role_ko = {"admin": "관리자", "sub_admin": "부관리자", "member": "회원"}.get(
             user.get("role", ""), user.get("role", "") or "회원")
         _nm = _editor_display_name() or user.get("name", "")
+        _ip = _client_ip()   # [v7.7.6] 메인 스레드에서 IP 확보(스레드엔 컨텍스트 없음)
         def _do_login_log():
             _get_supabase().table("login_log").insert({
                 "timestamp": ts,
@@ -4810,6 +4828,7 @@ def log_login(user: dict):
                 "name":      str(_nm     or ""),
                 "role":      str(_role_ko or ""),
                 "result":    "성공",
+                "ip":        str(_ip or ""),
             }).execute()
             _supabase_prune_log("login_log", days=60)
         _log_bg(_do_login_log)  # [v7.2] 비동기
@@ -4847,6 +4866,7 @@ def log_login_fail(login_id: str, locked: bool = False):
         ts = kst_now_str("%Y-%m-%d %H:%M:%S")
         _nm, _role = _resolve_login_identity(login_id)
         _r = "차단" if locked else "실패"
+        _ip = _client_ip()   # [v7.7.6] 메인 스레드에서 IP 확보
         def _do_fail_log():
             _get_supabase().table("login_log").insert({
                 "timestamp": ts,
@@ -4854,6 +4874,7 @@ def log_login_fail(login_id: str, locked: bool = False):
                 "name":      str(_nm   or ""),
                 "role":      str(_role or ""),
                 "result":    _r,
+                "ip":        str(_ip or ""),
             }).execute()
             _supabase_prune_log("login_log", days=60)
         _log_bg(_do_fail_log)  # [v7.2] 비동기
@@ -8211,7 +8232,7 @@ if page == "🧾 로그":
     # ── 3) 로그인 이력 (login_log) ───────────────────────────
     elif _view == "login":
         st.markdown("### 🔑 로그인 이력 (login_log)")
-        st.caption("로그인 성공·실패·차단 기록입니다. (최근 200건, 최신순 · 30일 경과 자동 정리)")
+        st.caption("로그인 성공·실패·차단 기록입니다. (최근 200건, 최신순 · 60일 경과 자동 정리)")
         if st.button("🔄 새로고침", key="reload_login_log"):
             st.session_state["_login_log_view"] = _login_log_load(200)
         if "_login_log_view" not in st.session_state:
@@ -8232,19 +8253,22 @@ if page == "🧾 로그":
                 _bg, _fg, _txt = _RESULT_BADGE.get(_res, ("#e5e7eb", "#374151", _res))
                 _role_part = (f"<span style='color:{_rc};font-weight:700'>{_r.get('role','')}</span> · "
                               f"{_r.get('name','')} " if _r.get("role") or _r.get("name") else "")
+                _ip_v = str(_r.get("ip", "") or "").strip()
+                _ip_part = (f" · <span style='color:#64748b;font-family:monospace;"
+                            f"font-size:0.75rem'>IP {_ip_v}</span>") if _ip_v else ""
                 st.markdown(
                     f"<div style='font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9'>"
                     f"<b>[{_r.get('timestamp','')}]</b> "
                     f"<span style='background:{_bg};color:{_fg};font-weight:700;"
                     f"padding:1px 7px;border-radius:10px;font-size:0.72rem'>{_txt}</span> "
                     f"{_role_part}"
-                    f"<span style='color:#94a3b8'>(ID:{_r.get('login_id','')})</span></div>",
+                    f"<span style='color:#94a3b8'>(ID:{_r.get('login_id','')})</span>{_ip_part}</div>",
                     unsafe_allow_html=True)
 
     # ── 5) 메뉴 열람 이력 (view_log) ─────────────────────────
     elif _view == "view":
         st.markdown("### 👀 메뉴 열람 이력 (view_log)")
-        st.caption("누가 어떤 메뉴를 열람했는지 기록입니다. (최근 200건, 최신순 · 30일 경과 자동 정리)")
+        st.caption("누가 어떤 메뉴를 열람했는지 기록입니다. (최근 200건, 최신순 · 60일 경과 자동 정리)")
         if st.button("🔄 새로고침", key="reload_view_log"):
             st.session_state["_view_log_view"] = _view_log_load(200)
         if "_view_log_view" not in st.session_state:
