@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.7
+TELA CLUB Random Match Generator v7.6.8
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -3542,6 +3542,24 @@ def player_career_winrate(player_name: str) -> dict:
             "rate": (w / g * 100) if g else 0.0}
 
 
+@st.cache_data(ttl=180, show_spinner=False)
+def _member_grade_map() -> dict:
+    """회원 이름 → 등급(int 1~5) 매핑. 미지정/비등급은 제외.
+    [v7.6.8 수정2] 매치업 예상에 등급을 반영(전적7:등급3)하기 위한 조회용. 페이지에는 표시하지 않음."""
+    out = {}
+    try:
+        for r in _supabase_members_load_records():
+            nm = str(r.get("name", "") or "").strip()
+            gv = str(r.get("grade", "") or "").strip()
+            if nm and gv.isdigit():
+                g = int(gv)
+                if 1 <= g <= 5:
+                    out[nm] = g
+    except Exception:
+        pass
+    return out
+
+
 def predict_matchup(team_a: list, team_b: list) -> dict:
     """
     [기능4] 두 팀의 과거 전적 기반 예상 승률.
@@ -3573,6 +3591,26 @@ def predict_matchup(team_a: list, team_b: list) -> dict:
         b_expected = b_rate / total * 100
     else:
         a_expected = b_expected = 50.0
+
+    # [v7.6.8 수정2] 등급 반영 (전적 0.7 : 등급 0.3). 등급 자체는 반환/표시하지 않음.
+    #   등급 1=최상위 → 강도 5, 등급 5 → 강도 1. 미지정(비등급) 회원은 등급 계산에서 제외.
+    #   두 팀 모두 등급 보유 회원이 있을 때만 블렌딩(없으면 전적만 사용).
+    _gmap = _member_grade_map()
+    def _team_grade_strength(team):
+        _strs = []
+        for _p in team:
+            _g = _gmap.get(_p)
+            if _g is None:
+                _g = _gmap.get(base_name(_p))
+            if _g is not None:
+                _strs.append(6 - _g)   # 1등급→5, 5등급→1
+        return (sum(_strs) / len(_strs)) if _strs else None
+    _ga_str = _team_grade_strength(team_a)
+    _gb_str = _team_grade_strength(team_b)
+    if _ga_str is not None and _gb_str is not None and (_ga_str + _gb_str) > 0:
+        _grade_a_exp = _ga_str / (_ga_str + _gb_str) * 100
+        a_expected = 0.7 * a_expected + 0.3 * _grade_a_exp
+        b_expected = 100 - a_expected
 
     # 직접 맞대결 전적 (team_a 전원이 한 팀, team_b 전원이 상대팀인 경기)
     matches = _personal_raw_matches_cached()
@@ -4192,7 +4230,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.7"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.8"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4539,6 +4577,17 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
 }
 [data-testid="stHorizontalBlock"]:has([class*="st-key-rec_page_mode"]) label p{
     font-size:0.8rem !important;
+}
+/* [v7.6.8 수정4] 이벤트 설정 승/패점수·저장 행 모바일 가로 유지 */
+[data-testid="stHorizontalBlock"]:has([class*="st-key-evmeta_win"]){
+    flex-wrap:nowrap !important; gap:6px !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-evmeta_win"]) [data-testid="stColumn"]{
+    min-width:0 !important;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-evmeta_win"]) button{
+    white-space:nowrap !important; font-size:0.78rem !important;
+    padding-left:6px !important; padding-right:6px !important;
 }
 /* [v7.5.2 수정2] 회원관리 검색 행(검색창·검색·백업·등록) 모바일 한 줄 유지 */
 [data-testid="stHorizontalBlock"]:has([class*="st-key-roster_search_input"]){
@@ -5791,11 +5840,11 @@ def dialog_form(df, existing=None):
         st.session_state[_mt_key] = "부부회원" if (existing and str(existing.get("member_type", "") or "").strip() == "부부") else "일반회원"
     if _sp_key not in st.session_state:
         st.session_state[_sp_key] = (existing.get("spouse_name", "") if existing else "")
-    c_mt, c_sp = st.columns([1, 1.4])
+    c_mt, c_sp, _c_mt3 = st.columns([1, 1, 1])
     with c_mt:
         member_type_sel = st.selectbox(
             "회원 유형", ["일반회원", "부부회원"], key=_mt_key,
-            help="부부회원이면 오른쪽에 배우자 이름을 입력하세요.")
+            help="부부회원이면 배우자 이름을 입력하세요.")
     with c_sp:
         spouse_name_in = st.text_input(
             "배우자 이름", key=_sp_key,
@@ -8155,10 +8204,9 @@ if page == "📊 스코어보드":
 
         with st.container(border=True):
             st.markdown("🎉 **이벤트 기록 설정** — 이벤트 이름과 승·패 점수를 정하면, 점수 저장 시 **이벤트 기록** 메뉴에 순위가 집계됩니다.")
-            _evc1, _evc2, _evc3, _evc4 = st.columns([2.4, 1, 1, 1])
-            with _evc1:
-                st.text_input("이벤트 이름", key=_evm_name_key,
-                              placeholder="예: 2026년 06월 월례회")
+            st.text_input("이벤트 이름", key=_evm_name_key,
+                          placeholder="예: 2026년 06월 월례회")
+            _evc2, _evc3, _evc4 = st.columns([1, 1, 1.4])
             with _evc2:
                 st.number_input("승 점수", min_value=0, max_value=100, step=1, key=_evm_win_key)
             with _evc3:
@@ -10767,8 +10815,12 @@ elif page == "🎉 이벤트기록":
     _ev_metas    = _event_meta_load_all()
     _meta_by_key = {m.get("date_key"): m for m in _ev_metas if m.get("date_key")}
     _rec_rows    = _records_sheet_load_all()
-    _ev_rec_keys = sorted({str(r.get("date_key","")) for r in _rec_rows
-                           if "[이벤트]" in str(r.get("date_key",""))}, reverse=True)
+    _ev_meta_keys = [str(m.get("date_key","")) for m in _ev_metas
+                     if "[이벤트]" in str(m.get("date_key",""))]
+    _ev_rec_keys = sorted(set(
+        [str(r.get("date_key","")) for r in _rec_rows if "[이벤트]" in str(r.get("date_key",""))]
+        + _ev_meta_keys
+    ), reverse=True)
 
     if not _ev_rec_keys:
         st.info("아직 집계된 이벤트 기록이 없습니다. 이벤트 대진표를 만든 뒤 경기 결과(스코어보드)에서 "
@@ -10800,6 +10852,35 @@ elif page == "🎉 이벤트기록":
                 })
             _ranked.sort(key=lambda x: (-x["pts"], -x["diff"], -x["w"], x["name"]))
 
+            # [v7.6.8 수정4] 점수가 없는 참가자도 0점으로 모두 표기 (대진표 기준)
+            _existing_names = {p["name"] for p in _ranked}
+            try:
+                _bracket = shelf_load(_sel_ev)
+            except Exception:
+                _bracket = None
+            if _bracket and _bracket.get("schedule"):
+                try:
+                    _bsched = deserialize_schedule(_bracket["schedule"])
+                except Exception:
+                    _bsched = []
+                _excl_set = set(exclude_list_load())
+                _seen_part = set()
+                for _m in _bsched:
+                    for _code in list(_m.get("team1", [])) + list(_m.get("team2", [])):
+                        _raw = base_name(_code)
+                        if "★" in _raw:                continue   # 게스트 제외
+                        if _is_duplicate_player(_code): continue   # 중복 빈자리 제외
+                        _pk = _clean_player_key(_code)
+                        if _pk in _excl_set:            continue   # 기록 제외 선수
+                        if _pk in _seen_part:           continue
+                        _seen_part.add(_pk)
+                        _dn = pname(_code)
+                        if _dn in _existing_names:      continue   # 이미 점수 있음
+                        _ranked.append({
+                            "name": _dn, "league": _m.get("league", ""),
+                            "w": 0, "l": 0, "diff": 0, "pts": 0,
+                        })
+                _ranked.sort(key=lambda x: (-x["pts"], -x["diff"], -x["w"], x["name"]))
             st.markdown(f"### 🎉 {_ev_name}")
             st.caption(f"승 {_win_pts}점 · 패 {_loss_pts}점 · 참가 {len(_ranked)}명 · 동점 시 득실차 → 다승 순")
 
@@ -11506,9 +11587,8 @@ elif page == "🗂️ 대진표보관함":
         # [v7.6.5 수정15] 이벤트 대진표는 스코어보드에서 입력한 이벤트 이름을 함께 표시
         _arch_ev_meta = {m.get("date_key"): m for m in _event_meta_load_all() if m.get("date_key")}
         def _arch_label(k):
-            base = str(k)[:10]
-            suffix = str(k)[10:]
-            lbl = _date_with_weekday(base) + (suffix if suffix else "")
+            # date_key 에 이미 요일이 포함돼 있어 그대로 사용 (요일 중복 표기 버그 수정)
+            lbl = str(k)
             if "[이벤트]" in str(k):
                 _nm = str((_arch_ev_meta.get(k) or {}).get("event_name", "") or "").strip()
                 if _nm:
