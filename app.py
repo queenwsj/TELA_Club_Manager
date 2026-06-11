@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.9
+TELA CLUB Random Match Generator v7.7.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -1209,9 +1209,6 @@ def _supabase_sched_save(date_key: str, schedule: list, scores: dict,
 
     sb = _get_supabase()
 
-    # 같은 date_key 기존 데이터 삭제 후 재삽입
-    sb.table("schedules").delete().eq("date_key", date_key).execute()
-
     rows = []
 
     for idx, m in enumerate(schedule):
@@ -1247,8 +1244,31 @@ def _supabase_sched_save(date_key: str, schedule: list, scores: dict,
             "is_dup": str(score_obj.get("is_dup", m.get("is_dup", ""))) if isinstance(score_obj, dict) else str(m.get("is_dup", "")),
         })
 
-    if rows:
-        sb.table("schedules").insert(rows).execute()
+    # [v7.7.0] 비원자적 delete→insert로 인한 데이터 영구 소실 방지.
+    #   ① 기존 행을 스냅샷 → ② 삭제 → ③ 삽입. ③에서 실패하면 스냅샷을 되살려(롤백)
+    #   "삭제만 되고 재삽입 안 됨" 상태로 그 날짜 대진표가 사라지는 일을 막는다.
+    #   (향후 schedules에 (date_key, match_idx) unique 제약을 두면 단일 upsert로 단순화 가능)
+    try:
+        _prev = (
+            sb.table("schedules").select("*").eq("date_key", date_key).execute().data
+            or []
+        )
+    except Exception:
+        _prev = []
+
+    sb.table("schedules").delete().eq("date_key", date_key).execute()
+    try:
+        if rows:
+            sb.table("schedules").insert(rows).execute()
+    except Exception:
+        # 롤백: 방금 지운 기존 데이터를 복원 (auto PK 충돌 방지 위해 id 컬럼 제거)
+        if _prev:
+            try:
+                _restore = [{k: v for k, v in r.items() if k != "id"} for r in _prev]
+                sb.table("schedules").insert(_restore).execute()
+            except Exception:
+                pass
+        raise
 
 
 def _supabase_sched_list_dates(limit: int = 60):
@@ -1302,11 +1322,14 @@ def _restore_from_supabase():
         with shelve.open(SHELF_PATH) as db:
             local_keys = set(db.keys())
         supa_keys = _supabase_sched_list_dates(limit=500)
-        for dk in [k for k in supa_keys if k not in local_keys]:
-            val = _supabase_sched_load(dk)
-            if val:
-                with shelve.open(SHELF_PATH) as db:
-                    db[dk] = val
+        # [v7.7.0] shelve를 매 반복마다 열고 닫던 것을 루프 밖 1회 open으로 변경 (콜드 스타트 성능).
+        _to_restore = [k for k in supa_keys if k not in local_keys]
+        if _to_restore:
+            with shelve.open(SHELF_PATH) as db:
+                for dk in _to_restore:
+                    val = _supabase_sched_load(dk)
+                    if val:
+                        db[dk] = val
     except Exception:
         pass
     # ② 계정·게스트·제외선수 복원
@@ -4751,7 +4774,6 @@ def _login_dedup(_id: str, _pw: str) -> bool:
     """[v7.2.2] 동일 (아이디·비번) 로그인 시도 중복 처리 방지.
     text_input on_change(엔터)와 버튼 클릭이 같은 rerun에서 동시 발화해
     실패가 2회 카운트되던 문제 해결. 이미 처리한 조합이면 True 반환(스킵)."""
-    import hashlib
     tok = hashlib.sha256(f"{_id}\x00{_pw}".encode("utf-8")).hexdigest()
     if st.session_state.get("_login_last_tok") == tok:
         return True
@@ -10288,14 +10310,15 @@ elif page == "🏆 통합기록실":
                             _local_keys = set(_db.keys())
                         _gkeys = _supabase_sched_list_dates(limit=500)
                         _restored = 0
-                        for _dk in _gkeys:
-                            if _dk in _local_keys:
-                                continue
-                            _val = _supabase_sched_load(_dk)
-                            if _val:
-                                with _shv.open(SHELF_PATH) as _db:
-                                    _db[_dk] = _val
-                                _restored += 1
+                        # [v7.7.0] shelve 루프 밖 1회 open (반복 open/close 제거)
+                        _need = [k for k in _gkeys if k not in _local_keys]
+                        if _need:
+                            with _shv.open(SHELF_PATH) as _db:
+                                for _dk in _need:
+                                    _val = _supabase_sched_load(_dk)
+                                    if _val:
+                                        _db[_dk] = _val
+                                        _restored += 1
                         _clear_schedule_cache()
                         st.success(f"✅ {_restored}개 경기 데이터를 Supabase에서 복원했습니다.")
                     except Exception as _e:
