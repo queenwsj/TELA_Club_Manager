@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.1
+TELA CLUB Random Match Generator v7.7.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -143,6 +143,7 @@ def _clear_schedule_cache():
         personal_get_all_players, participation_monthly_trend, participation_league_activity,
         participation_inactive_members, player_career_winrate, personal_summary,
         personal_monthly_trend, personal_partner_vs_rival, personal_rival_recent,
+        _supabase_sched_load, _event_meta_load, _event_meta_load_all,   # [v7.7.2] 대진표·이벤트 로드 캐시
     ]:
         try:
             _fn.clear()
@@ -1000,6 +1001,12 @@ def shelf_save(date_key: str, schedule: list, scores: dict,
             "is_locked": is_locked,
         }
 
+    # [v7.7.2] 저장 즉시 대진표 로드 캐시 무효화 — 방금 바뀐 점수/잠금이 바로 반영되도록.
+    try:
+        _supabase_sched_load.clear()
+    except Exception:
+        pass
+
     # ② Supabase schedules 저장
     try:
         _supabase_sched_save(
@@ -1114,8 +1121,15 @@ def shelf_delete(date_key: str):
     except Exception:
         pass
 
+    # [v7.7.2] 삭제 즉시 대진표 로드 캐시 무효화
+    try:
+        _supabase_sched_load.clear()
+    except Exception:
+        pass
 
 
+
+@st.cache_data(ttl=20, show_spinner=False)
 def _supabase_sched_load(date_key: str):
     """Supabase schedules 테이블에서 특정 date_key 대진표 로드.
     반환 형태는 기존 shelve 구조와 동일:
@@ -2625,6 +2639,7 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
     return session_stats
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _event_meta_load(date_key: str):
     """[v7.6.4] events 테이블에서 이벤트명·점수설정 1건 조회 (없으면 None)."""
     try:
@@ -2635,6 +2650,7 @@ def _event_meta_load(date_key: str):
         return None
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _event_meta_load_all() -> list:
     """[v7.6.4] events 테이블 전체 로드."""
     try:
@@ -2654,6 +2670,10 @@ def _event_meta_save(date_key: str, event_name: str, win_pts: int = 3, loss_pts:
             "loss_pts":   int(loss_pts),
             "created_at": kst_now_str(),
         }, on_conflict="date_key").execute()
+        try:
+            _event_meta_load.clear(); _event_meta_load_all.clear()   # [v7.7.2] 저장 즉시 반영
+        except Exception:
+            pass
         return True
     except Exception as _e:
         _BG_ERRORS.append(f"events 저장 실패 (key={date_key}): {_e}")
@@ -4256,7 +4276,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
