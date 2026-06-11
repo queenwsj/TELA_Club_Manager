@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.6
+TELA CLUB Random Match Generator v7.7.7
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4342,7 +4342,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.6"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.7.7"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4795,21 +4795,28 @@ def log_audit(action: str, member_id, member_name: str, detail: str = ""):
         pass
 
 def _client_ip() -> str:
-    """[v7.7.6] 클라이언트 IP 추정. Streamlit Community Cloud는 프록시 뒤이므로
-    st.context.headers의 X-Forwarded-For 첫 값을 사용(없으면 X-Real-IP).
+    """[v7.7.6→v7.7.7] 클라이언트 IP 추정. 프록시 계층 구성이 환경마다 달라
+    여러 헤더를 우선순위로 시도한다(Cloudflare 계열 → X-Real-IP → X-Forwarded-For 첫 홉).
     ⚠️ 메인 스레드에서만 호출 가능(백그라운드 스레드엔 ScriptRunContext가 없음).
-    프록시 체인 특성상 정확도 100%는 아니다."""
+    어떤 헤더가 실제 IP인지 모를 때는 사이드바 로그 > 로그인 이력 > '헤더 진단'으로 확인."""
     try:
         h = st.context.headers
     except Exception:
         return ""
-    try:
-        xff = h.get("X-Forwarded-For") or h.get("x-forwarded-for") or ""
-        if xff:
-            return xff.split(",")[0].strip()
-        return (h.get("X-Real-IP") or h.get("x-real-ip") or "").strip()
-    except Exception:
-        return ""
+
+    def _g(name: str) -> str:
+        try:
+            v = h.get(name)
+        except Exception:
+            v = None
+        return str(v).split(",")[0].strip() if v else ""
+
+    for _name in ("Cf-Connecting-Ip", "True-Client-Ip", "X-Real-Ip",
+                  "X-Client-Ip", "X-Forwarded-For"):
+        _v = _g(_name)
+        if _v:
+            return _v
+    return ""
 
 def log_login(user: dict):
     """[v7 Supabase] 로그인 성공 기록을 login_log 테이블에 삽입."""
@@ -8233,6 +8240,30 @@ if page == "🧾 로그":
     elif _view == "login":
         st.markdown("### 🔑 로그인 이력 (login_log)")
         st.caption("로그인 성공·실패·차단 기록입니다. (최근 200건, 최신순 · 60일 경과 자동 정리)")
+
+        # [v7.7.7] IP가 엉뚱하게 찍힐 때: 실제 어떤 헤더에 내 IP가 있는지 진단 (관리자 전용)
+        if is_admin():
+            with st.expander("🔍 접속 헤더 진단 (IP 헤더 확인용)", expanded=False):
+                st.caption("아래에서 **본인 실제 IP**가 들어있는 헤더 이름을 확인해 알려주시면 "
+                           "해당 헤더를 우선 사용하도록 맞출 수 있습니다. "
+                           "(휴대폰이라면 데이터/와이파이 IP가 보여야 정상)")
+                st.write(f"현재 `_client_ip()` 결과: **{_client_ip() or '(빈 값)'}**")
+                try:
+                    _hdrs = dict(st.context.headers)
+                except Exception:
+                    _hdrs = {}
+                _ip_like = {k: v for k, v in _hdrs.items()
+                            if any(t in k.lower() for t in
+                                   ("forwarded", "real-ip", "client-ip", "connecting", "remote"))}
+                st.markdown("**IP 관련 헤더**")
+                if _ip_like:
+                    for _k, _v in _ip_like.items():
+                        st.markdown(f"- `{_k}`: `{_v}`")
+                else:
+                    st.caption("IP 관련 헤더가 보이지 않습니다.")
+                with st.expander("전체 헤더 보기", expanded=False):
+                    st.json(_hdrs)
+
         if st.button("🔄 새로고침", key="reload_login_log"):
             st.session_state["_login_log_view"] = _login_log_load(200)
         if "_login_log_view" not in st.session_state:
