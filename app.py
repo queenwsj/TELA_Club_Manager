@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.6.8
+TELA CLUB Random Match Generator v7.6.9
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4230,7 +4230,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.6.8"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.6.9"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -10904,8 +10904,26 @@ elif page == "🎉 이벤트기록":
                                   2: "linear-gradient(135deg,#eef2f7,#9ca3af)",
                                   3: "linear-gradient(135deg,#fed7aa,#ea580c)"}
 
-                # ── 1·2·3위 왕카드 (가로 한 줄 · 모바일에서도 유지) [수정9] ──
-                _podium = [p for p in _ranked if p["rank"] <= 3][:6]
+                # ── 1·2·3위 왕카드 (가로 한 줄 · 최대 3장) [v7.6.9 수정1] ──
+                #   공동 그룹(같은 순위) 단위로 채우되, 추가 시 3장을 넘기는 그룹은 통째 제외.
+                #   예) 공동1위 2명 + 공동3위 4명 → 공동1위 2장만 표기.
+                _pod_pool = [p for p in _ranked if p["rank"] <= 3]
+                _grp_order, _grp_map = [], {}
+                for _p in _pod_pool:
+                    if _p["rank"] not in _grp_map:
+                        _grp_map[_p["rank"]] = []
+                        _grp_order.append(_p["rank"])
+                    _grp_map[_p["rank"]].append(_p)
+                _podium = []
+                for _rk in _grp_order:
+                    _grp = _grp_map[_rk]
+                    if len(_podium) + len(_grp) <= 3:
+                        _podium.extend(_grp)
+                    else:
+                        break   # 이 그룹부터(그리고 이후 그룹 모두) 제외
+                # 첫 그룹이 이미 3장을 초과해 하나도 못 담은 경우: 빈 포디움 방지로 앞 3장만
+                if not _podium and _pod_pool:
+                    _podium = _pod_pool[:3]
                 _cards = []
                 for _p in _podium:
                     _prk = _p["rank"]
