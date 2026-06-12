@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.7.8
+TELA CLUB Random Match Generator v7.8.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4348,7 +4348,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.7.8"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.8.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4371,7 +4371,9 @@ RS_ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "")
 RS_COLUMNS = [
     "id", "category", "name", "cafe_id", "birth_year", "gender",
     "phone", "region", "join_date", "dormant_period", "leave_date",
-    "email", "application", "memo", "updated_at",
+    "email", "application",
+    "association",  # [v7.8.0] 협회(테니스협회 등) 가입여부: ''(미지정)/'Yes'/'No'
+    "memo", "updated_at",
     "deleted_at",   # 소프트 삭제: 삭제 시각. 비어있으면 정상 회원.
     "league",
     "grade",        # 회원 등급 1~5 (1=최상위, 5=입문)
@@ -5826,7 +5828,8 @@ def dialog_detail(row):
          info_row("배우자",   row.get("spouse_name","") or "—", "#be185d")
          if str(row.get("member_type","") or "").strip() == "부부"
          else info_row("회원유형", "일반회원")) +
-        info_row("입회신청서", row.get("application","")),
+        info_row("입회신청서", row.get("application","")) +
+        info_row("협회가입",   row.get("association","")),
         unsafe_allow_html=True)
 
     # ── 등급 표시 ──
@@ -6182,14 +6185,20 @@ def dialog_form(df, existing=None):
                     st.info(f"이 회원은 별도 비밀번호가 없어 이미 기본값(`{DEFAULT_MEMBER_PW}`)으로 "
                             "로그인합니다. 초기화가 필요 없습니다.")
 
-    # 행5: 입회신청서 / 메모   [v7.7.0 수정6] 제출여부를 체크박스로 (체크=제출, 미체크=미제출)
-    c11,c12 = st.columns([1,2])
+    # 행5: 입회신청서 / 협회가입 / 메모   [v7.8.0] 협회가입여부 체크박스 추가
+    c11,c11b,c12 = st.columns([1,1,2])
     with c11:
         _app_default = bool(existing and str(existing.get("application","") or "").strip() == "Yes")
         _app_checked = st.checkbox(
             "입회신청서 제출", value=_app_default, key=f"app_chk_{target_id}",
             help="체크 = 제출 / 미체크 = 미제출")
         application = "Yes" if _app_checked else "No"
+    with c11b:
+        _assoc_default = bool(existing and str(existing.get("association","") or "").strip() == "Yes")
+        _assoc_checked = st.checkbox(
+            "협회가입", value=_assoc_default, key=f"assoc_chk_{target_id}",
+            help="체크 = 협회 가입 / 미체크 = 미가입")
+        association = "Yes" if _assoc_checked else "No"
     with c12:
         memo = st.text_area("메모",
             value=existing["memo"] if existing else "",
@@ -6390,6 +6399,7 @@ def dialog_form(df, existing=None):
                 "leave_date":     ld_str,
                 "email":          email.strip(),
                 "application":    "" if application=="—" else application,
+                "association":    "" if association=="—" else association,  # [v7.8.0] 협회가입여부
                 "region":         region.strip(),
                 "memo":           memo.strip(),
                 "deleted_at":     "",
@@ -6423,6 +6433,7 @@ def dialog_form(df, existing=None):
                     ("입회일", "join_date"), ("휴면기간", "dormant_period"),
                     ("탈퇴일", "leave_date"), ("재입회일", "rejoin_date"),
                     ("이메일", "email"), ("신청서", "application"),
+                    ("협회가입", "association"),
                     ("지역", "region"), ("메모", "memo"), ("등급", "grade"),
                     ("리그", "league"),
                     ("회원유형", "member_type"), ("배우자", "spouse_name"),
@@ -7207,6 +7218,7 @@ def render_roster_page():
         _COL_SPEC.append(("탈퇴일", 0.72))
     _COL_SPEC += [
         ("입회신청서", 0.68),
+        ("협회가입",   0.6),
         ("메모",      1.10),
         ("관리",      0.85),
     ]
@@ -7277,6 +7289,8 @@ def render_roster_page():
             _phone     = str(row.get("phone", "") or "—")
             _app_val   = str(row.get("application", "") or "—")
             _app_color = {"Yes": "#16a34a", "No": "#dc2626"}.get(_app_val, "#9ca3af")
+            _assoc_val   = str(row.get("association", "") or "—")
+            _assoc_color = {"Yes": "#16a34a", "No": "#dc2626"}.get(_assoc_val, "#9ca3af")
             _memo_txt  = str(row.get("memo", "") or "").strip()
             _memo_disp = (_memo_txt[:24] + "…") if len(_memo_txt) > 24 else (_memo_txt or "—")
 
@@ -7318,6 +7332,8 @@ def render_roster_page():
                 _cells.append(f"<div>♻️ <span style='color:#0d9488;font-weight:700'>재입회 {_rejoin}</span></div>")
             if _app_val in ("Yes", "No"):
                 _cells.append(f"<div>📝 신청 <b style='color:{_app_color}'>{_app_val}</b></div>")
+            if _assoc_val in ("Yes", "No"):
+                _cells.append(f"<div>🏅 협회 <b style='color:{_assoc_color}'>{_assoc_val}</b></div>")
             if _memo_disp != "—":
                 _cells.append(f"<div style='grid-column:1/-1'>🗒️ {_memo_disp}</div>")
 
@@ -7425,6 +7441,8 @@ def render_roster_page():
             by_val    = _birth_disp(row.get("birth_year")) or "—"
             app_val   = str(row.get("application","") or "—")
             app_color = {"Yes":"#16a34a","No":"#dc2626"}.get(app_val,"#9ca3af")
+            assoc_val   = str(row.get("association","") or "—")
+            assoc_color = {"Yes":"#16a34a","No":"#dc2626"}.get(assoc_val,"#9ca3af")
     
             # [v6.9.3] 동적 컬럼(거주지 제거·탈퇴일 조건부)에 맞춘 러닝 인덱스
             ci = col_offset
@@ -7493,6 +7511,10 @@ def render_roster_page():
             # 입회신청서
             rc[ci].markdown(
                 f"<div style='padding:5px 0'><span style='{RS_FS};font-weight:700;color:{app_color}'>{app_val}</span></div>",
+                unsafe_allow_html=True); ci += 1
+            # 협회가입
+            rc[ci].markdown(
+                f"<div style='padding:5px 0'><span style='{RS_FS};font-weight:700;color:{assoc_color}'>{assoc_val}</span></div>",
                 unsafe_allow_html=True); ci += 1
             # 메모
             rc[ci].markdown(
