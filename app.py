@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.8.1
+TELA CLUB Random Match Generator v7.8.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4348,7 +4348,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.8.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.8.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4729,6 +4729,23 @@ div.dormant-row-wrap { background:#fef9c3; border-radius:8px; padding:8px 12px; 
   section.main h2, [data-testid="stMain"] h2{ font-size:1.2rem !important; line-height:1.25 !important; }
   .app-header h1{ font-size:1.35rem !important; line-height:1.2 !important; }
   .app-header span{ font-size:26px !important; }
+}
+/* [v7.8.2] 모바일에서도 가로 유지가 필요한 특정 행 (컬럼 세로 적층 방지).
+   대상: 대진생성 페어링|매칭옵션 / 다시생성|되돌리기 / 참가자팝업 전체선택|해제 / 회원·게스트 체크박스 3열.
+   위젯 key 클래스(.st-key-*)로 해당 stHorizontalBlock만 정밀 스코핑 → 다른 컬럼 레이아웃엔 영향 없음. */
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .st-key-gen_pairing_radio),
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-regen"]),
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-popup_sa_"]),
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-mchk_"]),
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-gchk_"]) {
+    flex-wrap: nowrap !important;
+}
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .st-key-gen_pairing_radio) > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-regen"]) > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-popup_sa_"]) > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-mchk_"]) > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] [class*="st-key-gchk_"]) > div[data-testid="stColumn"] {
+    min-width: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -8971,21 +8988,22 @@ elif page == "📋 대진표생성":
 
     # ── 페이지 제목 (본문 상단) [v7.8.1] 설정을 사이드바→본문으로 이동 ──
     st.markdown("## 🎾 대진 생성")
-    st.caption("관리자·부관리자 전용 · 모든 설정을 이 페이지에서 진행합니다 · 최소 3 / 최대 4경기")
+    st.caption("모든 설정을 이 페이지에서 진행합니다 · 최소 3 / 최대 4경기")
 
     # ════════════════════════════════════════════════════════
-    #  ⚙️ 대진 생성 설정  (PC=2단 / 모바일=세로 자동 적층)
+    #  ⚙️ 대진 생성 설정  (PC·모바일 모두 페어링|매칭옵션 가로 2단)
     # ════════════════════════════════════════════════════════
     st.markdown("### ⚙️ 대진 생성 설정")
 
-    # ── [1] 페어링 방식 + [기능5] 등급 균형 (가로 2단) ──────────
-    _setc1, _setc2 = st.columns([1, 1])
+    # ── [1] 페어링 방식 + [기능5] 등급 균형 (가로 2단·모바일도 가로 유지) ──
+    _setc1, _setc2 = st.columns([3, 2])
     with _setc1:
         st.markdown("**🎯 페어링 방식**")
         pairing_mode = st.radio(
             "페어링 방식 선택",
             ["🔴 완전 랜덤페어", "🔵 조건부 랜덤페어"],
             index=0, label_visibility="collapsed",
+            key="gen_pairing_radio",   # [v7.8.2] 모바일 가로유지 CSS 스코핑용
         )
         IS_FULLY_RANDOM = (pairing_mode == "🔴 완전 랜덤페어")
         if IS_FULLY_RANDOM:
@@ -8997,11 +9015,12 @@ elif page == "📋 대진표생성":
         use_grade_balance = st.checkbox(
             "⚖️ 체급(등급) 균형 매칭",
             value=False,
+            key="gen_grade_balance",
             help="회원 등급(1~5)을 반영해 두 팀의 실력 합이 비슷하도록 페어를 구성합니다. "
                  "등급이 지정된 회원에만 적용되며, 미지정 회원은 기존 방식대로 배정됩니다.",
         )
         if use_grade_balance:
-            st.caption("⚖️ 등급 균형 ON — 팀 간 등급 합 차이를 최소화합니다.")
+            st.caption("⚖️ 등급 균형 ON")
     st.markdown("---")
 
     # ── [2] 리그 수 설정 (NEW) ───────────────────────────────
@@ -9234,8 +9253,8 @@ elif page == "📋 대진표생성":
                                 if st.session_state.get(f"gchk_{lg}_{gm['name']}", False))
                 total_sel = sel_cnt + g_sel_cnt
 
-                col_sa, col_sd, col_cnt = st.columns([1, 1, 3])
-                if col_sa.button("✅ 전체선택", key=f"popup_sa_{lg}"):
+                col_sa, col_sd = st.columns([1, 1])
+                if col_sa.button("✅ 전체선택", key=f"popup_sa_{lg}", use_container_width=True):
                     _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in normal_df.iterrows():
                         _sel_store[f"{lg}_{int(r['id'])}"] = True
@@ -9247,7 +9266,7 @@ elif page == "📋 대진표생성":
                     # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
                     # 위젯 키 직접 설정으로 즉시 반영
 
-                if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}"):
+                if col_sd.button("⬜ 전체해제", key=f"popup_sd_{lg}", use_container_width=True):
                     _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in normal_df.iterrows():
                         _sel_store[f"{lg}_{int(r['id'])}"] = False
@@ -9258,8 +9277,8 @@ elif page == "📋 대진표생성":
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = False
                     # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
 
-                col_cnt.markdown(
-                    f'<div style="padding-top:6px;color:{lc};font-weight:700;">'
+                st.markdown(
+                    f'<div style="padding:2px 0 6px;color:{lc};font-weight:700;">'
                     f'{total_sel}명 선택</div>', unsafe_allow_html=True
                 )
 
@@ -9639,10 +9658,10 @@ elif page == "📋 대진표생성":
 
         _has_prev = bool(st.session_state.get("prev_schedule"))
         if is_admin():
-            col_regen, col_undo, col_space = st.columns([1, 1, 3])
+            col_regen, col_undo = st.columns([1, 1])
             with col_regen:
                 st.button("🔄 다시 생성", type="secondary", use_container_width=True,
-                          on_click=_set_regen,
+                          on_click=_set_regen, key="regen1",
                           help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)")
             with col_undo:
                 st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
@@ -10072,7 +10091,7 @@ function showMsg() {{
 
             _has_prev2 = bool(st.session_state.get("prev_schedule"))
             if is_admin():
-                col_regen2, col_undo2, col_space2 = st.columns([1, 1, 3])
+                col_regen2, col_undo2 = st.columns([1, 1])
                 with col_regen2:
                     st.button("🔄 다시 생성", type="secondary", use_container_width=True,
                               on_click=_set_regen2,
