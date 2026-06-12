@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.8.3
+TELA CLUB Random Match Generator v7.8.4
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -1026,38 +1026,66 @@ def _ensure_cookie_login_boot():
 
 
 def _sync_token_localstorage():
-    """[v7.7.5] 즐겨찾기(맨 URL) 진입 시에도 로그인 유지 — 쿠키 대신 localStorage 사용.
-    쿠키(extra_streamlit_components)는 set 직후 rerun되면 브라우저에 실제 기록되기 전이라
-    저장이 누락되는 타이밍 문제가 있었다. 대신:
-      ① 로그인 후 URL의 ?t=토큰을 localStorage에 저장
-      ② 토큰 없는 맨 URL(즐겨찾기) 진입 시, 저장된 토큰으로 ?t=를 붙여 리로드
-         → 기존 query_params 복원 경로(get_app_user)가 그대로 동작
-      ③ 로그아웃 시(_ls_clear_token 플래그) localStorage 토큰 삭제
-    (기존 스크롤 컴포넌트처럼 window.parent 동일 출처 접근을 사용한다)"""
-    import streamlit.components.v1 as _components
-    _clear = "1" if st.session_state.pop("_ls_clear_token", False) else "0"
-    _nonce = st.session_state.get("_ls_nonce", 0) + 1
-    st.session_state["_ls_nonce"] = _nonce
-    _js = """
-    <script>
-    (function(){
-      try {
-        var w = window.parent;
-        var KEY = 'telaclub_token';
-        var url = new URL(w.location.href);
-        if ('__CLEAR__' === '1') { w.localStorage.removeItem(KEY); return; }
-        var t = url.searchParams.get('t');
-        if (t) {
-          w.localStorage.setItem(KEY, t);
-        } else {
-          var saved = w.localStorage.getItem(KEY);
-          if (saved) { url.searchParams.set('t', saved); w.location.replace(url.toString()); }
-        }
-      } catch(e) {}
-    })();
-    </script>
-    """.replace("__CLEAR__", _clear)
-    _components.html("<!-- ls-nonce:" + str(_nonce) + " -->" + _js, height=0)
+    """[v7.8.4] 브라우저를 껐다 켜도 로그인 유지 — st_javascript로 localStorage 토큰 저장/복원.
+    이전(v7.7.5)에는 익명 components.html iframe + location.replace 리로드를 썼는데,
+    일부 모바일 브라우저(특히 iOS)에서 그 iframe의 localStorage가 브라우저 종료 시 비워져
+    재시작 후 로그인이 풀렸다. 공인 IP 조회에 쓰는 st_javascript는 같은 브라우저에서 안정 동작하므로
+    저장·읽기를 모두 st_javascript로 통일하고, 복원은 리로드 대신 Python에서 직접 세션을 살린다.
+      ① 로그아웃(_ls_clear_token) → localStorage 토큰 삭제
+      ② URL에 ?t= 있으면(로그인/유지 중) 그 토큰을 localStorage에 저장
+      ③ 세션·?t= 모두 없으면(맨 URL·재시작) localStorage 토큰을 읽어 세션 복원 후 ?t= 부여"""
+    if not IP_FETCH_AVAILABLE:   # streamlit-javascript 미설치 → 쿠키 폴백에 의존
+        return
+
+    _JS_REMOVE = "await (async()=>{try{window.localStorage.removeItem('telaclub_token');}catch(e){}return 1;})()"
+    _JS_READ   = "await (async()=>{try{return window.localStorage.getItem('telaclub_token')||'';}catch(e){return '';}})()"
+
+    # ① 로그아웃 시 토큰 삭제
+    if st.session_state.pop("_ls_clear_token", False):
+        try:
+            st_javascript(_JS_REMOVE, key="ls_token_clear")
+        except Exception:
+            pass
+        return
+
+    # ② URL에 토큰이 있으면 localStorage에 저장(로그인 유지)
+    try:
+        _url_tok = (st.query_params.get("t", "") or "").strip()
+    except Exception:
+        _url_tok = ""
+    if _url_tok:
+        _js_save = ("await (async()=>{try{window.localStorage.setItem("
+                    "'telaclub_token','__TOK__');}catch(e){}return 1;})()").replace("__TOK__", _url_tok)
+        try:
+            st_javascript(_js_save, key="ls_token_save")
+        except Exception:
+            pass
+        return
+
+    # ③ 세션·?t= 모두 없음 → localStorage 토큰으로 복원 (브라우저 재시작 포함)
+    if st.session_state.get("app_user"):
+        return
+    try:
+        _saved = st_javascript(_JS_READ, key="ls_token_read")
+    except Exception:
+        _saved = None
+    if isinstance(_saved, str):
+        _saved = _saved.strip()
+        if _saved and _saved not in ("0", "None"):
+            _restored = _session_load(_saved)
+            if _restored:
+                st.session_state["app_user"] = _restored
+                try:
+                    st.query_params["t"] = _saved   # 새로고침에도 유지되도록 URL에 부여
+                except Exception:
+                    pass
+                st.rerun()
+            else:
+                # 만료·무효 토큰이면 localStorage 정리 (다음 진입부터 깔끔히 로그인 화면)
+                try:
+                    st_javascript(_JS_REMOVE, key="ls_token_purge")
+                except Exception:
+                    pass
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
@@ -4348,7 +4376,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.8.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.8.4"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -7602,7 +7630,7 @@ if "app_user" not in st.session_state:
     st.session_state["app_user"] = None
 
 # ── 사이드바 로그인/로그아웃 UI ──────────────────────────────
-with st.sidebar:                 # [v7.7.5] 즐겨찾기 진입 시 로그인 유지 (localStorage 토큰 동기화)
+with st.sidebar:                 # [v7.8.4] 브라우저 재시작 후에도 로그인 유지 (localStorage 토큰 동기화)
     _sync_token_localstorage()
     _fetch_public_ip_once()      # [v7.7.8] 클라이언트 공인 IP 조회(세션당 1회, 헤더는 사설 IP만 줌)
 _u = get_app_user()
