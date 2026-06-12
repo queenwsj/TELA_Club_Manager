@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.8.0
+TELA CLUB Random Match Generator v7.8.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4348,7 +4348,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.8.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.8.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -8969,43 +8969,56 @@ elif page == "📋 대진표생성":
         st.warning("🔒 대진표 생성은 관리자·부관리자만 이용할 수 있습니다.")
         st.stop()
 
-    # ── [1] 페어링 방식 ──────────────────────────────────────
-    st.sidebar.markdown("### 🎯 페어링 방식")
-    pairing_mode = st.sidebar.radio(
-        "페어링 방식 선택",
-        ["🔴 완전 랜덤페어", "🔵 조건부 랜덤페어"],
-        index=0, label_visibility="collapsed",
-    )
-    IS_FULLY_RANDOM = (pairing_mode == "🔴 완전 랜덤페어")
-    if IS_FULLY_RANDOM:
-        st.sidebar.info("**완전 랜덤페어**\n\n완전 무작위\n\n✅ 남성 vs 여성 대결 제한")
-    else:
-        st.sidebar.info("**조건부 랜덤페어**\n\n리그별 우선순위·쿼터 적용")
+    # ── 페이지 제목 (본문 상단) [v7.8.1] 설정을 사이드바→본문으로 이동 ──
+    st.markdown("## 🎾 대진 생성")
+    st.caption("관리자·부관리자 전용 · 모든 설정을 이 페이지에서 진행합니다 · 최소 3 / 최대 4경기")
 
-    # ── [기능5] 체급(등급) 균형 매칭 ──────────────────────────
-    use_grade_balance = st.sidebar.checkbox(
-        "⚖️ 체급(등급) 균형 매칭",
-        value=False,
-        help="회원 등급(1~5)을 반영해 두 팀의 실력 합이 비슷하도록 페어를 구성합니다. "
-             "등급이 지정된 회원에만 적용되며, 미지정 회원은 기존 방식대로 배정됩니다.",
-    )
-    if use_grade_balance:
-        st.sidebar.caption("⚖️ 등급 균형 ON — 팀 간 등급 합 차이를 최소화합니다.")
-    st.sidebar.markdown("---")
+    # ════════════════════════════════════════════════════════
+    #  ⚙️ 대진 생성 설정  (PC=2단 / 모바일=세로 자동 적층)
+    # ════════════════════════════════════════════════════════
+    st.markdown("### ⚙️ 대진 생성 설정")
+
+    # ── [1] 페어링 방식 + [기능5] 등급 균형 (가로 2단) ──────────
+    _setc1, _setc2 = st.columns([1, 1])
+    with _setc1:
+        st.markdown("**🎯 페어링 방식**")
+        pairing_mode = st.radio(
+            "페어링 방식 선택",
+            ["🔴 완전 랜덤페어", "🔵 조건부 랜덤페어"],
+            index=0, label_visibility="collapsed",
+        )
+        IS_FULLY_RANDOM = (pairing_mode == "🔴 완전 랜덤페어")
+        if IS_FULLY_RANDOM:
+            st.info("**완전 랜덤페어**\n\n완전 무작위\n\n✅ 남성 vs 여성 대결 제한")
+        else:
+            st.info("**조건부 랜덤페어**\n\n리그별 우선순위·쿼터 적용")
+    with _setc2:
+        st.markdown("**⚖️ 매칭 옵션**")
+        use_grade_balance = st.checkbox(
+            "⚖️ 체급(등급) 균형 매칭",
+            value=False,
+            help="회원 등급(1~5)을 반영해 두 팀의 실력 합이 비슷하도록 페어를 구성합니다. "
+                 "등급이 지정된 회원에만 적용되며, 미지정 회원은 기존 방식대로 배정됩니다.",
+        )
+        if use_grade_balance:
+            st.caption("⚖️ 등급 균형 ON — 팀 간 등급 합 차이를 최소화합니다.")
+    st.markdown("---")
 
     # ── [2] 리그 수 설정 (NEW) ───────────────────────────────
-    st.sidebar.markdown("### 🏆 리그 설정")
-    num_leagues = st.sidebar.number_input(
-        "리그 수", min_value=1, max_value=5, value=2, step=1,
-        help="1~5개 리그 설정 가능. A리그부터 순서대로 자동 부여됩니다."
-    )
+    st.markdown("### 🏆 리그 설정")
+    _lgc1, _lgc2 = st.columns([1, 3])
+    with _lgc1:
+        num_leagues = st.number_input(
+            "리그 수", min_value=1, max_value=5, value=2, step=1,
+            help="1~5개 리그 설정 가능. A리그부터 순서대로 자동 부여됩니다."
+        )
     active_leagues = LEAGUE_NAMES[:num_leagues]      # ["A리그"] ~ ["A리그","B리그","C리그","D리그","E리그"]
     active_prefixes = LEAGUE_PREFIXES[:num_leagues]
 
     # 리그별 우선순위 & 쿼터 설정 (조건부 랜덤일 때만 표시)
     league_configs = {}
     if not IS_FULLY_RANDOM:
-        with st.sidebar.expander("⚙️ 리그별 상세 설정", expanded=(num_leagues > 0)):
+        with st.expander("⚙️ 리그별 상세 설정", expanded=(num_leagues > 0)):
             for i, lg in enumerate(active_leagues):
                 lc = LEAGUE_COLORS[i]
                 st.markdown(
@@ -9045,11 +9058,11 @@ elif page == "📋 대진표생성":
         for lg in active_leagues:
             league_configs[lg] = {"priority": "동성우선", "mixed_max": None, "dong_min": None}
 
-    st.sidebar.markdown("---")
+    st.markdown("---")
 
     # ── [3] 참가자 선택 ──────────────────────────────────────
-    # 사이드바: 팝업 버튼 + 선택 현황만 표시
-    if st.sidebar.button("👥 참가자 선택", type="primary",
+    # 팝업 버튼 + 선택 현황 표시 (본문)
+    if st.button("👥 참가자 선택", type="primary",
                          use_container_width=True, key="open_member_popup"):
         st.session_state["member_popup_open"] = True
         st.session_state["member_popup_just_opened"] = True
@@ -9071,12 +9084,12 @@ elif page == "📋 대진표생성":
         _total_sel += total_lg
         disp = f"{lg}: {sel_cnt}명"
         if guest_cnt: disp += f" + 게스트{guest_cnt}"
-        st.sidebar.markdown(
+        st.markdown(
             f'<span style="color:{lc};font-size:0.78rem;">{disp}</span>',
             unsafe_allow_html=True
         )
     if _total_sel == 0:
-        st.sidebar.caption("⚠️ 참가자를 선택해주세요")
+        st.caption("⚠️ 참가자를 선택해주세요")
 
     # member_selected 수집 — 영구 저장소(selected_members/selected_guests) 기반
     member_selected = {}
@@ -9317,24 +9330,24 @@ elif page == "📋 대진표생성":
         _member_select_popup()
 
     # ── [4] 날짜·번호 (가로 배치) + 비밀번호 + 생성 버튼 ────
-    st.sidebar.markdown("---")
-    _d1, _d2 = st.sidebar.columns([3, 2])
+    st.markdown("---")
+    _d1, _d2 = st.columns([3, 2])
     rp_date = _d1.text_input("📅 날짜", value=kst_today_str("%Y-%m-%d"), key="rp_date")
     rp_num  = _d2.text_input("번호", value="001", key="rp_num", placeholder="001")
     rp_key  = f"{_date_with_weekday(rp_date)}_{rp_num}"
-    st.sidebar.caption(f"저장키: {rp_key}")
+    st.caption(f"저장키: {rp_key}")
 
-    # ── 저장된 대진표 불러오기 / 삭제 (사이드바) ──────────────
+    # ── 저장된 대진표 불러오기 / 삭제 (본문) ──────────────
     _saved_keys = shelf_list_dates()
     if _saved_keys:
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("**📂 저장된 대진표**")
+        st.markdown("---")
+        st.markdown("**📂 저장된 대진표**")
         # [v7.6.3] 연도 → 해당 연도 대진표 2단 선택
         _sel_key = _year_cascade_select(
             _saved_keys, key_prefix="sb_side_load",
-            container=st.sidebar, year_label="연도", item_label="대진표 선택",
+            container=st, year_label="연도", item_label="대진표 선택",
             horizontal=True, label_visibility="collapsed")
-        _lb1, _lb2 = st.sidebar.columns([1, 1])
+        _lb1, _lb2 = st.columns([1, 1])
 
         # 불러오기
         if _lb1.button("📥 Load", key="sb_load_btn", type="primary", use_container_width=True):
@@ -9368,10 +9381,10 @@ elif page == "📋 대진표생성":
                         "rp_key":          _sel_key,
                     },
                 })
-                st.sidebar.success(f"✅ '{_sel_key}' 불러옴")
+                st.success(f"✅ '{_sel_key}' 불러옴")
                 st.rerun()
             else:
-                st.sidebar.error("불러오기 실패")
+                st.error("불러오기 실패")
 
         # 삭제 (2단계 확인) — 관리자 전용
         if is_admin():
@@ -9379,11 +9392,11 @@ elif page == "📋 대진표생성":
                 st.session_state["_sb_confirm_del"] = _sel_key
 
             if st.session_state.get("_sb_confirm_del") == _sel_key:
-                st.sidebar.warning(f"'{_sel_key}' 삭제할까요?")
-                _dc1, _dc2 = st.sidebar.columns([1, 1])
+                st.warning(f"'{_sel_key}' 삭제할까요?")
+                _dc1, _dc2 = st.columns([1, 1])
                 if _dc1.button("✅ 확인", key="sb_del_confirm", use_container_width=True):
                     if _bracket_is_locked(_sel_key):
-                        st.sidebar.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 삭제할 수 있습니다.")
+                        st.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 삭제할 수 있습니다.")
                         st.session_state.pop("_sb_confirm_del", None)
                     else:
                         shelf_delete(_sel_key)
@@ -9401,7 +9414,7 @@ elif page == "📋 대진표생성":
                             st.session_state.pop("rp_schedule", None)
                             st.session_state.pop("stats", None)
                             st.session_state.pop("last_gen_params", None)
-                        st.sidebar.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
+                        st.success(f"🗑️ '{_sel_key}' 삭제됨 (기록실 포함)")
                         st.rerun()
                 if _dc2.button("✕ 취소", key="sb_del_cancel", use_container_width=True):
                     st.session_state.pop("_sb_confirm_del", None)
@@ -9411,27 +9424,12 @@ elif page == "📋 대진표생성":
 
     # [v6.6] 선택한 저장 대진표의 잠금 상태 표시 + 잠금/해제 (대진 생성에도 잠금 기능 노출)
     if _saved_keys:
-        _render_lock_manager(_sel_key, key_prefix="gen", in_sidebar=True)
+        _render_lock_manager(_sel_key, key_prefix="gen", in_sidebar=False)
 
-    # ── [5] 대진표 생성 ────────────────────────────────────────
-    st.sidebar.markdown("---")
-    _admin_ok = is_sub_admin()   # 관리자 + 부관리자 가능
-    pw_ok = _admin_ok   # 호환성 유지
-    if not _admin_ok:
-        st.sidebar.warning("🔒 대진표 생성은 관리자 또는 부관리자만 가능합니다.")
+    # ── [5] 결과 고정(시드) + 대진표 생성 ──────────────────────
+    st.markdown("---")
 
-    generate_btn = st.sidebar.button(
-        "🎾 대진표 생성", type="primary", use_container_width=True,
-        disabled=not _admin_ok
-    )
-
-    # ── 메인 타이틀 ─────────────────────────────────────────
-    mode_badge = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
-    league_badge = " · ".join(active_leagues)
-    st.markdown("## 🎾 대진 생성")
-    st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
-
-    # ── 결과 고정 (시드) — 본문 배치 ──────────────────────────
+    # 결과 고정 (시드) — 생성 직전 옵션
     _sc1, _sc2 = st.columns([1, 4])
     use_seed = _sc1.checkbox("🔒 결과 고정 (시드)", value=False, key="use_seed_main")
     seed_val = None
@@ -9439,6 +9437,21 @@ elif page == "📋 대진표생성":
         seed_val = _sc2.number_input("시드 번호", min_value=0, max_value=9999,
                                       value=42, step=1, key="seed_val_main",
                                       label_visibility="collapsed")
+
+    # 생성 요약 + 버튼
+    mode_badge   = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
+    league_badge = " · ".join(active_leagues)
+    st.caption(f"{mode_badge} &nbsp;|&nbsp; {league_badge} &nbsp;|&nbsp; 최소 3경기 / 최대 4경기")
+
+    _admin_ok = is_sub_admin()   # 관리자 + 부관리자 가능
+    pw_ok = _admin_ok   # 호환성 유지
+    if not _admin_ok:
+        st.warning("🔒 대진표 생성은 관리자 또는 부관리자만 가능합니다.")
+
+    generate_btn = st.button(
+        "🎾 대진표 생성", type="primary", use_container_width=True,
+        disabled=not _admin_ok
+    )
 
     # ── 🔍 디버그 패널 ───────────────────────────────────────
     with st.expander("🔍 진단 정보 (리그 인원·병합 디버깅)", expanded=False):
@@ -10018,8 +10031,8 @@ function showMsg() {{
         excel_tag  = f"_시드{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "_랜덤"
         mode_tag   = "_완전랜덤" if IS_FULLY_RANDOM_run else "_조건부"
         league_tag = f"_{len(active_lgs)}리그"
-        st.sidebar.markdown("---")
-        st.sidebar.download_button(
+        st.markdown("---")
+        st.download_button(
             label="📥 엑셀 다운로드", data=buf.getvalue(),
             file_name=f"TELA_대진표{mode_tag}{league_tag}{excel_tag}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
