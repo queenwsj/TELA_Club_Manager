@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.8.4
+TELA CLUB Random Match Generator v7.8.5
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -1026,15 +1026,16 @@ def _ensure_cookie_login_boot():
 
 
 def _sync_token_localstorage():
-    """[v7.8.4] 브라우저를 껐다 켜도 로그인 유지 — st_javascript로 localStorage 토큰 저장/복원.
-    이전(v7.7.5)에는 익명 components.html iframe + location.replace 리로드를 썼는데,
-    일부 모바일 브라우저(특히 iOS)에서 그 iframe의 localStorage가 브라우저 종료 시 비워져
-    재시작 후 로그인이 풀렸다. 공인 IP 조회에 쓰는 st_javascript는 같은 브라우저에서 안정 동작하므로
-    저장·읽기를 모두 st_javascript로 통일하고, 복원은 리로드 대신 Python에서 직접 세션을 살린다.
+    """[v7.8.5] 브라우저를 껐다 켜도 로그인 유지 — st_javascript로 localStorage 토큰 저장/복원.
+    저장·읽기를 st_javascript로 통일하고, 복원은 리로드 대신 Python에서 직접 세션을 살린다.
       ① 로그아웃(_ls_clear_token) → localStorage 토큰 삭제
       ② URL에 ?t= 있으면(로그인/유지 중) 그 토큰을 localStorage에 저장
-      ③ 세션·?t= 모두 없으면(맨 URL·재시작) localStorage 토큰을 읽어 세션 복원 후 ?t= 부여"""
-    if not IP_FETCH_AVAILABLE:   # streamlit-javascript 미설치 → 쿠키 폴백에 의존
+      ③ 세션·?t= 모두 없으면(맨 URL·재시작) localStorage 토큰을 읽어 세션 복원 후 ?t= 부여
+    [v7.8.5] `_ls_checked`로 'localStorage 응답을 받았는지'를 표시 → 콜드 스타트에서 응답 대기 중에는
+    로그인 화면 대신 로딩 표시(앱 본문 _u None 분기에서 처리). 복원 성공 시 같은 run에서 바로
+    로그인 상태로 렌더(불필요한 rerun 1회 제거)."""
+    if not IP_FETCH_AVAILABLE:
+        st.session_state["_ls_checked"] = True   # localStorage 미지원 → 바로 로그인 화면
         return
 
     _JS_REMOVE = "await (async()=>{try{window.localStorage.removeItem('telaclub_token');}catch(e){}return 1;})()"
@@ -1042,6 +1043,7 @@ def _sync_token_localstorage():
 
     # ① 로그아웃 시 토큰 삭제
     if st.session_state.pop("_ls_clear_token", False):
+        st.session_state["_ls_checked"] = True
         try:
             st_javascript(_JS_REMOVE, key="ls_token_clear")
         except Exception:
@@ -1054,6 +1056,7 @@ def _sync_token_localstorage():
     except Exception:
         _url_tok = ""
     if _url_tok:
+        st.session_state["_ls_checked"] = True
         _js_save = ("await (async()=>{try{window.localStorage.setItem("
                     "'telaclub_token','__TOK__');}catch(e){}return 1;})()").replace("__TOK__", _url_tok)
         try:
@@ -1064,12 +1067,14 @@ def _sync_token_localstorage():
 
     # ③ 세션·?t= 모두 없음 → localStorage 토큰으로 복원 (브라우저 재시작 포함)
     if st.session_state.get("app_user"):
+        st.session_state["_ls_checked"] = True
         return
     try:
         _saved = st_javascript(_JS_READ, key="ls_token_read")
     except Exception:
         _saved = None
     if isinstance(_saved, str):
+        st.session_state["_ls_checked"] = True   # 정의된 응답 수신(빈 값=비로그인 / 토큰=복원)
         _saved = _saved.strip()
         if _saved and _saved not in ("0", "None"):
             _restored = _session_load(_saved)
@@ -1079,13 +1084,19 @@ def _sync_token_localstorage():
                     st.query_params["t"] = _saved   # 새로고침에도 유지되도록 URL에 부여
                 except Exception:
                     pass
-                st.rerun()
+                # [v7.8.5] st.rerun() 제거 — 같은 run에서 바로 로그인 상태로 렌더(왕복 1회 절약)
             else:
                 # 만료·무효 토큰이면 localStorage 정리 (다음 진입부터 깔끔히 로그인 화면)
                 try:
                     st_javascript(_JS_REMOVE, key="ls_token_purge")
                 except Exception:
                     pass
+    else:
+        # 아직 localStorage 응답 대기(iframe 왕복 ~1초). 제한 횟수만 대기 후 로그인 화면 표시.
+        _p = st.session_state.get("_ls_probe", 0) + 1
+        st.session_state["_ls_probe"] = _p
+        if _p >= 6:
+            st.session_state["_ls_checked"] = True
 
 
 def shelf_save(date_key: str, schedule: list, scores: dict,
@@ -4376,7 +4387,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.8.4"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.8.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -7648,6 +7659,23 @@ if _u and _u.get("role") == "member" and _is_withdrawn_member(_u.get("id", "")):
     st.session_state["_ls_clear_token"] = True   # [v7.7.5] localStorage 토큰 삭제
     _u = None
     st.warning("탈퇴 처리된 계정입니다. 더 이상 로그인할 수 없습니다. (문의: 운영진)")
+
+# [v7.8.5] 콜드 스타트(브라우저 재시작) 자동 로그인 복원 대기 중에는
+#          로그인 화면이 잠깐 번쩍이지 않도록 로딩 표시만 보여주고 멈춘다.
+#          localStorage 응답을 받으면(_ls_checked) 이 분기를 지나 정상 렌더된다.
+if _u is None and IP_FETCH_AVAILABLE and not st.session_state.get("_ls_checked"):
+    st.markdown(
+        "<div style='display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;min-height:55vh;gap:14px;color:#6b7280;'>"
+        "<div class='tela-spin'></div>"
+        "<div style='font-size:0.95rem;font-weight:600;'>자동 로그인 확인 중…</div></div>"
+        "<style>.tela-spin{width:34px;height:34px;border:3px solid #e5e7eb;"
+        "border-top-color:#16a34a;border-radius:50%;animation:telaspin .8s linear infinite;}"
+        "@keyframes telaspin{to{transform:rotate(360deg);}}</style>",
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
 if _u:
     role_label = {"admin": "🔑 관리자", "sub_admin": "🗝️ 부관리자"}.get(_u["role"], "👤 회원")
     st.sidebar.markdown(
