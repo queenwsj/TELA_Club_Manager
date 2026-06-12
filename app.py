@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.8.2
+TELA CLUB Random Match Generator v7.8.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4278,10 +4278,10 @@ def _build_matches_df(schedule):
         "매치종류": _mtype(d),
     } for d in schedule])
 
-def _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_dict, schedule=None, date_key=""):
+def _render_match_table(df_matches, active_lgs, subtitle, mode_label, league_players_dict, schedule=None, date_key=""):
     """대진표 탭 공통 렌더러."""
     import streamlit as _st
-    _title = f"경기 대진표 · {seed_label}  [{mode_label}]"
+    _title = f"경기 대진표 · {subtitle}  [{mode_label}]"
     if date_key:
         _title += f"  `{date_key}`"
     _st.subheader(_title)
@@ -4348,7 +4348,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.8.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.8.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -9395,8 +9395,6 @@ elif page == "📋 대진표생성":
                         "league_players":  _lp_final,
                         "is_fully_random": _loaded_is_fully_random,
                         "league_configs":  {},
-                        "use_seed":        False,
-                        "seed_val":        None,
                         "rp_key":          _sel_key,
                     },
                 })
@@ -9445,17 +9443,8 @@ elif page == "📋 대진표생성":
     if _saved_keys:
         _render_lock_manager(_sel_key, key_prefix="gen", in_sidebar=False)
 
-    # ── [5] 결과 고정(시드) + 대진표 생성 ──────────────────────
+    # ── [5] 대진표 생성 ──────────────────────────────────────
     st.markdown("---")
-
-    # 결과 고정 (시드) — 생성 직전 옵션
-    _sc1, _sc2 = st.columns([1, 4])
-    use_seed = _sc1.checkbox("🔒 결과 고정 (시드)", value=False, key="use_seed_main")
-    seed_val = None
-    if use_seed:
-        seed_val = _sc2.number_input("시드 번호", min_value=0, max_value=9999,
-                                      value=42, step=1, key="seed_val_main",
-                                      label_visibility="collapsed")
 
     # 생성 요약 + 버튼
     mode_badge   = "🔴 완전 랜덤" if IS_FULLY_RANDOM else "🔵 조건부"
@@ -9527,9 +9516,7 @@ elif page == "📋 대진표생성":
             league_players      = p["league_players"]
             IS_FULLY_RANDOM_run = p["is_fully_random"]
             league_configs_run  = p["league_configs"]
-            use_seed_run        = p["use_seed"]
-            seed_val_run        = p["seed_val"]
-            rp_key_run          = rp_key   # 사이드바 현재 날짜+번호 사용 (덮어쓰기 방지)
+            rp_key_run          = rp_key   # 현재 날짜+번호 사용 (덮어쓰기 방지)
 
         # ── 최초 생성: 사이드바 값으로 파라미터 구성 ────────
         else:
@@ -9557,8 +9544,6 @@ elif page == "📋 대진표생성":
 
             IS_FULLY_RANDOM_run = IS_FULLY_RANDOM
             league_configs_run  = league_configs
-            use_seed_run        = use_seed
-            seed_val_run        = seed_val
             rp_key_run          = rp_key
 
             # ── 디버그: 실제 선택 현황 확인용 ──────────────────
@@ -9596,14 +9581,8 @@ elif page == "📋 대진표생성":
                 "league_players":  league_players,
                 "is_fully_random": IS_FULLY_RANDOM,
                 "league_configs":  league_configs,
-                "use_seed":        use_seed,
-                "seed_val":        seed_val,
                 "rp_key":          rp_key,
             }
-
-        # 시드 고정 (시드 사용 시 재생성해도 동일 결과)
-        if use_seed_run and seed_val_run is not None:
-            random.seed(int(seed_val_run))
 
         # [기능5] 등급 균형 매칭 설정: 이름→등급 맵 구성 후 전역 반영
         _GRADE_BALANCE["enabled"] = bool(use_grade_balance)
@@ -9662,14 +9641,14 @@ elif page == "📋 대진표생성":
             with col_regen:
                 st.button("🔄 다시 생성", type="secondary", use_container_width=True,
                           on_click=_set_regen, key="regen1",
-                          help="동일 설정으로 새로운 랜덤 대진표를 생성합니다 (시드 고정 시 동일 결과)")
+                          help="동일 설정으로 새로운 랜덤 대진표를 생성합니다")
             with col_undo:
                 st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
                           on_click=_set_undo,
                           disabled=not _has_prev,
                           help="직전 대진표로 되돌립니다")
 
-        seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
+        subtitle = "랜덤"
 
         # [다이어트] dn(code) 제거 + 매치 DataFrame/렌더링 공통 헬퍼화
 
@@ -9680,7 +9659,7 @@ elif page == "📋 대진표생성":
         tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
 
         with tab1:
-            _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players, schedule=schedule, date_key=rp_key_run)
+            _render_match_table(df_matches, active_lgs, subtitle, mode_label, league_players, schedule=schedule, date_key=rp_key_run)
 
             # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
             _lock_chk = shelf_load(rp_key_run) or {}
@@ -10047,7 +10026,7 @@ function showMsg() {{
             df_display.to_excel(writer, sheet_name="출전현황", index=False)
             for sn in ["대진표","출전현황"]:
                 writer.sheets[sn].set_column("A:Z", 14)
-        excel_tag  = f"_시드{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "_랜덤"
+        excel_tag  = "_랜덤"
         mode_tag   = "_완전랜덤" if IS_FULLY_RANDOM_run else "_조건부"
         league_tag = f"_{len(active_lgs)}리그"
         st.markdown("---")
@@ -10070,8 +10049,6 @@ function showMsg() {{
             rp_key_run          = restored_params.get("rp_key", "")
             IS_FULLY_RANDOM_run = restored_params.get("is_fully_random", False)
             league_players_r    = restored_params.get("league_players", {})
-            use_seed_run        = restored_params.get("use_seed", False)
-            seed_val_run        = restored_params.get("seed_val", None)
             # league_players_r가 비어있으면 schedule에서 리그 목록 추출
             if league_players_r:
                 active_lgs = list(league_players_r.keys())
@@ -10095,7 +10072,7 @@ function showMsg() {{
                 with col_regen2:
                     st.button("🔄 다시 생성", type="secondary", use_container_width=True,
                               on_click=_set_regen2,
-                              help="사이드바 현재 날짜+번호로 새 대진표를 생성합니다",
+                              help="현재 날짜+번호로 새 대진표를 생성합니다",
                               key="regen2")
                 with col_undo2:
                     st.button("↩️ 되돌리기", type="secondary", use_container_width=True,
@@ -10104,7 +10081,7 @@ function showMsg() {{
                               help="직전 대진표로 되돌립니다",
                               key="undo2")
 
-            seed_label = f"시드 #{int(seed_val_run)}" if (use_seed_run and seed_val_run is not None) else "랜덤"
+            subtitle = "랜덤"
             # [다이어트] DataFrame 생성 및 매치 테이블/검증 렌더링 모두 공통 헬퍼 사용
             df_matches = _build_matches_df(schedule)
             df_full    = stats_to_df(stats)
@@ -10112,7 +10089,7 @@ function showMsg() {{
 
             tab1, tab2, tab3 = st.tabs(["📋 대진표", "📊 출전 현황", "🔍 검증 리포트"])
             with tab1:
-                _render_match_table(df_matches, active_lgs, seed_label, mode_label, league_players_r, schedule=schedule, date_key=rp_key_run)
+                _render_match_table(df_matches, active_lgs, subtitle, mode_label, league_players_r, schedule=schedule, date_key=rp_key_run)
                 # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
                 _lock_chk2 = shelf_load(rp_key_run) or {}
                 _is_sched_locked2 = bool(_lock_chk2.get("is_locked", False))
@@ -10495,8 +10472,7 @@ function showMsg() {{
 
 ### 페어링·옵션
 - **페어링 방식** — 🔵 조건부(같은 팀·상대 중복 회피 + 경기 수 균형) / 🔴 완전 랜덤
-- **⚖️ 체급(등급) 균형 매칭** — 켜면 팀 간 등급 합이 비슷하도록 배정 (사이드바 토글, 기본 꺼짐)
-- **🔒 결과 고정(시드)** — 켜고 생성하면 같은 입력에 대해 동일한 대진을 재현
+- **⚖️ 체급(등급) 균형 매칭** — 켜면 팀 간 등급 합이 비슷하도록 배정 (기본 꺼짐)
 - **🔁 결원 교체** — 노쇼·당일 취소 시 해당 경기만 부분 재배정
 
 ### 출전 규칙
