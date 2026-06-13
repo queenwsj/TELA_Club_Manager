@@ -6,6 +6,75 @@
 > - 최신 버전이 파일 상단에 위치
 
 
+
+## v7.9.0 (2026-06-12) — P3-1 비밀번호 해시 강화 · P3-3 shelf→schedule 네이밍 정리
+
+### 🔧 개선·변경
+- **P3-1 비밀번호 해시 강화 (무염 SHA256 → PBKDF2-HMAC-SHA256):**
+  - 신규·변경 비밀번호는 salt + 반복(240,000회) 적용 PBKDF2로 저장(형식 `pbkdf2_sha256$iter$salt$hash`).
+  - 검증 `_verify_pw()`는 PBKDF2와 **레거시 SHA256을 모두 지원**(상수시간 비교) → 기존 계정 로그인 영향 없음.
+  - **점진적 자동 마이그레이션:** 레거시 해시로 로그인 성공 시 PBKDF2로 재해시·저장(1회성). 사용자 조치 불필요.
+  - 표준 라이브러리만 사용 → requirements 변경·배포 의존성 추가 없음.
+
+### ♻️ 리팩토링
+- **P3-3 네이밍 정리:** 대진표 저장/로드 함수 `shelf_save`/`shelf_load`/`shelf_list_dates`/`shelf_delete` → `schedule_save`/`schedule_load`/`schedule_list_dates`/`schedule_delete` (Supabase 우선 동작을 이름에 반영). 호출부 약 40곳 일괄 갱신.
+  - shelve 실체 관련 이름(`SHELF_PATH`, `_SHELF_SYNC_FP`, `records_rows_from_shelf_cached` 등)은 의미상 유지.
+
+### 📑 구조
+- 해시 비교 5곳을 모두 `_verify_pw()`로 교체(로그인·기본비번 판정·잠금해제 2곳). 저장은 `_hash_pw()`(PBKDF2) 유지.
+
+> 검증: PBKDF2 신규/오답/salt 무작위성/레거시 호환/재해시 판정/예외 안전을 단위 테스트로 확인. 네이밍 치환 후 옛 이름 0건·`py_compile` 통과.
+>
+> 참고: P3-3의 `match_raw`/`matches` 테이블 분리는 해당 테이블이 없어 N/A. `try_*`(매칭 알고리즘 내부 중첩함수) 리네이밍은 회귀 위험 대비 효용이 낮아 보류. P3-2(모듈 분리)는 검토 보류.
+
+---
+
+## v7.8.8 (2026-06-12) — 최적화 P2-3 (저장 원자성: Supabase RPC 트랜잭션)
+
+### 🐛 버그 수정
+- **대진표·계정 저장의 비원자적 delete→insert로 인한 데이터 공백 위험 제거.** 중간 실패 시 "삭제만 되고 재삽입 안 됨" 상태가 발생할 수 있던 구조를 단일 트랜잭션으로 전환.
+
+### 🔧 개선·변경
+- **대진표 저장**(`_supabase_sched_save`): Supabase RPC `save_schedule(date_key, rows)` 호출로 전환 — 함수 내부에서 delete+insert가 단일 트랜잭션으로 실행되어 INSERT 실패 시 DELETE도 자동 롤백.
+- **계정 동기화**(`_supabase_users_save`): RPC `sync_users(rows)` 호출로 전환 — (목록에 없는 계정) delete + (제공 계정) upsert를 단일 트랜잭션으로. 빈 목록은 안전하게 no-op(전체 계정 삭제 방지).
+- **자동 폴백:** RPC 미배포·오류 시 기존 delete→insert(스냅샷+롤백)/delete→upsert 방식으로 자동 폴백하므로, RPC 배포 여부와 무관하게 앱이 안전하게 동작.
+
+### 📑 구조
+- Supabase에 `public.save_schedule`, `public.sync_users` plpgsql 함수 배포(추가형). 앱은 service_role로 호출.
+- 배포 SQL은 `supabase_p2_3_atomic_rpc.sql`로 기록(재현·롤백용).
+
+> 검증: RPC 2개 생성 확인, `save_schedule` 안전 no-op 호출로 기존 데이터(46행) 무영향 확인. 앱 폴백 경로 유지.
+
+---
+
+## v7.8.7 (2026-06-12) — 최적화 P2-1·P2-2 (캐시 레지스트리 · 로그 워커 큐)
+
+### ♻️ 리팩토링
+- **P2-1 캐시 무효화 레지스트리화:** `@cache_group("member"/"schedule", ttl=…)` 데코레이터 도입. 캐시 함수가 선언 즉시 그룹 레지스트리(`_CACHE_REGISTRY`)에 자동 등록되고, `_clear_member_cache()`/`_clear_schedule_cache()`가 레지스트리를 순회해 일괄 무효화. 기존의 수동 나열 목록 제거 → **신규 캐시 추가 시 무효화 목록 갱신 누락으로 '옛값 표시'되던 버그를 구조적으로 차단.**
+  - 등록 현황: member 2개(`_load_records_cached`, `_member_grade_map`), schedule 21개(기록·개인기록·참여통계·대진표/이벤트 로드). `user_load_all`은 기존대로 자체 무효화(`user_load_all.clear()`) 유지.
+- **P2-2 로그 백그라운드 워커 큐:** 로그 호출마다 스레드를 생성하던 `_log_bg`를 **단일 데몬 워커 + 큐(`queue.Queue`)** 로 전환(프로세스당 1개, 전 세션 공용). 스레드 폭증 방지·실행 순서 보장. 큐 가득 시 best-effort 폐기(maxsize=2000).
+
+### 📑 구조
+- `cache_group()` / `_CACHE_REGISTRY` / `_clear_cache_group()` 추가.
+- `_log_worker_loop()` / `_ensure_log_worker()`(스레드 안전 lazy 시작) 추가.
+- 직접 무효화 호출(`_supabase_sched_load.clear()` 등)은 함수명 유지로 그대로 동작.
+
+> 검증: 레지스트리 등록·그룹 격리·무효화, 워커 순차 처리(50건→스레드 1개)를 단위 테스트로 확인. 동작 변화 없음.
+
+---
+
+## v7.8.6 (2026-06-12) — 최적화 P1 (안전한 즉시 개선 3건)
+
+### 🔧 개선·변경
+- **P1-1 대진표 로드 디스크 I/O 절감:** `shelf_load`가 캐시 히트(값 동일) 시 로컬 shelve에 재기록하지 않도록 값 지문(`hash(repr(val))`) 비교 추가. 저장·삭제 시 지문 무효화로 정합성 유지. (스코어보드·보관함 등 대진표 반복 조회 시 디스크 쓰기 감소)
+- **P1-2 회원 등급맵 Supabase 왕복 제거:** `_member_grade_map()`이 캐시 없는 원본 로더 대신 `_load_records_cached()`(ttl=600)를 재사용. (매치업 예상/등급 반영 화면)
+- **P1-3 페이지 분기 정리:** 라우팅의 `if/elif` 혼용을 단일 `if … elif …` 체인으로 통일(로그·스코어보드). 동작 동일, 매 rerun 불필요한 조건 평가 제거.
+
+### 📑 구조
+- `_SHELF_SYNC_FP`(date_key→지문) 모듈 전역 추가. `shelf_save`/`shelf_delete`에서 해당 키 지문 무효화.
+
+---
+
 ## v7.8.5 (2026-06-12) — 콜드 스타트 자동 로그인 지연 화면 개선
 
 ### 🔧 개선·변경

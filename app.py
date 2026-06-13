@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.8.5
+TELA CLUB Random Match Generator v7.9.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -121,40 +121,85 @@ def _supabase_prune_log(table: str, days: int = 60, ttl_sec: int = 3600):
     except Exception:
         pass
 
+import threading as _threading_mod   # [v7.8.7] 로그 워커·캐시 레지스트리용
+
+# ── [v7.8.7] P2-2: 로그 백그라운드 워커 (단일 데몬 스레드 + 큐) ──────────
+#   이전(v7.2)에는 _log_bg 호출마다 스레드를 생성 → 동시 로그 시 스레드 폭증 우려.
+#   단일 워커가 큐를 순차 소비하도록 변경(프로세스당 1개, 전 세션 공용). fire-and-forget.
+_LOG_QUEUE = None
+_LOG_WORKER_STARTED = False
+_LOG_LOCK = _threading_mod.Lock()
+
+def _log_worker_loop():
+    while True:
+        try:
+            job = _LOG_QUEUE.get()
+        except Exception:
+            continue
+        if job is not None:
+            _fn, _args, _kwargs = job
+            try:
+                _fn(*_args, **_kwargs)
+            except Exception:
+                pass
+        try:
+            _LOG_QUEUE.task_done()
+        except Exception:
+            pass
+
+def _ensure_log_worker():
+    global _LOG_QUEUE, _LOG_WORKER_STARTED
+    if _LOG_WORKER_STARTED:
+        return
+    with _LOG_LOCK:
+        if _LOG_WORKER_STARTED:
+            return
+        import queue as _queue_mod
+        _LOG_QUEUE = _queue_mod.Queue(maxsize=2000)
+        _threading_mod.Thread(target=_log_worker_loop, daemon=True).start()
+        _LOG_WORKER_STARTED = True
+
 def _log_bg(fn, *args, **kwargs):
-    """[v7.2] 로그 함수를 백그라운드 스레드에서 실행.
-    로그는 fire-and-forget이므로 메인 스레드를 블로킹하지 않는다."""
-    import threading
-    threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
+    """[v7.8.7] 로그 함수를 단일 백그라운드 워커 큐에서 순차 실행(fire-and-forget).
+    이전엔 호출마다 스레드를 생성했으나, 단일 데몬 워커 + 큐로 전환해 스레드 폭증을 막고
+    실행 순서를 보장한다. 큐가 가득 차면 로그는 best-effort로 조용히 폐기."""
+    try:
+        _ensure_log_worker()
+        _LOG_QUEUE.put_nowait((fn, args, kwargs))
+    except Exception:
+        pass
+
+# ── [v7.8.7] P2-1: 캐시 그룹 레지스트리 ─────────────────────────────────
+#   @cache_group("member"/"schedule", ttl=...)로 선언하면 해당 그룹에 자동 등록되고,
+#   _clear_member_cache()/_clear_schedule_cache()가 레지스트리를 순회해 일괄 무효화한다.
+#   → 신규 캐시 함수 추가 시 무효화 목록을 손으로 갱신할 필요가 없어 '옛값 표시' 버그 차단.
+_CACHE_REGISTRY: dict = {}   # group(str) → [st.cache_data 래핑 함수, ...]
+
+def cache_group(group: str, **cache_kwargs):
+    """@st.cache_data를 감싸 그룹 레지스트리에 자동 등록하는 데코레이터."""
+    def _decorator(fn):
+        cached = st.cache_data(**cache_kwargs)(fn)
+        _CACHE_REGISTRY.setdefault(group, []).append(cached)
+        return cached
+    return _decorator
+
+def _clear_cache_group(group: str):
+    for _fn in _CACHE_REGISTRY.get(group, []):
+        try:
+            _fn.clear()
+        except Exception:
+            pass
 
 def _clear_member_cache():
-    """[v7.1.0] 회원 데이터 캐시만 초기화 — 불필요한 records/schedules 캐시는 유지.
-    st.cache_data.clear() 전역 초기화 대신 사용해 페이지 전환 속도 개선.
-    [v7.7.1] _member_grade_map도 회원 데이터 기반이라 함께 무효화 —
-    등급 수정 직후 매치업 예상이 TTL(180초) 동안 옛 등급을 보던 문제 해결."""
-    for _fn in (_load_records_cached, _member_grade_map):
-        try:
-            _fn.clear()
-        except Exception:
-            pass
+    """[v7.8.7] 회원 데이터 그룹 캐시 무효화 (레지스트리 기반).
+    대상: @cache_group("member")로 등록된 모든 함수(_load_records_cached, _member_grade_map 등).
+    st.cache_data.clear() 전역 초기화 대신 그룹 단위로 비워 페이지 전환 속도를 유지한다."""
+    _clear_cache_group("member")
 
 def _clear_schedule_cache():
-    """[v7.4.0] 스코어보드/기록/개인기록/참여통계 관련 캐시 전체 초기화.
-    점수 저장·기록 재구축 후, 개인기록·참여추이·라이벌 통계가 TTL 동안 옛값으로
-    남던 문제 해결(Streamlit은 의존 캐시를 자동 무효화하지 않으므로 명시적으로 모두 클리어)."""
-    for _fn in [
-        records_load_cached, records_rows_from_shelf_cached, _personal_raw_matches_cached,
-        records_available_periods, personal_available_periods, personal_monthly_leagues,
-        personal_pair_stats, personal_pair_stats_all, personal_rival_stats,
-        personal_get_all_players, participation_monthly_trend, participation_league_activity,
-        participation_inactive_members, player_career_winrate, personal_summary,
-        personal_monthly_trend, personal_partner_vs_rival, personal_rival_recent,
-        _supabase_sched_load, _event_meta_load, _event_meta_load_all,   # [v7.7.2] 대진표·이벤트 로드 캐시
-    ]:
-        try:
-            _fn.clear()
-        except Exception:
-            pass
+    """[v7.8.7] 스코어보드/기록/개인기록/참여통계/대진표·이벤트 로드 그룹 캐시 무효화 (레지스트리 기반).
+    대상: @cache_group("schedule")로 등록된 모든 함수. 점수 저장·기록 재구축 후 옛값이 남지 않도록 일괄 클리어."""
+    _clear_cache_group("schedule")
 
 
 
@@ -379,6 +424,18 @@ def _supabase_users_save(users: dict):
                 "name": str(udata.get("name", "")),
             })
 
+        # [v7.8.8] P2-3: 원자적 동기화 — RPC(sync_users)가 (목록에 없는 계정) delete + (제공 계정) upsert를
+        #   단일 트랜잭션으로 처리. RPC 미배포/오류 시 아래 기존 delete→upsert 방식으로 자동 폴백.
+        try:
+            sb.rpc("sync_users", {"p_rows": rows}).execute()
+            return
+        except Exception as _rpc_e:
+            try:
+                _app_log_error("sync_users RPC 실패 — 기존 방식으로 폴백", _rpc_e)
+            except Exception:
+                pass
+
+        # ── 폴백: 기존 비원자 delete-not-in + upsert ──
         # ① 현재 목록에 없는 계정 삭제 (관리자 계정 삭제 동기화)
         try:
             if keep_ids:
@@ -547,10 +604,51 @@ def guest_remove(name: str, league: str):
 # ========================================================================
 # 02-C. 로그인 계정 관리
 # ========================================================================
-import hashlib
+import hashlib, hmac, os, base64
+
+# [v7.9.0] P3-1: 비밀번호 해시를 무염 SHA256 → PBKDF2-HMAC-SHA256(salt + 반복)으로 강화.
+#   - 신규/변경 비밀번호: _hash_pw() = PBKDF2 (형식 'pbkdf2_sha256$<iter>$<salt_b64>$<hash_b64>')
+#   - 검증: _verify_pw()가 PBKDF2 형식과 레거시 SHA256(hex 64자)을 모두 지원
+#   - 마이그레이션: 레거시 해시로 로그인 성공 시 PBKDF2로 재해시·저장(점진적 자동 전환)
+#   표준 라이브러리(hashlib/hmac/os/base64)만 사용 → bcrypt/argon2 같은 외부 패키지·requirements 변경 불필요.
+_PBKDF2_ITER = 240000   # 작업 인자(반복 횟수). 기기 성능 향상 시 상향 가능(검증은 저장된 iter 사용).
+
+def _hash_pw_pbkdf2(pw: str, salt: bytes = None) -> str:
+    if salt is None:
+        salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.strip().encode("utf-8"), salt, _PBKDF2_ITER)
+    return "pbkdf2_sha256${}${}${}".format(
+        _PBKDF2_ITER,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(dk).decode("ascii"),
+    )
+
+def _hash_pw_sha256_legacy(pw: str) -> str:
+    return hashlib.sha256(pw.strip().encode()).hexdigest()
 
 def _hash_pw(pw: str) -> str:
-    return hashlib.sha256(pw.strip().encode()).hexdigest()
+    """신규·변경 비밀번호 해시 (PBKDF2, salt+반복)."""
+    return _hash_pw_pbkdf2(pw)
+
+def _verify_pw(pw: str, stored: str) -> bool:
+    """입력 비밀번호를 저장된 해시와 검증. PBKDF2·레거시 SHA256 모두 지원(상수시간 비교)."""
+    stored = str(stored or "")
+    if not stored:
+        return False
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _, _iter, _salt_b64, _hash_b64 = stored.split("$", 3)
+            _salt = base64.b64decode(_salt_b64)
+            _expected = base64.b64decode(_hash_b64)
+            _dk = hashlib.pbkdf2_hmac("sha256", pw.strip().encode("utf-8"), _salt, int(_iter))
+            return hmac.compare_digest(_dk, _expected)
+        except Exception:
+            return False
+    return hmac.compare_digest(_hash_pw_sha256_legacy(pw), stored)
+
+def _pw_needs_rehash(stored: str) -> bool:
+    """레거시(비 PBKDF2) 해시면 재해시 필요."""
+    return not str(stored or "").startswith("pbkdf2_sha256$")
 
 @st.cache_data(ttl=60, show_spinner=False)
 def user_load_all() -> dict:
@@ -650,9 +748,16 @@ def user_ensure_admin():
 def user_authenticate(user_id: str, password: str) -> Optional[dict]:
     """로그인 시도. 성공 시 {id, role, name} 반환, 실패 시 None"""
     data = user_load_all()
-    u = data.get(user_id.strip())
-    if u and u["pw_hash"] == _hash_pw(password):
-        return {"id": user_id.strip(), "role": u["role"], "name": u["name"]}
+    uid = user_id.strip()
+    u = data.get(uid)
+    if u and _verify_pw(password, u.get("pw_hash", "")):
+        # [v7.9.0] 레거시 SHA256 해시면 PBKDF2로 자동 재해시·저장 (1회성, 점진적 마이그레이션)
+        if _pw_needs_rehash(u.get("pw_hash", "")):
+            try:
+                user_change_pw(uid, password)
+            except Exception:
+                pass
+        return {"id": uid, "role": u["role"], "name": u["name"]}
     return None
 
 def user_add(user_id: str, password: str, role: str, name: str) -> bool:
@@ -795,7 +900,7 @@ def current_user_must_change_pw() -> bool:
     rec = user_load_all().get(u.get("id", ""))
     if rec is None:
         return u.get("role") == "member"
-    return rec.get("pw_hash") == _hash_pw(DEFAULT_MEMBER_PW)
+    return _verify_pw(DEFAULT_MEMBER_PW, rec.get("pw_hash"))
 
 
 def _render_force_pw_change(u: dict):
@@ -1099,7 +1204,9 @@ def _sync_token_localstorage():
             st.session_state["_ls_checked"] = True
 
 
-def shelf_save(date_key: str, schedule: list, scores: dict,
+_SHELF_SYNC_FP: dict = {}   # [v7.8.6] date_key → 마지막으로 shelve에 동기화한 값의 지문(중복 디스크 쓰기 방지)
+
+def schedule_save(date_key: str, schedule: list, scores: dict,
                is_fully_random: bool = False, is_locked: bool = False):
     """대진표 저장. 로컬 shelve 캐시 + Supabase 운영 저장 + Supabase 백업."""
 
@@ -1111,6 +1218,7 @@ def shelf_save(date_key: str, schedule: list, scores: dict,
             "is_fully_random": is_fully_random,
             "is_locked": is_locked,
         }
+    _SHELF_SYNC_FP.pop(date_key, None)   # [v7.8.6] 값 변경됨 → 다음 schedule_load에서 재동기화
 
     # [v7.7.2] 저장 즉시 대진표 로드 캐시 무효화 — 방금 바뀐 점수/잠금이 바로 반영되도록.
     try:
@@ -1162,15 +1270,27 @@ def _is_valid_loaded(val: dict) -> bool:
             return False
     return True
 
-def shelf_load(date_key: str):
+def schedule_load(date_key: str):
     """대진표 로드. Supabase 우선, 실패 시 shelve 폴백."""
 
     # ① Supabase 우선 로드
     try:
         val = _supabase_sched_load(date_key)
         if _is_valid_loaded(val):
-            with shelve.open(SHELF_PATH) as db:
-                db[date_key] = val
+            # [v7.8.6] 캐시 히트 등으로 값이 직전 동기화와 동일하면 shelve 재기록(디스크 I/O)을 건너뛴다.
+            #          (shelve는 Supabase 실패 시 폴백 캐시이므로 값이 바뀔 때만 갱신하면 충분)
+            try:
+                _fp = hash(repr(val))
+            except Exception:
+                _fp = None
+            if _fp is None or _SHELF_SYNC_FP.get(date_key) != _fp:
+                try:
+                    with shelve.open(SHELF_PATH) as db:
+                        db[date_key] = val
+                    if _fp is not None:
+                        _SHELF_SYNC_FP[date_key] = _fp
+                except Exception:
+                    pass
             return val
     except Exception as e:
         try:
@@ -1190,7 +1310,7 @@ def shelf_load(date_key: str):
 
     return None
 
-def shelf_list_dates() -> List[str]:
+def schedule_list_dates() -> List[str]:
     """저장된 대진표 date_key 목록. Supabase 우선."""
 
     # ① Supabase 우선
@@ -1212,7 +1332,7 @@ def shelf_list_dates() -> List[str]:
 
     return []
 
-def shelf_delete(date_key: str):
+def schedule_delete(date_key: str):
     """대진표 삭제. Supabase + 로컬 shelve + Supabase 백업 삭제."""
 
     # ① Supabase 삭제
@@ -1237,10 +1357,11 @@ def shelf_delete(date_key: str):
         _supabase_sched_load.clear()
     except Exception:
         pass
+    _SHELF_SYNC_FP.pop(date_key, None)   # [v7.8.6] shelve 동기화 지문 정리
 
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@cache_group("schedule", ttl=20, show_spinner=False)
 def _supabase_sched_load(date_key: str):
     """Supabase schedules 테이블에서 특정 date_key 대진표 로드.
     반환 형태는 기존 shelve 구조와 동일:
@@ -1372,6 +1493,18 @@ def _supabase_sched_save(date_key: str, schedule: list, scores: dict,
             "is_dup": str(score_obj.get("is_dup", m.get("is_dup", ""))) if isinstance(score_obj, dict) else str(m.get("is_dup", "")),
         })
 
+    # [v7.8.8] P2-3: 원자적 저장 — Supabase RPC(save_schedule)가 delete+insert를 단일 트랜잭션으로 처리.
+    #   함수 내부 INSERT 실패 시 DELETE도 자동 롤백된다. RPC 미배포/오류 시 아래 기존 방식으로 자동 폴백.
+    try:
+        sb.rpc("save_schedule", {"p_date_key": date_key, "p_rows": rows}).execute()
+        return
+    except Exception as _rpc_e:
+        try:
+            _app_log_error("save_schedule RPC 실패 — 기존 방식으로 폴백", _rpc_e)
+        except Exception:
+            pass
+
+    # ── 폴백: 비원자 delete→insert (앱 단 스냅샷+롤백) ──
     # [v7.7.0] 비원자적 delete→insert로 인한 데이터 영구 소실 방지.
     #   ① 기존 행을 스냅샷 → ② 삭제 → ③ 삽입. ③에서 실패하면 스냅샷을 되살려(롤백)
     #   "삭제만 되고 재삽입 안 됨" 상태로 그 날짜 대진표가 사라지는 일을 막는다.
@@ -2750,7 +2883,7 @@ def _records_build_session_stats(date_key: str, schedule: list, scores: dict) ->
     return session_stats
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@cache_group("schedule", ttl=60, show_spinner=False)
 def _event_meta_load(date_key: str):
     """[v7.6.4] events 테이블에서 이벤트명·점수설정 1건 조회 (없으면 None)."""
     try:
@@ -2761,7 +2894,7 @@ def _event_meta_load(date_key: str):
         return None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@cache_group("schedule", ttl=60, show_spinner=False)
 def _event_meta_load_all() -> list:
     """[v7.6.4] events 테이블 전체 로드."""
     try:
@@ -2849,7 +2982,7 @@ def records_full_rebuild():
         sb.table("records").delete().neq("date_key", "").execute()
 
         # ② 모든 날짜 재집계
-        all_keys = shelf_list_dates()
+        all_keys = schedule_list_dates()
         ok, fail = 0, 0
         batch = []
 
@@ -2857,7 +2990,7 @@ def records_full_rebuild():
             if "[이벤트]" in str(dk):
                 continue
             try:
-                sd = shelf_load(dk)
+                sd = schedule_load(dk)
                 if not sd:
                     continue
                 sched = deserialize_schedule(sd["schedule"])
@@ -2951,7 +3084,7 @@ def exclude_list_remove(name: str):
     exclude_list_save(names)
 
 
-@st.cache_data(ttl=300, show_spinner="🎾 기록 데이터를 불러오는 중…")
+@cache_group("schedule", ttl=300, show_spinner="🎾 기록 데이터를 불러오는 중…")
 def records_load_cached() -> list:
     """records 테이블 캐시 로드 (TTL 300초). [v7.0.3] 120→300초로 상향."""
     return _records_sheet_load_all()
@@ -2966,14 +3099,14 @@ def _records_rows_from_shelf() -> list:
     """
     rows = []
     try:
-        all_keys = shelf_list_dates()
+        all_keys = schedule_list_dates()
     except Exception:
         all_keys = []
     for dk in all_keys:
         if "[이벤트]" in str(dk):
             continue
         try:
-            sd = shelf_load(dk)
+            sd = schedule_load(dk)
             if not sd:
                 continue
             sched = deserialize_schedule(sd["schedule"])
@@ -3000,12 +3133,12 @@ def _records_rows_from_shelf() -> list:
     return rows
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def records_rows_from_shelf_cached() -> list:
     return _records_rows_from_shelf()
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def records_available_periods() -> dict:
     """
     [v5.9.9] 실제로 기록이 존재하는 월/연도 목록을 반환.
@@ -3232,7 +3365,7 @@ _WLD_PALETTE = {
 }
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def _personal_raw_matches_cached() -> list:
     """
     개인기록실 전용 raw 경기 데이터 캐시.
@@ -3259,7 +3392,7 @@ def _personal_raw_matches_cached() -> list:
     out = []
 
     try:
-        all_keys = shelf_list_dates()
+        all_keys = schedule_list_dates()
     except Exception:
         all_keys = []
 
@@ -3267,7 +3400,7 @@ def _personal_raw_matches_cached() -> list:
         if "[이벤트]" in str(dk):
             continue
         try:
-            sd = shelf_load(dk)
+            sd = schedule_load(dk)
             if not sd:
                 continue
             schedule = deserialize_schedule(sd.get("schedule", []))
@@ -3329,7 +3462,7 @@ def _personal_get_all_rows() -> list:
     return rows
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_available_periods(player_name: str) -> dict:
     """[v5.9.10] 특정 선수가 실제 출전한 월/연도 목록.
     개인기록 파트너 궁합·라이벌 전적 탭의 드롭다운을 데이터 있는 기간으로 구성."""
@@ -3347,7 +3480,7 @@ def personal_available_periods(player_name: str) -> dict:
     return {"months": sorted(months, reverse=True), "years": sorted(years, reverse=True)}
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_monthly_leagues(player_name: str, year: str) -> list:
     """
     특정 회원의 연도별 월별 소속 리그 목록 반환.
@@ -3382,7 +3515,7 @@ def personal_monthly_leagues(player_name: str, year: str) -> list:
     return result
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_pair_stats(player_name: str, filter_value: str) -> dict:
     """
     특정 회원의 파트너별 승무패 통계 계산.
@@ -3458,7 +3591,7 @@ def personal_pair_stats(player_name: str, filter_value: str) -> dict:
     }
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_pair_stats_all(player_name: str, filter_value: str) -> list:
     """
     [F-7] 파트너 궁합 CSV용 — 전체 파트너 목록 (최소 경기수 필터 없음, 1경기도 포함).
@@ -3501,7 +3634,7 @@ def personal_pair_stats_all(player_name: str, filter_value: str) -> list:
     return sorted(rows, key=lambda x: (-x["rate"], -x["games"], -x["wins"]))
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_rival_stats(player_name: str, filter_value: str) -> tuple:
     """
     특정 회원 기준 상대별 1:1 맞대결 승무패 통계.
@@ -3572,7 +3705,7 @@ def personal_rival_stats(player_name: str, filter_value: str) -> tuple:
     return rows, match_totals
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_get_all_players() -> list:
     """기록에 존재하는 모든 player_key 목록 반환 (제외 선수 제외, 중복 제거, 정렬)."""
     rows = _personal_get_all_rows()
@@ -3588,7 +3721,7 @@ def personal_get_all_players() -> list:
 
 # ── [기능2] 참여 트렌드 대시보드 헬퍼 ────────────────────────
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def participation_monthly_trend(year: str) -> list:
     """
     [기능2] 월별 참여 추이. 선택 연도의 각 월별 고유 참여 인원·경기 수 집계.
@@ -3617,7 +3750,7 @@ def participation_monthly_trend(year: str) -> list:
     ]
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def participation_league_activity(filter_value: str) -> list:
     """
     [기능2] 리그별 활성도. 기간 내 리그별 경기 수·고유 참여 인원.
@@ -3640,7 +3773,7 @@ def participation_league_activity(filter_value: str) -> list:
     return sorted(rows, key=lambda x: -x["matches"])
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def participation_inactive_members(months: int = 3) -> list:
     """
     [기능2] 최근 N개월간 미참여 회원 목록 (휴면 후보 관리용).
@@ -3679,7 +3812,7 @@ def participation_inactive_members(months: int = 3) -> list:
 
 # ── [기능4] 라이벌 매치업 예상 헬퍼 ──────────────────────────
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def player_career_winrate(player_name: str) -> dict:
     """선수 통산 승무패·승률 (전체 기간). 반환: {games, wins, draws, losses, rate}."""
     matches = _personal_raw_matches_cached()
@@ -3699,13 +3832,13 @@ def player_career_winrate(player_name: str) -> dict:
             "rate": (w / g * 100) if g else 0.0}
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@cache_group("member", ttl=180, show_spinner=False)
 def _member_grade_map() -> dict:
     """회원 이름 → 등급(int 1~5) 매핑. 미지정/비등급은 제외.
     [v7.6.8 수정2] 매치업 예상에 등급을 반영(전적7:등급3)하기 위한 조회용. 페이지에는 표시하지 않음."""
     out = {}
     try:
-        for r in _supabase_members_load_records():
+        for r in _load_records_cached():   # [v7.8.6] 캐시(ttl=600) 재사용 — 별도 Supabase 왕복 제거
             nm = str(r.get("name", "") or "").strip()
             gv = str(r.get("grade", "") or "").strip()
             if nm and gv.isdigit():
@@ -3794,7 +3927,7 @@ def predict_matchup(team_a: list, team_b: list) -> dict:
     }
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_summary(player_name: str, year: str) -> dict:
     """
     [F-2] 선수의 연간 종합 요약.
@@ -3823,7 +3956,7 @@ def personal_summary(player_name: str, year: str) -> dict:
     }
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_monthly_trend(player_name: str, year: str) -> list:
     """
     [F-1] 선수의 월별 성적 추이.
@@ -4140,12 +4273,12 @@ def _render_player_substitution(schedule, date_key, is_fully_random, key_prefix=
                                 for p in m.get("team2", ()))
             new_sched.append(mm)
         # 기존 점수 보존
-        _ex = shelf_load(date_key) or {}
+        _ex = schedule_load(date_key) or {}
         _ex_scores = _ex.get("scores", {})
         _st.session_state["schedule"]    = new_sched
         _st.session_state["rp_schedule"] = new_sched
         _st.session_state["sb_schedule"] = new_sched
-        shelf_save(date_key, serialize_schedule(new_sched), _ex_scores, is_fully_random)
+        schedule_save(date_key, serialize_schedule(new_sched), _ex_scores, is_fully_random)
         try:
             records_commit(date_key, new_sched, _ex_scores)
             _clear_schedule_cache()   # [v7.1.0]
@@ -4186,7 +4319,7 @@ def season_compare_summary(period_type: str, val_a: str, val_b: str) -> dict:
     return {"a": _agg(df_a), "b": _agg(df_b), "df_a": df_a, "df_b": df_b}
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_partner_vs_rival(player_name: str, rival_name: str,
                               filter_value: str) -> list:
     """
@@ -4257,7 +4390,7 @@ def personal_partner_vs_rival(player_name: str, rival_name: str,
     return rows
 
 
-@st.cache_data(ttl=180)
+@cache_group("schedule", ttl=180)
 def personal_rival_recent(player_name: str, rival_name: str,
                           filter_value: str, limit: int = 10) -> list:
     """
@@ -4387,7 +4520,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.8.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.9.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -5112,15 +5245,15 @@ def _audit_log_load(limit: int = 100):
 def _bracket_is_locked(date_key: str) -> bool:
     """해당 대진표(date_key)가 잠금 상태인지 여부."""
     try:
-        return bool((shelf_load(date_key) or {}).get("is_locked", False))
+        return bool((schedule_load(date_key) or {}).get("is_locked", False))
     except Exception:
         return False
 
 
 def _set_bracket_lock(date_key: str, locked: bool):
     """대진표의 잠금 상태만 변경(스케줄·점수·랜덤플래그는 그대로 보존)."""
-    _ld = shelf_load(date_key) or {}
-    shelf_save(
+    _ld = schedule_load(date_key) or {}
+    schedule_save(
         date_key,
         _ld.get("schedule", []),              # 저장소엔 직렬화된 형태로 보관됨
         _ld.get("scores", {}) or {},
@@ -5161,7 +5294,7 @@ def _render_lock_manager(date_key: str, key_prefix: str, in_sidebar: bool = Fals
             if st.button("🔓 잠금 해제", type="secondary", key=f"{key_prefix}_unlock_btn"):
                 _u = get_app_user(); _uid = _u.get("id", "") if _u else ""
                 _ph = user_load_all().get(_uid, {}).get("pw_hash", "")
-                if _ph and _ph == _hash_pw(_pw):
+                if _ph and _verify_pw(_pw, _ph):
                     log_audit("대진표잠금해제", "", date_key,
                               f"대진표 잠금 해제 (키:{date_key})")
                     _set_bracket_lock(date_key, False)
@@ -5301,7 +5434,7 @@ def save_rows_bulk(rows: list, action_detail: str = "", do_log: bool = True):
             log_audit("수정", r.get("id", ""),
                       str(r.get("name", "") or ""), action_detail)
 
-@st.cache_data(ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
+@cache_group("member", ttl=600, show_spinner="🎾 회원 데이터를 불러오는 중…")
 def _load_records_cached() -> list:
     """회원명부 전체 레코드 Supabase에서 로드 (TTL 600s)."""
     try:
@@ -8279,7 +8412,7 @@ if page in _DORMANT_BLOCKED_PAGES and _current_member_is_dormant():
 #   사이드바 단일 탭에서 버튼으로 전환하며 조회. 관리자(admin)만 접근 가능.
 # ========================================================================
 
-if page == "🧾 로그":
+elif page == "🧾 로그":
 
     st.markdown("## 🛠️ 시스템 로그")
 
@@ -8491,7 +8624,7 @@ if page == "🧾 로그":
 # 12. 페이지: 스코어보드
 # ========================================================================
 
-if page == "📊 스코어보드":
+elif page == "📊 스코어보드":
 
     st.markdown("## 📊 경기 결과")
 
@@ -8511,7 +8644,7 @@ if page == "📊 스코어보드":
                     st.rerun()
 
     today_str  = kst_today_str("%Y-%m-%d")
-    saved_keys = shelf_list_dates()
+    saved_keys = schedule_list_dates()
 
     # 수정3: 이벤트 팀편성에서 막 생성한 대진표가 있으면 안내 + 기본 선택
     _ev_ready_key = None
@@ -8550,7 +8683,7 @@ if page == "📊 스코어보드":
 
     if st.session_state.get("sb_key") != selected_key:
         st.session_state["sb_key"] = selected_key
-        loaded = shelf_load(selected_key)
+        loaded = schedule_load(selected_key)
         if loaded:
             st.session_state["sb_schedule"] = deserialize_schedule(loaded["schedule"])
             st.session_state["sb_scores"]   = loaded.get("scores", {})
@@ -8644,10 +8777,10 @@ if page == "📊 스코어보드":
                              help="대진표·점수를 잠금하면 수정이 불가합니다."):
                     _cur_scores = st.session_state.get("sb_scores", {})
                     _cur_sched  = st.session_state.get("sb_schedule", [])
-                    _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                    _ifr = (schedule_load(selected_key) or {}).get("is_fully_random", False)
                     log_audit("대진표잠금", "", selected_key,
                               f"경기결과에서 잠금 (키:{selected_key})")
-                    shelf_save(selected_key, serialize_schedule(_cur_sched),
+                    schedule_save(selected_key, serialize_schedule(_cur_sched),
                                _cur_scores, _ifr, is_locked=True)
                     st.session_state["sb_is_locked"] = True
                     st.success("🔒 잠금 완료. 스코어보드가 잠겼습니다.")
@@ -8663,13 +8796,13 @@ if page == "📊 스코어보드":
                     _uid = _app_user.get("id","") if _app_user else ""
                     _users = user_load_all()
                     _pw_hash = _users.get(_uid, {}).get("pw_hash","")
-                    if _pw_hash and _pw_hash == _hash_pw(_unlock_pw):
+                    if _pw_hash and _verify_pw(_unlock_pw, _pw_hash):
                         _cur_scores = st.session_state.get("sb_scores", {})
                         _cur_sched  = st.session_state.get("sb_schedule", [])
-                        _ifr = (shelf_load(selected_key) or {}).get("is_fully_random", False)
+                        _ifr = (schedule_load(selected_key) or {}).get("is_fully_random", False)
                         log_audit("대진표잠금해제", "", selected_key,
                                   f"경기결과에서 잠금 해제 (키:{selected_key})")
-                        shelf_save(selected_key, serialize_schedule(_cur_sched),
+                        schedule_save(selected_key, serialize_schedule(_cur_sched),
                                    _cur_scores, _ifr, is_locked=False)
                         st.session_state["sb_is_locked"] = False
                         st.session_state.pop("sb_unlock_pw", None)
@@ -8725,9 +8858,9 @@ if page == "📊 스코어보드":
         st.session_state.pop(f"editing_{idx}", None)
         _cur_schedule = st.session_state.get("sb_schedule")
         if _cur_schedule:
-            _prev = shelf_load(selected_key) or {}
+            _prev = schedule_load(selected_key) or {}
             _ifr  = _prev.get("is_fully_random", False)
-            shelf_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
+            schedule_save(selected_key, serialize_schedule(_cur_schedule), scores, _ifr)
             # 기록실 캐시 무효화 → 다음 기록실 방문 시 최신 반영 [v7.1.0 타겟 클리어]
             try:
                 _clear_schedule_cache()
@@ -8995,7 +9128,7 @@ if page == "📊 스코어보드":
                      help="이 점수판의 기록실 데이터를 현재 점수 기준으로 다시 계산해 Supabase에 덮어씁니다."):
             _reagg_scores = st.session_state.get("sb_scores", {})
             if not _reagg_scores:
-                _sd = shelf_load(selected_key)
+                _sd = schedule_load(selected_key)
                 if _sd: _reagg_scores = _sd.get("scores", {})
             if _reagg_scores:
                 with st.spinner("기록실 재집계 중…"):
@@ -9012,7 +9145,7 @@ if page == "📊 스코어보드":
     st.markdown("### 📈 선수별 현황")
     _current_scores = st.session_state.get("sb_scores", {})
     if not _current_scores:
-        _shelf_data = shelf_load(selected_key)
+        _shelf_data = schedule_load(selected_key)
         if _shelf_data:
             _current_scores = _shelf_data.get("scores", {})
             st.session_state["sb_scores"] = _current_scores
@@ -9413,7 +9546,7 @@ elif page == "📋 대진표생성":
     st.caption(f"저장키: {rp_key}")
 
     # ── 저장된 대진표 불러오기 / 삭제 (본문) ──────────────
-    _saved_keys = shelf_list_dates()
+    _saved_keys = schedule_list_dates()
     if _saved_keys:
         st.markdown("---")
         st.markdown("**📂 저장된 대진표**")
@@ -9426,7 +9559,7 @@ elif page == "📋 대진표생성":
 
         # 불러오기
         if _lb1.button("📥 Load", key="sb_load_btn", type="primary", use_container_width=True):
-            _loaded = shelf_load(_sel_key)
+            _loaded = schedule_load(_sel_key)
             if _loaded:
                 _loaded_sched = deserialize_schedule(_loaded["schedule"])
                 _loaded_is_fully_random = _loaded.get("is_fully_random", False)
@@ -9472,7 +9605,7 @@ elif page == "📋 대진표생성":
                         st.error("🔒 잠금된 대진표입니다. 먼저 잠금을 해제해야 삭제할 수 있습니다.")
                         st.session_state.pop("_sb_confirm_del", None)
                     else:
-                        shelf_delete(_sel_key)
+                        schedule_delete(_sel_key)
                         # [v6.5] 대진표 삭제 감사 로그
                         log_audit("대진표삭제", "", _sel_key,
                                   f"대진표 삭제 (키:{_sel_key}, 기록실 포함)")
@@ -9677,11 +9810,11 @@ elif page == "📋 대진표생성":
         mode_label   = "완전 랜덤" if IS_FULLY_RANDOM_run else "조건부 랜덤"
         active_lgs   = list(league_players.keys())
         league_badge_run = " · ".join(active_lgs)
-        # [v6.5.1] 대진표 생성 감사 로그 — 무거운 shelf_save 이전에 먼저 기록해
+        # [v6.5.1] 대진표 생성 감사 로그 — 무거운 schedule_save 이전에 먼저 기록해
         #          시트 쓰기 경합/한도로 로그가 누락되던 문제 방지.
         log_audit("대진표생성", "", rp_key_run,
                   f"{mode_label} / {league_badge_run} · {len(schedule)}경기 생성 (키:{rp_key_run})")
-        shelf_save(rp_key_run, serialize_schedule(schedule), {}, IS_FULLY_RANDOM_run)
+        schedule_save(rp_key_run, serialize_schedule(schedule), {}, IS_FULLY_RANDOM_run)
         st.success(f"✅ [{mode_label} / {league_badge_run}] 대진표가 **{rp_key_run}** 키로 저장되었습니다.")
 
         # ── 다시 생성 / 되돌리기 버튼 ────────────────────────
@@ -9718,7 +9851,7 @@ elif page == "📋 대진표생성":
             _render_match_table(df_matches, active_lgs, subtitle, mode_label, league_players, schedule=schedule, date_key=rp_key_run)
 
             # ── [수정3] 관리자 전용: 페어 수동 조정 ──────────────
-            _lock_chk = shelf_load(rp_key_run) or {}
+            _lock_chk = schedule_load(rp_key_run) or {}
             _is_sched_locked = bool(_lock_chk.get("is_locked", False))
             if is_admin() and _is_sched_locked:
                 st.info("🔒 이 대진표는 스코어보드에서 잠금 처리되어 수정할 수 없습니다. "
@@ -9859,10 +9992,10 @@ elif page == "📋 대진표생성":
                         st.session_state["rp_schedule"] = _adj_matches
                         st.session_state["sb_schedule"] = _adj_matches
                         _ifr = st.session_state.get("last_gen_params",{}).get("is_fully_random", False)
-                        shelf_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
+                        schedule_save(rp_key_run, serialize_schedule(_adj_matches), {}, _ifr)
 
                         # 점수가 있든 없든 기록실 재집계 (제외 선수 변경 즉시 반영)
-                        _existing = shelf_load(rp_key_run) or {}
+                        _existing = schedule_load(rp_key_run) or {}
                         _ex_scores = _existing.get("scores", {})
                         try:
                             records_commit(rp_key_run, _adj_matches, _ex_scores)
@@ -10147,7 +10280,7 @@ function showMsg() {{
             with tab1:
                 _render_match_table(df_matches, active_lgs, subtitle, mode_label, league_players_r, schedule=schedule, date_key=rp_key_run)
                 # [수정3] 복원된 대진표에도 관리자 페어 조정 UI 표시
-                _lock_chk2 = shelf_load(rp_key_run) or {}
+                _lock_chk2 = schedule_load(rp_key_run) or {}
                 _is_sched_locked2 = bool(_lock_chk2.get("is_locked", False))
                 if is_admin() and _is_sched_locked2:
                     st.info("🔒 이 대진표는 스코어보드에서 잠금 처리되어 수정할 수 없습니다. "
@@ -10258,10 +10391,10 @@ function showMsg() {{
                             st.session_state["rp_schedule"] = _adj2_matches
                             st.session_state["sb_schedule"] = _adj2_matches
                             _ifr2 = restored_params.get("is_fully_random", False)
-                            shelf_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
+                            schedule_save(rp_key_run, serialize_schedule(_adj2_matches), {}, _ifr2)
 
                             # 점수 유무 관계없이 기록실 재집계 (제외 선수 변경 즉시 반영)
-                            _existing2 = shelf_load(rp_key_run) or {}
+                            _existing2 = schedule_load(rp_key_run) or {}
                             _ex_scores2 = _existing2.get("scores", {})
                             try:
                                 records_commit(rp_key_run, _adj2_matches, _ex_scores2)
@@ -10587,7 +10720,7 @@ elif page == "🏆 통합기록실":
             if st.button("🔁 전체 날짜 일괄 재집계 (관리자)", type="primary",
                          key="bulk_reagg_btn",
                          help="저장된 모든 점수판 날짜의 기록실 데이터를 현재 제외 목록 기준으로 다시 계산합니다."):
-                _all_keys = shelf_list_dates()
+                _all_keys = schedule_list_dates()
                 if not _all_keys:
                     st.warning("저장된 스코어보드가 없습니다.")
                 else:
@@ -10595,7 +10728,7 @@ elif page == "🏆 통합기록실":
                     with st.spinner(f"{len(_all_keys)}개 날짜 재집계 중…"):
                         for _dk in _all_keys:
                             try:
-                                _sd = shelf_load(_dk)
+                                _sd = schedule_load(_dk)
                                 if not _sd:
                                     continue
                                 _sched = deserialize_schedule(_sd["schedule"])
@@ -11235,7 +11368,7 @@ elif page == "🎉 이벤트기록":
             # [v7.6.8 수정4] 점수가 없는 참가자도 0점으로 모두 표기 (대진표 기준)
             _existing_names = {p["name"] for p in _ranked}
             try:
-                _bracket = shelf_load(_sel_ev)
+                _bracket = schedule_load(_sel_ev)
             except Exception:
                 _bracket = None
             if _bracket and _bracket.get("schedule"):
@@ -11978,7 +12111,7 @@ elif page == "🗂️ 대진표보관함":
     st.markdown("## 📦 대진 보관함")
     st.caption("저장된 지난 대진표를 날짜별로 다시 보거나, 회원 이름으로 검색합니다.")
 
-    _arch_keys = shelf_list_dates()
+    _arch_keys = schedule_list_dates()
     if not _arch_keys:
         st.info("📭 저장된 대진표가 없습니다. 대진표를 생성하면 여기에 보관됩니다.")
     else:
@@ -12002,7 +12135,7 @@ elif page == "🗂️ 대진표보관함":
                 _arch_keys, key_prefix="arch", year_label="연도",
                 item_label="대진표 선택", item_fmt=_arch_label, horizontal=True)
             if _sel_key:
-                _loaded = shelf_load(_sel_key)
+                _loaded = schedule_load(_sel_key)
                 if not _loaded or not _loaded.get("schedule"):
                     st.warning("이 대진표를 불러올 수 없습니다 (데이터 없음/손상).")
                 else:
@@ -12062,7 +12195,7 @@ elif page == "🗂️ 대진표보관함":
                                     st.error("🔒 잠금된 대진표입니다. 위의 '대진표 잠금 관리'에서 "
                                              "먼저 잠금을 해제해야 삭제할 수 있습니다.")
                                 else:
-                                    shelf_delete(_sel_key)
+                                    schedule_delete(_sel_key)
                                     # [v6.5] 대진표 삭제 감사 로그
                                     log_audit("대진표삭제", "", _sel_key,
                                               f"보관함에서 대진표 삭제 (키:{_sel_key})")
@@ -12080,7 +12213,7 @@ elif page == "🗂️ 대진표보관함":
                 _hits = []
                 with st.spinner(f"{len(_scan_keys)}건 검색 중…"):
                     for _k in _scan_keys:
-                        _ld = shelf_load(_k)
+                        _ld = schedule_load(_k)
                         if not _ld or not _ld.get("schedule"):
                             continue
                         _sd = deserialize_schedule(_ld["schedule"])
@@ -12573,10 +12706,10 @@ elif page == "🎯 이벤트 팀편성":
                         st.error("대진표를 생성할 수 없습니다. 팀 인원을 확인해주세요.")
                     else:
                         # 이벤트 대진표는 완전랜덤 플래그로 저장 (집계 호환)
-                        # [v6.5.2] 이벤트 대진표 생성도 감사 로그 기록 (shelf_save 이전)
+                        # [v6.5.2] 이벤트 대진표 생성도 감사 로그 기록 (schedule_save 이전)
                         log_audit("대진표생성", "", _ev_key,
                                   f"이벤트 팀대결 · {len(_ev_sched)}경기 생성 (키:{_ev_key})")
-                        shelf_save(_ev_key, serialize_schedule(_ev_sched), {}, True)
+                        schedule_save(_ev_key, serialize_schedule(_ev_sched), {}, True)
                         st.session_state.update({
                             "rp_schedule": _ev_sched, "rp_key": _ev_key,
                             "sb_schedule": _ev_sched, "sb_scores": {}, "sb_key": _ev_key,
