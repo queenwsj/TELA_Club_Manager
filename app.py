@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.9.0
+TELA CLUB Random Match Generator v7.9.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4520,7 +4520,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.9.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.9.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4529,6 +4529,10 @@ NAVER_CAFE_URL_PC     = "https://cafe.naver.com/f-e/cafes/31209748/menus/29?view
 KAKAO_OPENCHAT_URL = ""   # 예: "https://open.kakao.com/o/your-room"
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
+
+# [v7.9.1 측정용 임시] 페이지 렌더 소요 측정 시작점 (원인 파악 후 제거 예정)
+import time as _perf_time
+_PERF_T0 = _perf_time.perf_counter()
 
 
 
@@ -8094,6 +8098,7 @@ else:
 
 
 # ── 메인(홈) 화면 렌더링 ──
+_PERF_T_DISPATCH = _perf_time.perf_counter()   # [v7.9.1 측정용 임시] 공통 오버헤드↔페이지 렌더 구분
 if page == "🏠 메인":
     _hello_name = (_u or {}).get("name", "회원")
     _role_label = {"admin": "🔑 관리자", "sub_admin": "🗝️ 부관리자"}.get(
@@ -12736,3 +12741,15 @@ elif page == "🎯 이벤트 팀편성":
                         )
                         st.caption(f"📊 총 {len(_ev_sched)}경기 · 출전 분포: {_dist_str} · 잡복 {_jab}경기")
                         st.balloons()
+
+
+# [v7.9.1 측정용 임시] 관리자에게만 페이지 렌더 소요 표시 (원인 파악용 · 확인 후 제거 예정)
+try:
+    if get_app_user() and is_admin():
+        _t_end = _perf_time.perf_counter()
+        _ovh_ms = (_PERF_T_DISPATCH - _PERF_T0) * 1000
+        _pg_ms  = (_t_end - _PERF_T_DISPATCH) * 1000
+        _tot_ms = (_t_end - _PERF_T0) * 1000
+        st.sidebar.caption(f"⏱ 공통 {_ovh_ms:.0f}ms · 페이지 {_pg_ms:.0f}ms · 합계 {_tot_ms:.0f}ms")
+except Exception:
+    pass
