@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.9.2
+TELA CLUB Random Match Generator v7.9.3
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -1361,6 +1361,60 @@ def schedule_delete(date_key: str):
 
 
 
+def _assemble_sched_from_rows(rows: list):
+    """[v7.9.3] 스케줄 행 리스트(한 date_key 분)를 기존 shelve 구조로 조립.
+    _supabase_sched_load(단건)·_supabase_sched_load_all(전체)이 공유 → 동작 동일 보장."""
+    rows = rows or []
+    try:
+        rows = sorted(rows, key=lambda r: int(r.get("match_idx", 0) or 0))
+    except Exception:
+        rows = sorted(rows, key=lambda r: str(r.get("match_idx", "")))
+    if not rows:
+        return None
+    schedule = []
+    scores = {}
+    is_fully_random = False
+    is_locked = False
+    for idx, r in enumerate(rows):
+        match_idx = str(r.get("match_idx", idx))
+        team1 = r.get("team1") or []
+        team2 = r.get("team2") or []
+        exclude_players = r.get("exclude_players") or []
+        if isinstance(team1, list):
+            team1 = tuple(team1)
+        if isinstance(team2, list):
+            team2 = tuple(team2)
+        schedule.append({
+            "round": str(r.get("round", "")),
+            "league": str(r.get("league", "")),
+            "team1": team1,
+            "team2": team2,
+            "type": str(r.get("type", "")),
+            "exclude_players": exclude_players,
+        })
+        s1 = r.get("score1", "")
+        s2 = r.get("score2", "")
+        if s1 != "" and s2 != "":
+            try:
+                scores[match_idx] = {
+                    "score1": int(s1),
+                    "score2": int(s2),
+                    "is_dup": str(r.get("is_dup", "0")).lower() in ("1", "true", "yes"),
+                }
+            except (ValueError, TypeError):
+                pass
+        if str(r.get("is_fully_random", "")).lower() in ("1", "true", "yes"):
+            is_fully_random = True
+        if str(r.get("is_locked", "")).lower() in ("1", "true", "yes"):
+            is_locked = True
+    return {
+        "schedule": schedule,
+        "scores": scores,
+        "is_fully_random": is_fully_random,
+        "is_locked": is_locked,
+    }
+
+
 @cache_group("schedule", ttl=20, show_spinner=False)
 def _supabase_sched_load(date_key: str):
     """Supabase schedules 테이블에서 특정 date_key 대진표 로드.
@@ -1380,69 +1434,7 @@ def _supabase_sched_load(date_key: str):
             .eq("date_key", date_key)
             .execute()
         )
-
-        rows = res.data or []
-
-        try:
-            rows = sorted(rows, key=lambda r: int(r.get("match_idx", 0) or 0))
-        except Exception:
-            rows = sorted(rows, key=lambda r: str(r.get("match_idx", "")))
-
-        if not rows:
-            return None
-
-        schedule = []
-        scores = {}
-        is_fully_random = False
-        is_locked = False
-
-        for idx, r in enumerate(rows):
-            match_idx = str(r.get("match_idx", idx))
-
-            team1 = r.get("team1") or []
-            team2 = r.get("team2") or []
-            exclude_players = r.get("exclude_players") or []
-
-            # 기존 Supabase 로드와 최대한 비슷하게 tuple로 맞춤
-            if isinstance(team1, list):
-                team1 = tuple(team1)
-            if isinstance(team2, list):
-                team2 = tuple(team2)
-
-            schedule.append({
-                "round": str(r.get("round", "")),
-                "league": str(r.get("league", "")),
-                "team1": team1,
-                "team2": team2,
-                "type": str(r.get("type", "")),
-                "exclude_players": exclude_players,
-            })
-
-            s1 = r.get("score1", "")
-            s2 = r.get("score2", "")
-
-            if s1 != "" and s2 != "":
-                try:
-                    scores[match_idx] = {
-                        "score1": int(s1),
-                        "score2": int(s2),
-                        "is_dup": str(r.get("is_dup", "0")).lower() in ("1", "true", "yes"),
-                    }
-                except (ValueError, TypeError):
-                    pass
-
-            if str(r.get("is_fully_random", "")).lower() in ("1", "true", "yes"):
-                is_fully_random = True
-
-            if str(r.get("is_locked", "")).lower() in ("1", "true", "yes"):
-                is_locked = True
-
-        return {
-            "schedule": schedule,
-            "scores": scores,
-            "is_fully_random": is_fully_random,
-            "is_locked": is_locked,
-        }
+        return _assemble_sched_from_rows(res.data or [])
 
     except Exception as e:
         try:
@@ -1450,6 +1442,49 @@ def _supabase_sched_load(date_key: str):
         except Exception:
             pass
         return None
+
+
+@cache_group("schedule", ttl=20, show_spinner=False)
+def _supabase_sched_load_all() -> dict:
+    """[v7.9.3] 모든 date_key 대진표를 단일 쿼리로 로드 → {date_key: sd}.
+    날짜별 개별 호출(N+1) 대신 한 번의 select로 가져와 파이썬에서 그룹화·조립."""
+    try:
+        sb = _get_supabase()
+        res = sb.table("schedules").select("*").execute()
+        by_key = {}
+        for r in (res.data or []):
+            by_key.setdefault(str(r.get("date_key", "")), []).append(r)
+        out = {}
+        for dk, grp in by_key.items():
+            sd = _assemble_sched_from_rows(grp)
+            if sd:
+                out[dk] = sd
+        return out
+    except Exception as e:
+        try:
+            _app_log_error("Supabase schedules 전체 로드 실패", e)
+        except Exception:
+            pass
+        return {}
+
+
+def _schedule_load_all_or_fallback() -> dict:
+    """[v7.9.3] 전체 스케줄을 {date_key: sd}로 반환. 단일 쿼리 우선, 실패/빈 결과면 날짜별 폴백."""
+    try:
+        _all = _supabase_sched_load_all()
+        if _all:
+            return _all
+    except Exception:
+        pass
+    out = {}
+    try:
+        for dk in schedule_list_dates():
+            sd = schedule_load(dk)
+            if sd:
+                out[dk] = sd
+    except Exception:
+        pass
+    return out
 
 
 def _supabase_sched_save(date_key: str, schedule: list, scores: dict,
@@ -2981,16 +3016,15 @@ def records_full_rebuild():
         # ① 전체 삭제
         sb.table("records").delete().neq("date_key", "").execute()
 
-        # ② 모든 날짜 재집계
-        all_keys = schedule_list_dates()
+        # ② 모든 날짜 재집계 (단일 쿼리 로드, 실패 시 날짜별 폴백)
+        _all_sched = _schedule_load_all_or_fallback()
         ok, fail = 0, 0
         batch = []
 
-        for dk in all_keys:
+        for dk, sd in _all_sched.items():
             if "[이벤트]" in str(dk):
                 continue
             try:
-                sd = schedule_load(dk)
                 if not sd:
                     continue
                 sched = deserialize_schedule(sd["schedule"])
@@ -3098,15 +3132,11 @@ def _records_rows_from_shelf() -> list:
     반환: records 시트와 동일한 형식의 dict 리스트.
     """
     rows = []
-    try:
-        all_keys = schedule_list_dates()
-    except Exception:
-        all_keys = []
-    for dk in all_keys:
+    # [v7.9.3] N+1 제거: 전체 스케줄을 한 번에 로드 후 메모리 순회(실패 시 날짜별 폴백)
+    for dk, sd in _schedule_load_all_or_fallback().items():
         if "[이벤트]" in str(dk):
             continue
         try:
-            sd = schedule_load(dk)
             if not sd:
                 continue
             sched = deserialize_schedule(sd["schedule"])
@@ -3391,16 +3421,11 @@ def _personal_raw_matches_cached() -> list:
     excluded = set(exclude_list_load())
     out = []
 
-    try:
-        all_keys = schedule_list_dates()
-    except Exception:
-        all_keys = []
-
-    for dk in all_keys:
+    # [v7.9.3] N+1 제거: 전체 스케줄 단일 로드 후 메모리 순회(실패 시 날짜별 폴백)
+    for dk, sd in _schedule_load_all_or_fallback().items():
         if "[이벤트]" in str(dk):
             continue
         try:
-            sd = schedule_load(dk)
             if not sd:
                 continue
             schedule = deserialize_schedule(sd.get("schedule", []))
@@ -4520,7 +4545,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.9.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.9.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4542,8 +4567,10 @@ def _render_perf_caption():
         _t_end = _perf_time.perf_counter()
         _t0 = globals().get("_PERF_T0", _t_end)
         _td = globals().get("_PERF_T_DISPATCH", _t0)
+        _tot = (_t_end - _t0) * 1000
+        _dot = "🟢" if _tot < 400 else ("🟡" if _tot < 1000 else "🔴")
         st.sidebar.caption(
-            f"⏱ 공통 {(_td-_t0)*1000:.0f}ms · 페이지 {(_t_end-_td)*1000:.0f}ms · 합계 {(_t_end-_t0)*1000:.0f}ms"
+            f"⏱ 공통 {(_td-_t0)*1000:.0f}ms · 페이지 {(_t_end-_td)*1000:.0f}ms · 합계 {_tot:.0f}ms {_dot}"
         )
     except Exception:
         pass

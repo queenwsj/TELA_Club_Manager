@@ -6,6 +6,24 @@
 > - 최신 버전이 파일 상단에 위치
 
 
+## v7.9.3 (2026-06-12) — 기록·대진 로딩 N+1 제거(단일 쿼리) + 측정 신호등
+
+### 🔧 개선·변경
+- **스케줄 로딩 N+1 → 단일 쿼리:** 기록·개인기록·재집계가 날짜마다 Supabase를 따로 부르던 구조(`for dk: schedule_load(dk)`)를, **모든 스케줄을 한 번의 쿼리로 읽어 메모리에서 그룹화**하는 방식으로 변경. 날짜가 N개일 때 왕복이 N번→1번으로 감소(기록·개인기록·이벤트기록 첫 로딩 단축 기대).
+  - 적용: `_records_rows_from_shelf`(통합기록), `_personal_raw_matches_cached`(개인기록), records 재집계.
+  - **자동 폴백:** 단일 쿼리 실패/빈 결과 시 기존 날짜별 로드로 폴백(`_schedule_load_all_or_fallback`).
+- **측정 표시 신호등:** 합계 오른쪽에 🟢/🟡/🔴 표시(🟢 <400ms · 🟡 400~1000ms · 🔴 ≥1000ms).
+
+### ♻️ 리팩토링
+- 스케줄 조립 로직을 `_assemble_sched_from_rows()`로 추출 → 단건 로더(`_supabase_sched_load`)와 전체 로더(`_supabase_sched_load_all`)가 **동일 코드 공유**(결과 동일 보장).
+
+### 📑 구조
+- `_assemble_sched_from_rows()` / `_supabase_sched_load_all()` / `_schedule_load_all_or_fallback()` 추가.
+
+> 검증: 조립 헬퍼의 정렬·tuple·scores·flags·그룹화를 단위 테스트로 확인. 작업 중 치환 대상 오인을 발견해 백업 복원 후 정확한 함수에만 재적용(점수수정 이력 로더 `_score_audit_load`는 원본 그대로 유지 확인). `py_compile` 통과.
+
+---
+
 ## v7.9.2 (2026-06-12) — 측정 표시 상시화(관리자 전용) + 홈 표시
 
 ### 🔧 개선·변경
