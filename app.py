@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.9.3
+TELA CLUB Random Match Generator v7.9.5
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4545,7 +4545,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.9.3"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.9.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4569,9 +4569,12 @@ def _render_perf_caption():
         _td = globals().get("_PERF_T_DISPATCH", _t0)
         _tot = (_t_end - _t0) * 1000
         _dot = "🟢" if _tot < 400 else ("🟡" if _tot < 1000 else "🔴")
-        st.sidebar.caption(
-            f"⏱ 공통 {(_td-_t0)*1000:.0f}ms · 페이지 {(_t_end-_td)*1000:.0f}ms · 합계 {_tot:.0f}ms {_dot}"
-        )
+        _txt = f"⏱ 공통 {(_td-_t0)*1000:.0f}ms · 페이지 {(_t_end-_td)*1000:.0f}ms · 합계 {_tot:.0f}ms {_dot}"
+        _ph = globals().get("_PERF_PLACEHOLDER")
+        if _ph is not None:
+            _ph.caption(_txt)
+        else:
+            st.caption(_txt)
     except Exception:
         pass
 
@@ -6721,6 +6724,103 @@ def dialog_form(df, existing=None):
 # ========================================================================
 # 10. 회원명부 페이지 렌더링
 # ========================================================================
+def render_period_report_page():
+    """[v7.9.5] 기간별 클럽 리포트 — 선택 기간의 운동일·참여·출전·승률 요약.
+    기존 기록 데이터(records_rows_from_shelf_cached)를 재사용하므로 추가 Supabase 쿼리가 없다."""
+    st.markdown("## 📅 기간 리포트")
+    st.caption("선택한 기간의 클럽 활동을 요약합니다. (기록실 데이터 기반)")
+
+    rows = records_rows_from_shelf_cached() or []
+    if not rows:
+        st.info("아직 집계할 경기 기록이 없습니다. 스코어를 입력하면 리포트가 채워집니다.")
+        return
+
+    _periods = records_available_periods()
+    _months = _periods.get("months", [])
+    _years = _periods.get("years", [])
+
+    c1, c2 = st.columns([1, 1.6])
+    with c1:
+        scope = st.radio("범위", ["전체", "연도", "월"], horizontal=True, key="rpt_scope")
+    sel = None
+    with c2:
+        if scope == "연도" and _years:
+            sel = st.selectbox("연도 선택", _years, key="rpt_year")
+        elif scope == "월" and _months:
+            sel = st.selectbox("월 선택", _months, key="rpt_month")
+        elif scope != "전체":
+            st.caption("선택 가능한 기간이 없습니다.")
+
+    def _in_period(r):
+        if scope == "전체":
+            return True
+        _ym, _yr = _row_period_keys(r)
+        if scope == "연도":
+            return _yr == sel
+        if scope == "월":
+            return _ym == sel
+        return True
+
+    frows = [r for r in rows if _in_period(r)]
+    if not frows:
+        st.warning("해당 기간에 집계된 기록이 없습니다.")
+        return
+
+    # ── 집계 ──
+    players = {}
+    dates = set()
+    league_games = {}
+    for r in frows:
+        dates.add(str(r.get("date_key", "")))
+        pk = str(r.get("player_key", ""))
+        if not pk:
+            continue
+        w = int(r.get("wins", 0)); l = int(r.get("losses", 0)); d = int(r.get("draws", 0))
+        p = players.setdefault(pk, {"name": "", "G": 0, "W": 0, "L": 0, "D": 0})
+        p["name"] = str(r.get("display_name", "") or pk)
+        p["G"] += w + l + d; p["W"] += w; p["L"] += l; p["D"] += d
+        lg = str(r.get("league", "") or "기타")
+        league_games[lg] = league_games.get(lg, 0) + (w + l + d)
+    total_games = sum(p["G"] for p in players.values())
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("운동일", f"{len(dates)}일")
+    m2.metric("참여 인원", f"{len(players)}명")
+    m3.metric("총 출전(게임)", f"{total_games}")
+
+    def _md_table(headers, body_rows):
+        h = "| " + " | ".join(headers) + " |"
+        sep = "| " + " | ".join(["---"] * len(headers)) + " |"
+        body = "\n".join("| " + " | ".join(str(c) for c in row) + " |" for row in body_rows)
+        return h + "\n" + sep + "\n" + body
+
+    st.markdown("##### 🏃 최다 출전 TOP 10")
+    _att = sorted(players.values(), key=lambda x: x["G"], reverse=True)[:10]
+    st.markdown(_md_table(["순위", "이름", "출전", "승", "패"],
+                          [[i + 1, p["name"], p["G"], p["W"], p["L"]] for i, p in enumerate(_att)]))
+
+    st.markdown("##### 🏆 승률 TOP 10 (최소 4경기)")
+    _wr = []
+    for p in players.values():
+        gp = p["W"] + p["L"]
+        if gp >= 4:
+            _wr.append((p["name"], round(p["W"] / gp * 100, 1), p["W"], p["L"]))
+    _wr.sort(key=lambda x: x[1], reverse=True)
+    _wr = _wr[:10]
+    if _wr:
+        st.markdown(_md_table(["순위", "이름", "승률(%)", "승", "패"],
+                              [[i + 1, n, wr, w, l] for i, (n, wr, w, l) in enumerate(_wr)]))
+    else:
+        st.caption("4경기 이상 출전자가 없어 승률 순위를 표시하지 않습니다.")
+
+    if league_games:
+        st.markdown("##### 📊 리그별 출전 분포")
+        _lg = sorted(league_games.items(), key=lambda x: x[1], reverse=True)
+        st.markdown(_md_table(["리그", "출전(게임)"], [[k, v] for k, v in _lg]))
+
+    st.caption("※ ‘총 출전(게임)’은 선수별 출전 게임 수의 합(연인원)입니다. 복식은 한 경기에 4명이 출전합니다.")
+
+
 def render_roster_page():
     """회원명부 페이지 — 로그인/비로그인 분기"""
     _logged_in  = is_logged_in()
@@ -7991,7 +8091,8 @@ _is_staff = is_sub_admin()
 _nav_sections = [
     ("기록", [("🏆 통합기록실", "🏆 클럽 기록"),
               ("👤 개인기록실", "🧍 개인 기록"),
-              ("🎉 이벤트기록", "🎉 이벤트 기록")]),
+              ("🎉 이벤트기록", "🎉 이벤트 기록"),
+              ("📅 기간리포트", "📅 기간 리포트")]),
     ("경기", [("📊 스코어보드", "📊 경기 결과"),
               ("🔮 매치업예상", "🔮 매치업 예상")]),
 ]
@@ -8012,6 +8113,7 @@ _visible_pages = [k for _sec, _items in _nav_sections for k, _l in _items]
 #   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
 #   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
 _ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "🔮 매치업예상", "🎉 이벤트기록", "📊 스코어보드",
+                    "📅 기간리포트",
                     "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부",
                     "🧾 로그"]
 if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
@@ -8043,6 +8145,7 @@ page = st.session_state["current_page"]
 _LOADING_LABELS = {
     "🏠 메인":         ("🏠", "테라클럽으로 이동 중…"),
     "🏆 통합기록실":   ("🏆", "클럽 랭킹 집계 중…"),
+    "📅 기간리포트":   ("📅", "기간 리포트 작성 중…"),
     "👤 개인기록실":   ("🧍", "플레이 기록 정리 중…"),
     "📊 스코어보드":   ("📊", "오늘의 스코어 정리 중…"),
     "📋 대진표생성":   ("🎾", "코트 매칭 준비 중…"),
@@ -8101,6 +8204,9 @@ if st.session_state.get("_last_page_for_scroll") != page:
 
 # [v6.9.0] 메뉴 열람 이력 기록 (페이지가 실제로 바뀐 경우에만)
 log_page_view(_u, page)
+
+# [v7.9.4] 관리자 측정 표시 자리 — 페이지 최상단(홈·새로고침 버튼 위)에 고정
+_PERF_PLACEHOLDER = st.empty() if is_admin() else None
 
 
 # ========================================================================
@@ -8409,6 +8515,7 @@ if page == "🏠 메인":
     # 메뉴 카드 (사이드바 메뉴를 홈에 그대로 노출)
     _card_desc = {
         "🏆 통합기록실":   "클럽 전체 통계·랭킹·참여 추이",
+        "📅 기간리포트":   "기간별 운동일·출전·승률 요약",
         "👤 개인기록실":   "내 전적·페어·라이벌 분석",
         "📊 스코어보드":   "경기 결과 입력·확인",
         "📋 대진표생성":   "랜덤 대진표 생성",
@@ -8441,7 +8548,7 @@ if page == "🏠 메인":
 # [v6.5.1] 경기 결과(스코어보드)도 제한 대상에 포함.
 # [v7.7.4] 이벤트기록·매치업예상도 클럽 경기 데이터 기반이라 휴면 제한 대상에 포함.
 _DORMANT_BLOCKED_PAGES = {"🏆 통합기록실", "👤 개인기록실", "📊 스코어보드", "👥 회원명부",
-                          "🎉 이벤트기록", "🔮 매치업예상"}
+                          "🎉 이벤트기록", "🔮 매치업예상", "📅 기간리포트"}
 if page in _DORMANT_BLOCKED_PAGES and _current_member_is_dormant():
     st.info(
         "💤 **휴면회원 열람 제한**\n\n"
@@ -11538,6 +11645,9 @@ elif page == "🎉 이벤트기록":
 # ========================================================================
 # 14-B. 페이지: 개인기록실 (v5.9 신규)
 # ========================================================================
+elif page == "📅 기간리포트":
+    render_period_report_page()
+
 elif page == "👤 개인기록실":
     st.markdown("## 🧍 개인 기록")
     st.caption("회원 개인의 월별 리그 기록, 파트너 궁합, 라이벌 전적을 조회합니다.")
