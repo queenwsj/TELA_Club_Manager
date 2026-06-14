@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.9.5
+TELA CLUB Random Match Generator v7.10.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4545,7 +4545,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.9.5"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.10.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -6724,6 +6724,114 @@ def dialog_form(df, existing=None):
 # ========================================================================
 # 10. 회원명부 페이지 렌더링
 # ========================================================================
+def attendance_load(att_date: str) -> list:
+    """[v7.10.0] 특정 날짜(YYYY-MM-DD)의 출석자 이름 목록(정렬)."""
+    try:
+        sb = _get_supabase()
+        res = sb.table("attendance").select("member_name").eq("att_date", str(att_date)).execute()
+        names = {str(r.get("member_name", "")).strip() for r in (res.data or [])}
+        return sorted(n for n in names if n)
+    except Exception:
+        return []
+
+
+def attendance_set(att_date: str, member_name: str, present: bool) -> bool:
+    """[v7.10.0] 출석 등록(present=True) / 취소(present=False)."""
+    att_date = str(att_date).strip()
+    member_name = str(member_name).strip()
+    if not att_date or not member_name:
+        return False
+    try:
+        sb = _get_supabase()
+        if present:
+            sb.table("attendance").upsert({
+                "att_date": att_date,
+                "member_name": member_name,
+                "created_at": kst_now_str(),
+            }).execute()
+        else:
+            (sb.table("attendance").delete()
+               .eq("att_date", att_date).eq("member_name", member_name).execute())
+        return True
+    except Exception as e:
+        try:
+            _app_log_error("출석 저장 실패", e)
+        except Exception:
+            pass
+        return False
+
+
+def render_attendance_page():
+    """[v7.10.0] ✅ 출석체크 — 회원이 운동일 참석을 체크하고, 누가 오는지 확인."""
+    import datetime as _dt
+    st.markdown("""
+    <div class="app-header">
+      <span style="font-size:34px">✅</span>
+      <span style="font-size:23px;font-weight:800;margin-left:8px">출석 체크</span>
+    </div>
+    """, unsafe_allow_html=True)
+    st.caption("운동일에 참석을 체크해 주세요. 대진 생성 시 운영진이 출석자를 한 번에 불러올 수 있습니다.")
+
+    _app_user = get_app_user()
+    _my_name = str((_app_user or {}).get("name", "")).strip()
+
+    today = _dt.date.today()
+    _wk = ["월", "화", "수", "목", "금", "토", "일"]
+    # 다가오는 운동일(토/일) 3주치
+    _opts = [today + _dt.timedelta(days=i) for i in range(22)
+             if (today + _dt.timedelta(days=i)).weekday() in (5, 6)]
+    if not _opts:
+        _opts = [today]
+    _idx = st.selectbox(
+        "참석 날짜 (다가오는 운동일)",
+        list(range(len(_opts))),
+        format_func=lambda i: f"{_opts[i].strftime('%Y-%m-%d')} ({_wk[_opts[i].weekday()]})",
+        key="att_date_sel",
+    )
+    dk = _opts[_idx].strftime("%Y-%m-%d")
+
+    attendees = attendance_load(dk)
+
+    # ── 내 참석 토글 ──
+    if not _my_name:
+        st.info("로그인하면 본인 참석을 체크할 수 있습니다.")
+    elif _my_name in attendees:
+        st.success(f"✅ **{dk}** 참석 등록되어 있습니다 — {_my_name}")
+        if st.button("참석 취소", key="att_cancel"):
+            if attendance_set(dk, _my_name, False):
+                st.rerun()
+    else:
+        if st.button(f"✅ {dk} 참석하기", type="primary", key="att_join"):
+            if attendance_set(dk, _my_name, True):
+                st.rerun()
+
+    # ── 참석자 목록 ──
+    attendees = attendance_load(dk)
+    st.markdown(f"#### 🎾 {dk} 참석자 — {len(attendees)}명")
+    if attendees:
+        st.write("  ·  ".join(attendees))
+    else:
+        st.caption("아직 참석자가 없습니다.")
+
+    # ── 운영진: 회원 대리 출석 관리 ──
+    if is_sub_admin():
+        with st.expander("🛠️ 운영진: 회원 대리 출석 관리", expanded=False):
+            _members = sorted({str(r.get("name", "")).strip()
+                               for r in _load_records_cached()
+                               if str(r.get("name", "")).strip()})
+            _pick = st.multiselect("이 날짜의 출석자(추가/제외)", _members,
+                                   default=[m for m in attendees if m in _members],
+                                   key="att_admin_pick")
+            if st.button("이 목록으로 저장(덮어쓰기)", key="att_admin_save"):
+                _cur, _new = set(attendance_load(dk)), set(_pick)
+                for nm in (_new - _cur):
+                    attendance_set(dk, nm, True)
+                for nm in (_cur - _new):
+                    attendance_set(dk, nm, False)
+                st.success("출석 명단 저장 완료")
+                st.rerun()
+
+
 def render_period_report_page():
     """[v7.9.5] 기간별 클럽 리포트 — 선택 기간의 운동일·참여·출전·승률 요약.
     기존 기록 데이터(records_rows_from_shelf_cached)를 재사용하므로 추가 Supabase 쿼리가 없다."""
@@ -8094,6 +8202,7 @@ _nav_sections = [
               ("🎉 이벤트기록", "🎉 이벤트 기록"),
               ("📅 기간리포트", "📅 기간 리포트")]),
     ("경기", [("📊 스코어보드", "📊 경기 결과"),
+              ("✅ 출석체크", "✅ 출석 체크"),
               ("🔮 매치업예상", "🔮 매치업 예상")]),
 ]
 if _is_staff:
@@ -8113,7 +8222,7 @@ _visible_pages = [k for _sec, _items in _nav_sections for k, _l in _items]
 #   흔들리면 현재 페이지가 목록에서 빠진 것으로 간주돼 통합기록실로 강제 이동,
 #   버튼을 누를 때마다 첫 화면으로 튕기는 치명적 버그가 발생했음.
 _ALL_KNOWN_PAGES = ["🏠 메인", "🏆 통합기록실", "👤 개인기록실", "🔮 매치업예상", "🎉 이벤트기록", "📊 스코어보드",
-                    "📅 기간리포트",
+                    "📅 기간리포트", "✅ 출석체크",
                     "📋 대진표생성", "🗂️ 대진표보관함", "🎯 이벤트 팀편성", "👥 회원명부",
                     "🧾 로그"]
 if st.session_state.get("current_page") not in _ALL_KNOWN_PAGES:
@@ -8148,6 +8257,7 @@ _LOADING_LABELS = {
     "📅 기간리포트":   ("📅", "기간 리포트 작성 중…"),
     "👤 개인기록실":   ("🧍", "플레이 기록 정리 중…"),
     "📊 스코어보드":   ("📊", "오늘의 스코어 정리 중…"),
+    "✅ 출석체크":     ("✅", "출석 명단 불러오는 중…"),
     "📋 대진표생성":   ("🎾", "코트 매칭 준비 중…"),
     "🗂️ 대진표보관함": ("📦", "보관된 매치 불러오는 중…"),
     "🎯 이벤트 팀편성": ("🎯", "이벤트 코트 세팅 중…"),
@@ -8518,6 +8628,7 @@ if page == "🏠 메인":
         "📅 기간리포트":   "기간별 운동일·출전·승률 요약",
         "👤 개인기록실":   "내 전적·페어·라이벌 분석",
         "📊 스코어보드":   "경기 결과 입력·확인",
+        "✅ 출석체크":     "운동일 참석 체크",
         "📋 대진표생성":   "랜덤 대진표 생성",
         "🗂️ 대진표보관함": "지난 대진표 날짜별 조회",
         "🎯 이벤트 팀편성": "이벤트용 팀 편성",
@@ -11647,6 +11758,9 @@ elif page == "🎉 이벤트기록":
 # ========================================================================
 elif page == "📅 기간리포트":
     render_period_report_page()
+
+elif page == "✅ 출석체크":
+    render_attendance_page()
 
 elif page == "👤 개인기록실":
     st.markdown("## 🧍 개인 기록")
