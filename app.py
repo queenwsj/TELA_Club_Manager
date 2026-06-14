@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.9.1
+TELA CLUB Random Match Generator v7.9.2
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4520,7 +4520,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.9.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.9.2"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -4530,9 +4530,23 @@ KAKAO_OPENCHAT_URL = ""   # 예: "https://open.kakao.com/o/your-room"
 st.set_page_config(page_title=f"TELA CLUB v{APP_VERSION}", page_icon="🎾", layout="wide",
                    initial_sidebar_state="auto")   # [v6.7] 모바일 자동 접힘 / PC 펼침
 
-# [v7.9.1 측정용 임시] 페이지 렌더 소요 측정 시작점 (원인 파악 후 제거 예정)
+# [v7.9.2] 관리자 전용 렌더 소요 측정 (공통·페이지·합계 ms). 회원 화면엔 표시되지 않음.
 import time as _perf_time
 _PERF_T0 = _perf_time.perf_counter()
+
+def _render_perf_caption():
+    """[관리자 전용] 사이드바에 이번 렌더 소요(공통·페이지·합계 ms)를 표시."""
+    try:
+        if not (get_app_user() and is_admin()):
+            return
+        _t_end = _perf_time.perf_counter()
+        _t0 = globals().get("_PERF_T0", _t_end)
+        _td = globals().get("_PERF_T_DISPATCH", _t0)
+        st.sidebar.caption(
+            f"⏱ 공통 {(_td-_t0)*1000:.0f}ms · 페이지 {(_t_end-_td)*1000:.0f}ms · 합계 {(_t_end-_t0)*1000:.0f}ms"
+        )
+    except Exception:
+        pass
 
 
 
@@ -8098,7 +8112,7 @@ else:
 
 
 # ── 메인(홈) 화면 렌더링 ──
-_PERF_T_DISPATCH = _perf_time.perf_counter()   # [v7.9.1 측정용 임시] 공통 오버헤드↔페이지 렌더 구분
+_PERF_T_DISPATCH = _perf_time.perf_counter()   # [v7.9.2] 공통 오버헤드↔페이지 렌더 구분
 if page == "🏠 메인":
     _hello_name = (_u or {}).get("name", "회원")
     _role_label = {"admin": "🔑 관리자", "sub_admin": "🗝️ 부관리자"}.get(
@@ -8392,6 +8406,7 @@ if page == "🏠 메인":
                     f"margin:-6px 0 10px;padding-left:2px'>{_card_desc.get(_key,'')}</div>",
                     unsafe_allow_html=True)
 
+    _render_perf_caption()   # [v7.9.2] 홈에서도 관리자 측정 표시
     st.stop()
 
 # [v6.5] 휴면회원 열람 제한: 메뉴(클럽기록·개인기록·경기결과·회원관리)는 보이되 콘텐츠 열람은 차단.
@@ -12743,13 +12758,5 @@ elif page == "🎯 이벤트 팀편성":
                         st.balloons()
 
 
-# [v7.9.1 측정용 임시] 관리자에게만 페이지 렌더 소요 표시 (원인 파악용 · 확인 후 제거 예정)
-try:
-    if get_app_user() and is_admin():
-        _t_end = _perf_time.perf_counter()
-        _ovh_ms = (_PERF_T_DISPATCH - _PERF_T0) * 1000
-        _pg_ms  = (_t_end - _PERF_T_DISPATCH) * 1000
-        _tot_ms = (_t_end - _PERF_T0) * 1000
-        st.sidebar.caption(f"⏱ 공통 {_ovh_ms:.0f}ms · 페이지 {_pg_ms:.0f}ms · 합계 {_tot_ms:.0f}ms")
-except Exception:
-    pass
+# [v7.9.2] 관리자 전용 렌더 소요 표시 (홈 외 페이지 — 스크립트 정상 종료 지점)
+_render_perf_caption()
