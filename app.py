@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.10.0
+TELA CLUB Random Match Generator v7.11.0
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -1775,8 +1775,8 @@ def score_pairing(t1, t2, gs, rs) -> int:
     for x in t1:
         for y in t2:
             ok = opp_key(x, y)
-            if ok in rs.opponent_used: pen += 50
-            if ok in gs.opponent_used: pen += 10
+            if ok in rs.opponent_used: pen += (250 if _CONSEC_AVOID.get("enabled") else 50)
+            if ok in gs.opponent_used: pen += (60 if _CONSEC_AVOID.get("enabled") else 10)
     # [기능5] 체급(등급) 균형: 두 팀 등급 합 차이가 클수록 패널티
     #   등급 1=최상위, 5=입문. 균형 매칭 활성화 시에만 적용.
     if _GRADE_BALANCE.get("enabled"):
@@ -1789,6 +1789,9 @@ def score_pairing(t1, t2, gs, rs) -> int:
 
 # [기능5] 등급 균형 매칭 — 전역 상태 및 헬퍼
 _GRADE_BALANCE = {"enabled": False, "weight": 30}
+# [v7.11.0] 연속경기 회피 — ON이면 score_pairing의 '상대 반복' 패널티를 강화
+#   (파트너 반복은 기존대로 +5000으로 사실상 금지). 생성 직전 토글값으로 설정.
+_CONSEC_AVOID = {"enabled": False}
 _GRADE_MAP: dict = {}   # 순수 이름(player_key) → 등급(int 1~5)
 
 
@@ -2251,6 +2254,55 @@ def merge_insufficient_leagues(league_players: dict, active_leagues: list,
     # 빈 리그 제거
     merged = {lg: pl for lg, pl in merged.items() if pl}
     return merged, merge_logs
+
+
+def _reorder_rest(schedule):
+    """[v7.11.0] 연속경기 회피(휴식) — 경기 '내용(팀)'은 그대로 두고 '순서'만 재배열.
+
+    · 같은 (리그, 라운드) 블록은 통째로 유지 → 라운드 라벨/구조·이벤트(4R) 불변.
+    · 블록 내부 순서를 그리디로 정해, '직전 경기에 나온 선수가 곧바로 다음 경기에 또
+      들어가는' 경우(=휴식 부족)를 최소화한다. 블록 경계(라운드 전환)에서 특히 효과.
+    · 반환값은 입력과 '같은 경기 집합'(중복·누락 없음). 문제가 생기면 호출부에서 원복.
+    """
+    if not schedule or len(schedule) < 3:
+        return list(schedule)
+
+    def _players_of(m):
+        return {base_name(p) for p in list(m.get("team1", ())) + list(m.get("team2", ()))}
+
+    # 1) 연속된 동일 (league, round) 블록으로 분할 — 원래 순서 보존
+    blocks = []
+    cur = [schedule[0]]
+    for m in schedule[1:]:
+        same = (m.get("league") == cur[-1].get("league")
+                and m.get("round") == cur[-1].get("round"))
+        if same:
+            cur.append(m)
+        else:
+            blocks.append(cur)
+            cur = [m]
+    blocks.append(cur)
+
+    # 2) 각 블록 내부 그리디 재배열: 직전 배치 경기와 선수 겹침이 가장 적은 경기를 먼저
+    #    (같은 라운드 안의 경기들은 서로 선수가 겹치지 않으므로, 사실상 '블록 첫 경기'를
+    #     직전 블록 마지막 경기와 안 겹치게 고르는 효과 → 라운드 경계 휴식 보장)
+    result = []
+    prev_players = set()
+    for blk in blocks:
+        remaining = list(blk)
+        while remaining:
+            best_i, best_ov = 0, None
+            for i, m in enumerate(remaining):
+                ov = len(_players_of(m) & prev_players)
+                if best_ov is None or ov < best_ov:
+                    best_ov, best_i = ov, i
+                if best_ov == 0:
+                    break
+            chosen = remaining.pop(best_i)
+            result.append(chosen)
+            prev_players = _players_of(chosen)
+
+    return result
 
 
 def generate_schedule_from_leagues(league_players, league_configs, num_rounds=3):
@@ -4545,7 +4597,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.10.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.11.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -9475,6 +9527,16 @@ elif page == "📋 대진표생성":
         )
         if use_grade_balance:
             st.caption("⚖️ 등급 균형 ON")
+        avoid_consec = st.checkbox(
+            "🔄 연속경기 회피",
+            value=True,
+            key="gen_avoid_consec",
+            help="① 한 선수가 곧바로 연달아 뛰지 않도록 경기 '순서'를 조정(휴식 우선) "
+                 "② 같은 상대와 반복 매칭을 더 강하게 회피. "
+                 "파트너 페어링 규칙·라운드 구조는 변경하지 않습니다(OFF면 기존과 동일).",
+        )
+        if avoid_consec:
+            st.caption("🔄 연속경기 회피 ON")
     st.markdown("---")
 
     # ── [2] 리그 수 설정 (NEW) ───────────────────────────────
@@ -9707,7 +9769,7 @@ elif page == "📋 대진표생성":
                                 if st.session_state.get(f"gchk_{lg}_{gm['name']}", False))
                 total_sel = sel_cnt + g_sel_cnt
 
-                col_sa, col_sd = st.columns([1, 1])
+                col_sa, col_sd, col_at = st.columns([1, 1, 1])
                 if col_sa.button("✅ 전체선택", key=f"popup_sa_{lg}", use_container_width=True):
                     _sel_store = st.session_state.setdefault("selected_members", {})
                     for _, r in normal_df.iterrows():
@@ -9730,6 +9792,23 @@ elif page == "📋 대진표생성":
                         _gsel_store[f"{lg}_{gm['name']}"] = False
                         st.session_state[f"gchk_{lg}_{gm['name']}"] = False
                     # st.rerun() 제거 — dialog 안에서 rerun하면 팝업이 닫힘
+
+                # [v7.10.1] 출석자 자동 선택 — 해당 경기 날짜에 출석 체크한 회원을 한 번에 선택.
+                #   전체선택과 동일 메커니즘(normal_df=휴면 제외, 두 저장소 모두 갱신) → 매칭 알고리즘 무변경.
+                if col_at.button("✅ 출석자", key=f"popup_att_{lg}", use_container_width=True,
+                                 help=f"{_game_date} 출석 체크한 회원만 선택합니다"):
+                    _att_names = set(attendance_load(_game_date.strftime("%Y-%m-%d")))
+                    _sel_store = st.session_state.setdefault("selected_members", {})
+                    _n_att = 0
+                    for _, r in normal_df.iterrows():
+                        if str(r.get("name", "")).strip() in _att_names:
+                            _sel_store[f"{lg}_{int(r['id'])}"] = True
+                            st.session_state[f"mchk_{lg}_{int(r['id'])}"] = True
+                            _n_att += 1
+                    try:
+                        st.toast(f"{lg}: {_game_date} 출석자 {_n_att}명 선택")
+                    except Exception:
+                        pass
 
                 st.markdown(
                     f'<div style="padding:2px 0 6px;color:{lc};font-weight:700;">'
@@ -10040,6 +10119,8 @@ elif page == "📋 대진표생성":
 
         # [기능5] 등급 균형 매칭 설정: 이름→등급 맵 구성 후 전역 반영
         _GRADE_BALANCE["enabled"] = bool(use_grade_balance)
+        # [v7.11.0] 연속경기 회피: 토글값을 전역 플래그에 반영(상대 반복 패널티 강화에 사용)
+        _CONSEC_AVOID["enabled"] = bool(avoid_consec)
         if use_grade_balance:
             try:
                 _gdf = load_df()
@@ -10066,6 +10147,18 @@ elif page == "📋 대진표생성":
 
         if not schedule:
             st.warning("경기를 생성할 수 없습니다."); st.stop()
+
+        # [v7.11.0] 연속경기 회피(휴식): 생성된 경기(팀)는 그대로, 순서만 재배열.
+        #   안전장치 — 같은 경기 집합(개수 동일)일 때만 적용, 아니면 원래 순서 유지.
+        if avoid_consec and schedule:
+            try:
+                _reordered = _reorder_rest(schedule)
+                if len(_reordered) == len(schedule):
+                    schedule = _reordered
+            except Exception:
+                pass  # 어떤 문제든 생기면 원래 순서 그대로(안전)
+        # 본 생성에서만 적용되도록 플래그 해제(이벤트 팀편성 등 다른 화면 영향 방지)
+        _CONSEC_AVOID["enabled"] = False
 
         st.session_state.update({
             "schedule": schedule, "stats": stats, "scores": {},
