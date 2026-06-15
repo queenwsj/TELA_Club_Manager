@@ -1,5 +1,5 @@
 """
-TELA CLUB Random Match Generator v7.11.0
+TELA CLUB Random Match Generator v7.11.1
 버전 이력: CHANGELOG.md 참고
 
 [구역 목차]
@@ -4597,7 +4597,7 @@ def _render_basic_validation(df_full):
 import re
 from datetime import datetime, date, timedelta
 
-APP_VERSION = "7.11.0"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
+APP_VERSION = "7.11.1"   # 단일 버전 상수 — 탭 제목·사이드바 캡션이 모두 이 값을 참조
 
 # [v7.0.0] 메인(홈) 화면의 '온라인 공지' 바로가기 링크.
 #   URL을 채우면 홈 화면 하단에 버튼이 자동으로 표시된다. 비워두면 숨김.
@@ -9888,6 +9888,69 @@ elif page == "📋 대진표생성":
     rp_num  = _d2.text_input("번호", value="001", key="rp_num", placeholder="001")
     rp_key  = f"{_date_with_weekday(rp_date)}_{rp_num}"
     st.caption(f"저장키: {rp_key}")
+
+    # [v7.11.1] 출석자 자동 선택(본 화면) — 위 📅 날짜 기준 출석자 표시 + 한 번에 선택.
+    #   날짜가 출석체크한 날짜와 같아야 잡힙니다(다르면 0명으로 표시되어 바로 알 수 있음).
+    _att_today = attendance_load(str(rp_date).strip())
+    if _att_today:
+        st.success(f"📅 **{rp_date}** 출석 체크: {len(_att_today)}명 — " + ", ".join(_att_today))
+    else:
+        st.caption(f"📅 {rp_date} 에 출석 체크한 회원이 없습니다. "
+                   f"(출석체크 메뉴에서 **이 날짜**로 체크하면, 아래 버튼으로 한 번에 선택됩니다)")
+    if st.button("✅ 출석자 자동 선택", use_container_width=True, key="att_autoselect_main",
+                 disabled=not _att_today,
+                 help="위 날짜에 출석 체크한 회원을 참가자로 자동 선택합니다(전 리그, 휴면 제외)"):
+        try:
+            _mdf = st.session_state.get("match_df_cache")
+            if _mdf is None or (hasattr(_mdf, "empty") and _mdf.empty):
+                _mdf = load_df_for_match()
+                st.session_state["match_df_cache"] = _mdf
+            try:
+                _gd = date.fromisoformat(str(rp_date)[:10])
+            except Exception:
+                _gd = date.today()
+
+            def _dorm_on(r, gd):
+                _dp = str(r.get("dormant_period", "")).strip()
+                if _dp:
+                    for _p in parse_dormant_periods(_dp):
+                        try:
+                            _s = date.fromisoformat(_p["start"]) if _p.get("start") else None
+                            _e = date.fromisoformat(_p["end"]) if _p.get("end") else None
+                            if ((_s is None) or gd >= _s) and ((_e is None) or gd <= _e):
+                                return True
+                        except Exception:
+                            continue
+                    return False
+                return str(r.get("category", "")).strip() == "휴면"
+
+            _att_set = set(_att_today)
+            _sel_store = st.session_state.setdefault("selected_members", {})
+            _cnt, _skipped = 0, []
+            for _, r in _mdf.iterrows():
+                _nm = str(r.get("name", "")).strip()
+                if _nm not in _att_set:
+                    continue
+                _lg = str(r.get("league", "")).strip()
+                if _lg not in active_leagues:
+                    _skipped.append(f"{_nm}({_lg or '리그미배정'})")
+                    continue
+                if _dorm_on(r, _gd):
+                    _skipped.append(f"{_nm}(휴면)")
+                    continue
+                _rid = int(r["id"])
+                _sel_store[f"{_lg}_{_rid}"] = True
+                st.session_state[f"mchk_{_lg}_{_rid}"] = True
+                _cnt += 1
+            _msg = f"✅ 출석자 {_cnt}명을 참가자로 선택했습니다."
+            if _skipped:
+                _msg += f" · 제외 {len(_skipped)}명: {', '.join(_skipped)}"
+            st.session_state["_att_autoselect_msg"] = _msg
+            st.rerun()
+        except Exception as e:
+            st.error(f"자동 선택 실패: {e}")
+    if st.session_state.get("_att_autoselect_msg"):
+        st.info(st.session_state.pop("_att_autoselect_msg"))
 
     # ── 저장된 대진표 불러오기 / 삭제 (본문) ──────────────
     _saved_keys = schedule_list_dates()
